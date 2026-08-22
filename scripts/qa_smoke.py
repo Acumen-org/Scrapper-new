@@ -61,17 +61,29 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def ensure_qa_account() -> None:
+def ensure_qa_account() -> bool:
+    """Create the harness account if absent. Returns True if we created it, so
+    it can be removed afterwards: an account with a password written in this
+    file must never be left sitting on a reachable deployment."""
     from prospect import auth
     users = auth.load_users()
-    if QA_USER not in users:
-        users[QA_USER] = {"name": "QA Harness",
-                          "password_hash": auth.hash_password(QA_PASS)}
+    if QA_USER in users:
+        return False
+    users[QA_USER] = {"name": "QA Harness",
+                      "password_hash": auth.hash_password(QA_PASS)}
+    auth.save_users(users)
+    return True
+
+
+def remove_qa_account() -> None:
+    from prospect import auth
+    users = auth.load_users()
+    if users.pop(QA_USER, None) is not None:
         auth.save_users(users)
 
 
-def sign_in(base: str) -> None:
-    ensure_qa_account()
+def sign_in(base: str) -> bool:
+    created = ensure_qa_account()
     body = urllib.parse.urlencode(
         {"username": QA_USER, "password": QA_PASS, "next": "/"}).encode()
     req = urllib.request.Request(base + "/login", data=body)
@@ -84,6 +96,7 @@ def sign_in(base: str) -> None:
             next(i for i, h in enumerate(_OPENER.handlers)
                  if isinstance(h, urllib.request.HTTPCookieProcessor))].cookiejar):
         raise SystemExit("QA could not sign in; no session cookie was issued")
+    return created
 
 
 def get(base: str, path: str, timeout: float = 30.0) -> tuple[int, str, float]:
@@ -377,11 +390,18 @@ def main() -> int:
     c.close()
 
     pass_auth(args.base)
-    sign_in(args.base)
-    pass_routes(args.base, detail_crd)
-    pass_writes(args.base, "prospect.db")
-    pass_latency(args.base, detail_crd)
-    pass_concurrency(args.base, detail_crd)
+    created = sign_in(args.base)
+    try:
+        pass_routes(args.base, detail_crd)
+        pass_writes(args.base, "prospect.db")
+        pass_latency(args.base, detail_crd)
+        pass_concurrency(args.base, detail_crd)
+    finally:
+        # Even on failure: leaving a known-password account behind is worse
+        # than any test result.
+        if created:
+            remove_qa_account()
+            print("\n(removed the temporary qa account)")
 
     print("\n" + "=" * 60)
     if FAILURES:

@@ -270,7 +270,14 @@ def todo(conn, limit: int):
 
 
 def enrich_one(conn, crd: str, website: str, ua: str, now: str) -> tuple[str, int, int, int]:
-    from urllib.parse import urlparse
+    """Visit one firm's site.
+
+    Commits after every page, never after the firm. SQLite allows one writer,
+    so an open write transaction held across a network fetch and a one second
+    politeness sleep blocks every reader for as long as the crawl takes. That
+    showed up as a page load timing out under concurrent use, which is the same
+    failure the per-request DDL once caused. Writes stay milliseconds long.
+    """
     url = website if website.lower().startswith("http") else "https://" + website
     pages = people = emails = 0
     try:
@@ -278,11 +285,13 @@ def enrich_one(conn, crd: str, website: str, ua: str, now: str) -> tuple[str, in
     except Exception:
         return "unreachable", 0, 0, 0
     cache_page(conn, crd, url, status, html, now)
+    conn.commit()
     if status >= 400 or not html:
         return "unreachable", 1, 0, 0
     pages = 1
     names = known_names(conn, crd)
     p, e = extract(conn, crd, url, html, names, now)
+    conn.commit()
     people += p
     emails += e
     for link in candidate_links(url, html):
@@ -301,9 +310,11 @@ def enrich_one(conn, crd: str, website: str, ua: str, now: str) -> tuple[str, in
                     continue
                 pages += 1
                 p2, e2 = extract(conn, crd, link, h2, names, now)
+                conn.commit()
                 people += p2
                 emails += e2
             continue
+        # Nothing uncommitted may be open across this sleep or the fetch below.
         time.sleep(1.0)  # polite: one page a second within a site
         try:
             st2, h2 = fetch(link, ua)
@@ -315,6 +326,7 @@ def enrich_one(conn, crd: str, website: str, ua: str, now: str) -> tuple[str, in
             p2, e2 = extract(conn, crd, link, h2, names, now)
             people += p2
             emails += e2
+        conn.commit()
     return "ok", pages, people, emails
 
 

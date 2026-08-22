@@ -9,6 +9,20 @@ products, and produces a queue that three people work each morning. It is not a
 report. Everything is local: one Python process, one SQLite file
 (`prospect.db`), no cloud, no login, no account.
 
+## Signing in
+
+Everyone has a named account. Nothing is reachable without one, and the name on
+the account is what fills in who owns a firm and who cleared a review, so a
+shared queue stays honest about who did what.
+
+    python -m scripts.manage_users add alisa --name "Alisa Chen"
+    python -m scripts.manage_users list
+
+Passwords are typed at a prompt and stored only as PBKDF2-SHA256 hashes.
+`config/users.yml` is gitignored and never leaves the machine.
+
+To put this on a server for the team, see [DEPLOY.md](DEPLOY.md).
+
 ## Starting and stopping
 
 There is nothing to start. Bellwether launches itself when you sign in to
