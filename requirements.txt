@@ -1,0 +1,19 @@
+# Bellwether runtime dependencies. Deliberately small.
+#
+# No pandas (streaming CSV and iterparse handle files larger than memory),
+# no pypdf (pdfplumber is the one that actually extracts these layouts),
+# and no LLM or enrichment API client anywhere: every derived value in this
+# system has to trace back to a filing, which rules them out by design.
+#
+# Versions are the ones this has actually been run and QA-gated against, read
+# from the working environment rather than chosen from release notes.
+
+fastapi==0.133.1
+uvicorn==0.41.0
+lxml==6.1.1
+pdfplumber==0.11.10
+PyYAML==6.0.3
+requests==2.33.0
+
+# Icon generation only (scripts.make_icon). Not imported by the app at runtime.
+Pillow==12.2.0

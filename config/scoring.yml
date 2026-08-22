@@ -1,0 +1,319 @@
+# Scoring, segmentation and trigger tunables.
+#
+# Everything here is expected to change. Nothing in code reads a threshold that
+# is not defined in this file, and every derived value is stamped with the config
+# version that produced it so a past score can be recomputed exactly.
+
+config_version: 1
+
+# ---------------------------------------------------------------------------
+# Real estate fund segmentation: prospect or competitor?
+#
+# Item 7.B reports funds the adviser ADVISES. The same flag means opposite things
+# depending on scale, so it must never be read as a boolean. A firm advising a
+# small real estate fund with few investors has proven client appetite for
+# illiquid real estate and K-1s but limited capacity of its own, which is the
+# best possible PHH prospect. A firm advising a large one is a competitor.
+#
+# The RAUM ratio is the primary discriminant because it is scale-invariant: a
+# $300M fund at a $3B adviser is a client accommodation, the same fund at a $400M
+# adviser is the business. The absolute cuts are secondary and catch the cases
+# where the ratio is unavailable or misleading.
+real_estate_segmentation:
+  primary:
+    # Real estate fund gross asset value as a fraction of the adviser's own RAUM.
+    raum_ratio_competitor: 0.50    # at or above: the fund IS the business
+    raum_ratio_prospect: 0.15      # below: fund is an accommodation, not the model
+  secondary:
+    gav_competitor: 250000000      # 250M
+    owners_competitor: 250
+    gav_prospect: 50000000         # 50M
+    owners_prospect: 75
+
+  # Funds reporting zero gross asset value are their own segment, not noise. A
+  # newly formed real estate fund that has not raised is a firm that has just
+  # decided to be in this business and is not yet committed to its own product.
+  # Best prospect on the list, or fastest-moving competitor, and the difference
+  # is knowable from how long the fund has existed and how many investors it has.
+  # Second gate, added after inspection. The RAUM ratio says whether the fund is
+  # the business; it says nothing about whether the firm has the CLIENTS PHH
+  # sells to. Firms with zero high net worth clients and their whole book in
+  # pooled vehicles are fund sponsors, not wealth managers, however small their
+  # fund. Measured across the segments: prospects average 41.5% HNW share,
+  # competitors 1.7%, unraised 0.0%.
+  # Share OR absolute size, because share alone misses scale. A larger adviser at
+  # a modest HNW share can carry a bigger addressable book than a small adviser at
+  # 100%, and PHH cares about the absolute size of that book. A firm passes on
+  # either limb.
+  hnw_gate:
+    min_hnw_clients: 1
+    min_hnw_share: 0.20          # HNW AUM as a fraction of RAUM, OR
+    min_hnw_aum: 50000000        # 50M of HNW assets regardless of share
+    # A firm failing the gate is a sponsor regardless of what the ratio says.
+    fail_segment: sponsor
+
+  unraised:
+    max_owners: 10                 # at or below, with zero GAV: genuinely pre-launch
+    recent_formation_months: 36    # first appearance in the archive within this window
+
+# ---------------------------------------------------------------------------
+# Trigger recency.
+#
+# Weight by age rather than filtering on a fixed window, so the queue self-sorts
+# and nobody has to argue about a cutoff. A custodian change 90 days ago is a live
+# rebuild; one from 2022 is history, and should sink rather than disappear.
+#
+# Note the archive ends 2024-12-26, so every archive-derived trigger is already
+# more than 18 months old and will weight low by construction. That is correct
+# and is exactly what the operator should see: the archive is a backtesting and
+# base-rate corpus, and the genuinely live queue begins accumulating with the
+# second weekly feed snapshot.
+trigger_recency:
+  half_life_days: 365
+  floor_weight: 0.02               # never decay fully to zero; history stays visible
+
+# ---------------------------------------------------------------------------
+# Custodian change direction.
+#
+# Same event, opposite routing. A firm moving TO Schwab is an AcuBooth prospect
+# on a plate. A firm moving AWAY from Schwab is disqualified for the platform
+# entirely, since AcuBooth runs on Schwab retail accounts only.
+custodian_change:
+  platform_entity: schwab
+  direction_weights:
+    to_platform: 1.0
+    from_platform: -1.0            # negative: this is a disqualification, not a lead
+    other: 0.3                     # still a re-papering event, still worth seeing
+
+# ---------------------------------------------------------------------------
+# New registration cross-check.
+#
+# A CRD absent from last week's feed and present in this week's is not
+# necessarily a new registration. It could be a feed inconsistency, or a
+# re-registration of a firm that has existed for years. Either is interesting;
+# neither is the breakaway signal that earns highest priority.
+new_registration:
+  # Two independent checks, because neither is sufficient alone.
+  #
+  # 1. Archive presence. A CRD appearing in 13 years of Schedule D history is not
+  #    new: it is a re-registration or a data gap.
+  cross_check_archive: true
+  #
+  # 2. The feed's own registration date. The archive ends 2024-12-31, so a firm
+  #    that registered in 2025 or the first half of 2026 is genuinely absent from
+  #    it and would pass check 1 while being years old. This is a false positive
+  #    the archive check cannot catch by construction, so the registration date on
+  #    the current feed record is the authority on age.
+  cross_check_feed_registration_date: true
+  max_registration_age_days: 400
+  # Firms failing either check still surface, but as a distinct lower-priority
+  # type rather than as a breakaway.
+  reclassify_as: reregistration_or_gap
+
+# ---------------------------------------------------------------------------
+# Trigger to product routing, for the inbox product filter.
+# A from-platform custodian move is routed to AcuBooth as a DISQUALIFIER, not a
+# lead: the SDR needs to see it so the firm comes off the list, which is why it
+# carries a negative direction weight rather than being hidden.
+trigger_products:
+  new_registration:               {product: BOTH,     kind: lead}
+  reregistration_or_gap:          {product: BOTH,     kind: lead}
+  aum_jump:                       {product: BOTH,     kind: lead}
+  aum_drop:                       {product: BOTH,     kind: disqualifier}
+  iar_growth:                     {product: ACUBOOTH, kind: lead}
+  custodian_change_to_platform:   {product: ACUBOOTH, kind: lead}
+  custodian_change_from_platform: {product: ACUBOOTH, kind: disqualifier}
+  custodian_change_other:         {product: BOTH,     kind: lead}
+  first_private_fund:             {product: PHH,      kind: lead}
+  first_real_estate_fund:         {product: PHH,      kind: lead}
+
+# Caveats rendered as tooltips wherever the named figure appears. These are not
+# polish: they are the guardrails that stop the list being worked wrongly.
+caveats:
+  schwab_share_reported: >
+    Share of REPORTED custodian assets, not of the firm's total book. Schedule D
+    5.K(3) lists only custodians holding 10% or more of separately managed
+    account assets, so a firm showing 100% may still custody a large share
+    elsewhere in sub-10% slices. Treat as an upper bound.
+  schwab_flag: >
+    Indicates the late-2026 institutional opportunity, NOT currently sellable
+    accounts. AcuBooth runs on Schwab retail accounts today; the sellable pool is
+    held-away and self-directed accounts, which appear in no filing.
+  est_avg_client_size: >
+    Client-level estimate, biased high as an account proxy. Item 5.D reports
+    clients, not accounts: a household with four accounts counts once, so true
+    average account size is plausibly 2 to 4 times smaller.
+  archive_as_of: >
+    Derived from the historical Schedule D archive, which ends 2024-12-31. Every
+    firm has filed at least one annual amendment since, so treat this as a
+    baseline to diff against, never as current state.
+
+
+# ---------------------------------------------------------------------------
+# Tier A ranking (PHH).
+#
+# 360 firms with proven appetite for illiquid vehicles, a real high net worth
+# book, and no competing real estate product of their own. Membership is settled;
+# ordering is what matters now. Every component below is stored as its own column
+# so the detail page can show why a firm ranked where it did.
+#
+# Banded rather than continuous on purpose: a band is explainable to an SDR in one
+# sentence, a regression coefficient is not.
+tier_a_ranking:
+  weights:
+    hnw_aum: 40          # absolute size of the addressable book
+    fund_count: 20       # two funds already held is more proven than one
+    min_investment: 20   # do their clients clear a private placement threshold
+    fund_type: 20        # illiquidity tolerance already demonstrated
+  working_list_size: 100
+
+  hnw_aum_bands:         # dollars of high net worth assets -> score
+    - [400000000, 100]
+    - [300000000, 90]
+    - [200000000, 78]
+    - [100000000, 62]
+    - [50000000, 45]
+    - [25000000, 30]
+    - [0, 15]
+
+  fund_count_bands:
+    - [4, 100]
+    - [3, 90]
+    - [2, 75]
+    - [1, 50]
+
+  min_investment_bands:  # highest minimum across the funds they advise
+    - [1000000, 100]
+    - [500000, 90]
+    - [250000, 80]
+    - [100000, 65]
+    - [50000, 50]
+    - [1, 35]
+  min_investment_unknown: 40   # neutral: absence of a filed minimum is not evidence
+
+  # Private equity and other private funds lock capital up; hedge funds often do
+  # not. A firm whose clients already tolerate a PE lockup is closer to a 506(c)
+  # real estate fund than one holding only liquid alternatives.
+  # Own-vehicle penalty. A firm advising its own funds has clients who have
+  # demonstrably written cheques into illiquid vehicles, which is the appetite we
+  # care about, but the firm has a structural bias to fill its own product first.
+  # A fixed penalty rather than removal, so they stay visible in the working list
+  # and sort below equivalent third-party allocators.
+  own_vehicle_penalty: 12.0      # points off the composite
+  mixed_vehicle_penalty: 4.0
+
+  fund_type_scores:
+    "Private Equity Fund": 100
+    "Other Private Fund": 90
+    "Venture Capital Fund": 85
+    "Hedge Fund": 60
+    "Securitized Asset Fund": 50
+    "Liquidity Fund": 30
+
+# ---------------------------------------------------------------------------
+# Tier C scoring (AcuBooth).
+#
+# 5,399 firms with a real high net worth book and no private funds at all. Wrong
+# shape for PHH, close to the right shape for a covered call overlay on
+# concentrated equity positions.
+#
+# READ SECTION 5 BEFORE USING THIS SCORE. It ranks pre-positioning fit, not
+# sellable accounts. AcuBooth runs on Schwab retail accounts today and the
+# sellable pool is held-away and self-directed accounts, which are not part of
+# regulatory AUM and appear in no filing. Nothing here can see that pool. A high
+# score means "worth approaching with the free holdings analysis offer", never
+# "has accounts ready to convert".
+tier_c_acubooth:
+  weights:
+    hnw_aum: 30          # bigger book, more households, more held-away potential
+    hnw_clients: 25      # client count is the closest available proxy for accounts
+    schwab_2026: 18      # pre-positioning only, see caveat
+    capacity: 12         # adviser reps available to service an overlay
+    clients_per_rep: 15  # how many accounts a single yes could produce
+
+  # Clients per rep must be paired with account size or it misleads. A high ratio
+  # with a small book is a mass-affluent practice with small accounts, and
+  # AcuBooth needs accounts holding at least 100 shares of an optionable name.
+  # The ratio score is damped by average HNW assets per client.
+  clients_per_rep_bands:
+    - [80, 100]
+    - [55, 88]
+    - [40, 74]
+    - [25, 58]
+    - [12, 40]
+    - [0, 20]
+  hnw_per_client_damping:        # average HNW assets per HNW client -> multiplier
+    - [2000000, 1.00]
+    - [1000000, 0.90]
+    - [500000, 0.72]
+    - [250000, 0.50]
+    - [0, 0.25]
+  hnw_aum_bands:
+    - [400000000, 100]
+    - [250000000, 88]
+    - [150000000, 72]
+    - [75000000, 55]
+    - [25000000, 35]
+    - [0, 15]
+
+  hnw_client_bands:      # number of high net worth clients
+    - [200, 100]
+    - [100, 85]
+    - [50, 70]
+    - [25, 55]
+    - [10, 38]
+    - [1, 20]
+
+  capacity_bands:        # investment adviser representatives
+    - [10, 100]
+    - [5, 80]
+    - [3, 60]
+    - [1, 40]
+    - [0, 10]
+
+  # Deliberately NOT scored, recorded for display only. Non-discretionary RAUM is
+  # still regulatory AUM; the AcuBooth pool is held away and outside RAUM
+  # entirely. Treating one as a proxy for the other is exactly the error section 5
+  # warns about, so it is surfaced as context and never enters the score.
+  display_only:
+    - nondiscretionary_share
+
+
+# ---------------------------------------------------------------------------
+# ADV to 13F matching.
+#
+# No official crosswalk exists. Thresholds are deliberately asymmetric: a wrong
+# link puts a holding the firm does not own into a call opener, which costs
+# credibility; a missed link costs one prospect a data point. So auto-accept is
+# high and anything uncertain goes to a human rather than being merged or
+# dropped.
+match_13f:
+  auto_accept: 0.85     # merge without review
+  review_floor: 0.50    # below this, discard rather than queue
+
+# ---------------------------------------------------------------------------
+# 13F position conviction.
+#
+# A single small position in one net lease name is likely legacy or
+# client-directed, which is a weaker signal than it looks. Several names held
+# deliberately is an allocation decision. The distinction belongs on the row, not
+# in the SDR's head.
+position_conviction:
+  deliberate_min_names: 3        # holds this many target names -> deliberate
+  deliberate_min_value: 500000   # or a single position of this size
+  legacy_max_value: 100000       # one name below this -> possible legacy
+
+
+# ---------------------------------------------------------------------------
+# Forward-looking triggers, computed as a diff between two adviser feed
+# snapshots. Live once a second weekly capture exists.
+trigger_forward:
+  aum_jump_pct: 20.0          # RAUM up at least this percent between snapshots
+  aum_drop_pct: 25.0          # informational, surfaced at low weight
+  iar_min_increase: 2         # reps added between snapshots
+  direction_weights:
+    new_registration: 1.5     # breakaway rebuilding its whole product shelf
+    reregistration_or_gap: 0.4
+    aum_jump: 1.0
+    aum_drop: 0.3
+    iar_growth: 0.6

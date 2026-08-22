@@ -1,0 +1,46 @@
+# Bellwether on one small server, with automatic HTTPS.
+#
+# Caddy terminates TLS and obtains a certificate on its own; Bellwether never
+# sees the public internet directly and is not published on a host port, so the
+# only way in is through Caddy over HTTPS.
+#
+#   docker compose up -d --build
+#   docker compose exec app python -m scripts.manage_users add you --name "Your Name"
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      # Read from a .env file beside this one. Never inline real secrets here:
+      # this file is tracked, .env is not.
+      BELLWETHER_SECRET: ${BELLWETHER_SECRET:?set BELLWETHER_SECRET in .env}
+      BELLWETHER_CONTACT: ${BELLWETHER_CONTACT:?set BELLWETHER_CONTACT in .env}
+      BELLWETHER_HTTPS: "1"
+    volumes:
+      - bellwether-data:/data
+    expose:
+      - "8787"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # The hostname you point at this server. Caddy uses it to get a cert.
+      BELLWETHER_HOST: ${BELLWETHER_HOST:?set BELLWETHER_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  # Named, not a bind mount: this holds the 2GB database and the brochure cache,
+  # and it must outlive every container rebuild.
+  bellwether-data:
+  caddy-data:
+  caddy-config:

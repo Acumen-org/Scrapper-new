@@ -1,0 +1,99 @@
+# Target securities for the 13F convert overlays.
+#
+# CUSIPs are OBSERVED, not recalled: each was read from a real filed information
+# table alongside the issuer name shown. An unverified ticker carries a null
+# cusip and is excluded from scoring rather than guessed at.
+#
+# CUSIPs are QUOTED. An all-digit CUSIP (756109104) is otherwise parsed as an
+# integer while parsed holdings are strings, so the lookup silently never
+# matches and the ticker reports zero holders. That is indistinguishable from
+# nobody holding it. Realty Income and NNN REIT were both lost this way.
+#
+# Verified entries are IMMUTABLE: a later run may add evidence but may not
+# downgrade or replace a verified cusip without --allow-downgrade.
+
+config_version: 2
+
+securities:
+  JEPI:
+    product: acubooth
+    cusip: "46641Q332"
+    verified: true
+    issuer_as_filed: "JPMORGAN EQUITY PREMIUM INCOME ETF"
+    seen_in_filings: 8
+  JEPQ:
+    product: acubooth
+    cusip: "46654Q203"
+    verified: true
+    issuer_as_filed: "JPMORGAN NASDAQ EQUITY PREMIUM INCOME ETF"
+    seen_in_filings: 3
+  XYLD:
+    product: acubooth
+    cusip: null
+    verified: false
+  QYLD:
+    product: acubooth
+    cusip: "37954Y483"
+    verified: true
+    issuer_as_filed: "GLOBAL X NASDAQ 100 COVERED CALL ETF"
+    seen_in_filings: 3
+  RYLD:
+    product: acubooth
+    cusip: "37954Y459"
+    verified: true
+    issuer_as_filed: "GLOBAL X RUSSELL 2000 COVERED CALL"
+    seen_in_filings: 4
+  DIVO:
+    product: acubooth
+    cusip: "032108409"
+    verified: true
+    issuer_as_filed: "AMPLIFY CWP ENHANCED DIVIDEND INCOME ETF"
+    seen_in_filings: 4
+  SPYI:
+    product: acubooth
+    cusip: "78433H303"
+    verified: true
+    issuer_as_filed: "NEOS ETF TRUST S&AMP;P 500 HIGH INCOME (SPYI)"
+    seen_in_filings: 3
+  QQQI:
+    product: acubooth
+    cusip: "78433H675"
+    verified: true
+    issuer_as_filed: "NEOS NASDAQ-100 HIGH INCOME ETF (QQQI)"
+    seen_in_filings: 4
+  O:
+    product: phh
+    cusip: "756109104"
+    verified: true
+    issuer_as_filed: "REALTY INCOME CORP COM"
+    seen_in_filings: 3
+  NNN:
+    product: phh
+    cusip: "637417106"
+    verified: true
+    issuer_as_filed: "NNN REIT INC"
+    seen_in_filings: 1
+  WPC:
+    product: phh
+    cusip: "92936U109"
+    verified: true
+    issuer_as_filed: "W P CAREY INC"
+    seen_in_filings: 131
+  ADC:
+    product: phh
+    cusip: "008492100"
+    verified: true
+    issuer_as_filed: "AGREE REALTY CORP"
+    seen_in_filings: 16
+  EPRT:
+    product: phh
+    cusip: "29670E107"
+    verified: true
+    issuer_as_filed: "ESSENTIAL PROPERTIES REALTY TRUST"
+    seen_in_filings: 4
+  STAG:
+    product: phh
+    cusip: "85254J102"
+    verified: true
+    issuer_as_filed: "STAG INDUSTRIAL INC"
+    seen_in_filings: 8

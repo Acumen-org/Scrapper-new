@@ -1,0 +1,15 @@
+# This repo is edited on Windows and deployed on Linux, so line endings are
+# normalised to LF in the repository and checked out natively.
+* text=auto eol=lf
+
+# These are only ever run by Windows, and cmd.exe and the Windows Script Host
+# both need CRLF. A .bat checked out with LF endings fails in confusing ways.
+*.bat text eol=crlf
+*.vbs text eol=crlf
+
+# Never touched: line-ending conversion would corrupt them.
+*.ico binary
+*.pdf binary
+*.gz binary
+*.zip binary
+*.db binary

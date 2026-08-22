@@ -1,0 +1,61 @@
+# Bellwether: code is versioned, data is not.
+#
+# Everything ignored here is either regenerable from the immutable snapshots or
+# far too large for git (the database alone is 2.2GB and one archive member is
+# 410MB, well past GitHub's 100MB per-file limit). Committing any of it once
+# would bloat the repo permanently, since git keeps every version forever.
+#
+# It also matters for privacy: the database and the web cache hold names, email
+# addresses and phone numbers of real people at thousands of firms. That is our
+# working data, not source code, and it does not belong in a shared repo.
+
+# --- the database and everything derived from it -------------------------
+prospect.db
+prospect.db-wal
+prospect.db-shm
+*.db
+*.db-wal
+*.db-shm
+
+# --- captured source data, caches, runtime state -------------------------
+data/
+
+# --- secrets -------------------------------------------------------------
+# Real values live in the environment or in a .env that never leaves the box.
+.env
+.env.*
+!.env.example
+config/users.yml
+secret_key
+
+# --- generated assets ----------------------------------------------------
+assets/*.ico
+
+# --- python --------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- editors and OS ------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- logs ----------------------------------------------------------------
+*.log
+
+# --- superseded prototypes, kept on disk but never committed ---------------
+# The four original scripts this project grew out of. Excluded for three
+# reasons: they are fully replaced by prospect/ and scripts/, they depend on
+# pandas, bs4 and local CSVs that are not part of this system, and
+# "Mailwarm API.py" carries a live API key in a URL. A secret committed once
+# stays in git history forever, so it never gets committed at all.
+13F Form scraper.py
+ADV Form scraper.py
+Mailwarm API.py
+product_fit_scoring.py

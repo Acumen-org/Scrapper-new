@@ -1,0 +1,31 @@
+# HTTPS in front of Bellwether. Caddy gets and renews the certificate itself.
+{$BELLWETHER_HOST} {
+	encode gzip
+
+	# Brochure PDFs and the CSV export can be large and slow to assemble, and
+	# the weekly cycle button returns only after handing off, so give the app
+	# room rather than cutting a response in half.
+	reverse_proxy app:8787 {
+		header_up X-Forwarded-Proto https
+		transport http {
+			read_timeout 300s
+		}
+	}
+
+	# The app sets HttpOnly, Secure, SameSite=Strict on the session cookie; HSTS
+	# is what stops a first request ever going out over plain http.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

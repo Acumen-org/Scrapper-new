@@ -1,0 +1,265 @@
+# Maintained custodian alias table.
+#
+# Hand-mapped, not fuzzy-matched. Custodian names are a small closed set in
+# practice: roughly thirty entities cover the overwhelming majority of filed
+# rows, and a fuzzy matcher on this data would silently merge distinct entities
+# (Fidelity Brokerage vs Fidelity Distributors) while missing obvious aliases.
+#
+# The original filed string is preserved on every row. Nothing here is
+# destructive, so any mapping decision can be reversed by re-running the
+# normaliser with an amended table.
+#
+# Matching runs against a normalised form of the filed name: uppercased,
+# punctuation stripped, corporate suffixes removed (INC, LLC, CORP, NA, THE,
+# COMPANY, ...), whitespace collapsed. Aliases below are written in that form.
+# `prefixes` match the start of the normalised string and carry the long tail of
+# branch and division variants.
+
+config_version: 1
+
+# Names not matched by any entity below are routed to a review list when they
+# exceed this many rows. Below the threshold they are left unmapped: the tail is
+# thousands of one-off trust companies and naming them individually buys nothing.
+review_threshold_rows: 200
+
+entities:
+
+  - id: schwab
+    canonical: "Charles Schwab"
+    prefixes: ["CHARLES SCHWAB", "SCHWAB"]
+
+  - id: td_ameritrade
+    canonical: "TD Ameritrade"
+    prefixes: ["TD AMERITRADE", "TDAMERITRADE", "TD WATERHOUSE"]
+    # Schwab acquired TD Ameritrade and completed the advisor custody transition
+    # across 2023 and 2024. Post-migration these are the same custodian for
+    # scoring purposes, but the filed strings remain distinct and the migration
+    # itself must not read as a custodian change. See migrations: below.
+    merged_into: schwab
+    merged_effective: "2024-12-31"
+
+  - id: fidelity
+    canonical: "Fidelity"
+    # National Financial Services is Fidelity's clearing arm; folded per the same
+    # logic as TD Ameritrade, but with no migration date since it was never a
+    # separate custodian relationship from the adviser's point of view.
+    prefixes: ["FIDELITY", "NATIONAL FINANCIAL SERVICES"]
+
+  - id: pershing
+    canonical: "Pershing"
+    prefixes: ["PERSHING"]
+
+  - id: lpl
+    canonical: "LPL Financial"
+    prefixes: ["LPL"]
+
+  - id: raymond_james
+    canonical: "Raymond James"
+    prefixes: ["RAYMOND JAMES"]
+
+  - id: state_street
+    canonical: "State Street"
+    prefixes: ["STATE STREET"]
+
+  - id: bny_mellon
+    canonical: "BNY Mellon"
+    # Pershing Advisor Solutions is BNY-owned but is the adviser-facing custody
+    # brand, so it maps to pershing rather than here. CIBC Mellon is a separate
+    # joint venture and keeps its own entity.
+    prefixes: ["BNY MELLON", "BANK OF NEW YORK", "BNYMELLON"]
+
+  - id: northern_trust
+    canonical: "Northern Trust"
+    prefixes: ["NORTHERN TRUST"]
+
+  - id: interactive_brokers
+    canonical: "Interactive Brokers"
+    prefixes: ["INTERACTIVE BROKERS"]
+
+  - id: wells_fargo
+    canonical: "Wells Fargo"
+    prefixes: ["WELLS FARGO", "FIRST CLEARING"]
+
+  - id: jpmorgan
+    canonical: "J.P. Morgan"
+    prefixes: ["JP MORGAN", "JPMORGAN", "J P MORGAN", "CHASE"]
+
+  - id: morgan_stanley
+    canonical: "Morgan Stanley"
+    prefixes: ["MORGAN STANLEY", "SMITH BARNEY"]
+
+  - id: goldman_sachs
+    canonical: "Goldman Sachs"
+    prefixes: ["GOLDMAN SACHS", "GOLDMAN"]
+
+  - id: rbc
+    canonical: "RBC"
+    prefixes: ["RBC", "ROYAL BANK OF CANADA"]
+
+  - id: sei
+    canonical: "SEI"
+    prefixes: ["SEI"]
+
+  - id: ubs
+    canonical: "UBS"
+    prefixes: ["UBS"]
+
+  - id: merrill
+    canonical: "Merrill Lynch"
+    prefixes: ["MERRILL"]
+
+  - id: us_bank
+    canonical: "U.S. Bank"
+    prefixes: ["US BANK", "USBANK", "US BANCORP"]
+
+  - id: folio
+    canonical: "Folio"
+    prefixes: ["FOLIO"]
+
+  - id: apex
+    canonical: "Apex Clearing"
+    prefixes: ["APEX CLEARING", "APEX FUND"]
+
+  - id: axos
+    canonical: "Axos Clearing"
+    prefixes: ["AXOS", "COR CLEARING", "LEGENT CLEARING"]
+
+  - id: etrade
+    canonical: "E*TRADE"
+    prefixes: ["ETRADE", "E TRADE"]
+
+  - id: vanguard
+    canonical: "Vanguard"
+    prefixes: ["VANGUARD"]
+
+  - id: comerica
+    canonical: "Comerica"
+    prefixes: ["COMERICA"]
+
+  - id: millennium_trust
+    canonical: "Millennium Trust"
+    prefixes: ["MILLENNIUM TRUST", "INSPIRA"]
+
+  - id: equity_trust
+    canonical: "Equity Trust"
+    prefixes: ["EQUITY TRUST", "MIDLAND TRUST"]
+
+  - id: matrix_trust
+    canonical: "Matrix Trust"
+    prefixes: ["MATRIX TRUST", "MG TRUST"]
+
+  - id: stifel
+    canonical: "Stifel"
+    prefixes: ["STIFEL"]
+
+  - id: oppenheimer
+    canonical: "Oppenheimer"
+    prefixes: ["OPPENHEIMER"]
+
+  - id: tiaa
+    canonical: "TIAA"
+    prefixes: ["TIAA"]
+
+  - id: citi
+    canonical: "Citi"
+    prefixes: ["CITIBANK", "CITIGROUP", "CITI "]
+
+  - id: altruist
+    canonical: "Altruist"
+    prefixes: ["ALTRUIST"]
+
+  - id: betterment
+    canonical: "Betterment"
+    prefixes: ["BETTERMENT"]
+
+  - id: hsbc
+    canonical: "HSBC"
+    prefixes: ["HSBC"]
+
+  - id: brown_brothers
+    canonical: "Brown Brothers Harriman"
+    prefixes: ["BROWN BROTHERS"]
+
+  - id: huntington
+    canonical: "Huntington"
+    prefixes: ["HUNTINGTON"]
+
+  - id: pnc
+    canonical: "PNC"
+    prefixes: ["PNC"]
+
+  # Added after the first normalisation pass surfaced them on the review list.
+  - id: assetmark
+    canonical: "AssetMark"
+    prefixes: ["ASSETMARK"]
+
+  - id: american_funds
+    canonical: "American Funds"
+    prefixes: ["AMERICAN FUNDS", "CAPITAL GROUP"]
+
+  - id: trade_pmr
+    canonical: "Trade-PMR"
+    prefixes: ["TRADE PMR", "TRADEPMR"]
+
+  - id: fifth_third
+    canonical: "Fifth Third"
+    prefixes: ["FIFTH THIRD"]
+
+  - id: mid_atlantic
+    canonical: "Mid Atlantic Trust"
+    prefixes: ["MID ATLANTIC"]
+
+  - id: hilltop
+    canonical: "Hilltop Securities"
+    prefixes: ["HILLTOP", "SOUTHWEST SECURITIES"]
+
+  - id: jefferies
+    canonical: "Jefferies"
+    prefixes: ["JEFFERIES"]
+
+  - id: cibc_mellon
+    canonical: "CIBC Mellon"
+    # Joint venture, distinct from BNY Mellon. Listed before bny_mellon would
+    # match nothing anyway, since neither prefix is a prefix of the other.
+    prefixes: ["CIBC"]
+
+  - id: reliance_trust
+    canonical: "Reliance Trust"
+    prefixes: ["RELIANCE TRUST"]
+
+  - id: bank_of_america
+    canonical: "Bank of America"
+    # Merrill is BofA-owned but is the adviser-facing brand and keeps its own
+    # entity, the same call made for Pershing and BNY.
+    prefixes: ["BANK OF AMERICA"]
+
+  - id: stonex
+    canonical: "StoneX"
+    prefixes: ["STONEX", "INTL FCSTONE"]
+
+  - id: nationwide
+    canonical: "Nationwide"
+    prefixes: ["NATIONWIDE"]
+
+  - id: trust_co_america
+    canonical: "Trust Company of America"
+    prefixes: ["TRUST COMPANY OF AMERICA"]
+
+
+# Dated custodian consolidations. A firm moving between the two sides of one of
+# these is re-papering nothing: it was moved by its custodian, not by choice, and
+# the change carries no buying signal. Trigger computation excludes transitions
+# matching a rule below, and the base rate excludes them too.
+#
+# This will happen again. Pershing, LPL and others consolidate books the same
+# way, so new rules are added here rather than in code.
+migrations:
+  - id: tda_to_schwab
+    label: "Schwab completes TD Ameritrade advisor custody transition"
+    from: td_ameritrade
+    to: schwab
+    # Conversion ran in waves across 2023 and into 2024. Window is deliberately
+    # generous at both ends: a false negative here costs one suppressed trigger,
+    # a false positive floods the queue and teaches the team to ignore it.
+    window_start: "2023-01-01"
+    window_end: "2024-12-31"

@@ -1,0 +1,205 @@
+# Source definitions for the Bellwether ingest layer.
+#
+# Every source declares the schema it is expected to present. The ingest asserts
+# that schema on every pull and fails the run if it has drifted. The SEC changes
+# column names and file layouts without notice, and the failure mode is silent:
+# a renamed column becomes a null field, scores shift, and nobody notices for
+# months. Assertions here are the guard against that.
+#
+# config_version is recorded against every derived value so any past score can be
+# recomputed exactly. Bump it whenever anything in this file changes meaning.
+
+config_version: 1
+
+http:
+  # EDGAR and the SEC require a declared User-Agent carrying a real contact.
+  # Overridden by BELLWETHER_CONTACT so a personal address never enters
+  # the repository. The SEC requires a real contact here.
+  user_agent: "Acumen Strategy Research contact@acumen-strategy.com"
+  # SEC published limit is roughly 10 requests per second. We stay under it.
+  max_requests_per_second: 8
+  timeout_seconds: 60
+  retries: 3
+  backoff_seconds: 5
+
+sources:
+
+  adv_feed:
+    label: "SEC investment adviser weekly compilation feed"
+    manifest_url: "https://reports.adviserinfo.sec.gov/reports/CompilationReports/CompilationReports.manifest.json"
+    base_url: "https://reports.adviserinfo.sec.gov/reports/CompilationReports/"
+    # The manifest exposes only the current file. There is no archive to backfill
+    # from, so anything we do not capture on the week it publishes is lost
+    # permanently. This is why snapshot capture runs before anything else.
+    retains_history_upstream: false
+    cadence: weekly
+    wanted:
+      - key: firm_sec
+        filename_prefix: "IA_FIRM_SEC_Feed_"
+        compression: gzip
+    # Structural assertions against the XML. Element paths are relative to <Firm>.
+    # A missing element or attribute here fails the run.
+    expected_structure:
+      root_element: "IAPDFirmSECReport"
+      record_element: "Firm"
+      required_paths:
+        - "Info"
+        - "MainAddr"
+        - "Rgstn"
+        - "Filing"
+        - "FormInfo/Part1A/Item1"
+        - "FormInfo/Part1A/Item5A"
+        - "FormInfo/Part1A/Item5B"
+        - "FormInfo/Part1A/Item5D"
+        - "FormInfo/Part1A/Item5F"
+        - "FormInfo/Part1A/Item5K"
+        - "FormInfo/Part1A/Item7B"
+        - "FormInfo/Part1A/Item11"
+      required_attributes:
+        Info: ["FirmCrdNb", "LegalNm"]
+        Rgstn: ["FirmType", "St"]
+        Filing: ["Dt"]
+        "FormInfo/Part1A/Item5F": ["Q5F2C"]
+        "FormInfo/Part1A/Item5K": ["Q5K3"]
+        "FormInfo/Part1A/Item7B": ["Q7B"]
+    row_count:
+      # Flag, do not fail, when the record count moves unexpectedly in either
+      # direction versus the previous snapshot of the same source.
+      warn_pct_change: 5.0
+      min_plausible: 15000
+
+  # State-registered advisers. An earlier config note claimed these fall below
+  # our AUM floor "by definition"; that was wrong and cost us most of a band.
+  # States register advisers up to $100M RAUM, our floor is $25M, and this feed
+  # carries about 5,100 firms in the 25-100M band versus roughly 760 SEC
+  # registrants there. Structure differs from the SEC feed: no Rgstn element
+  # (a StateRgstn/Rgltrs list instead), no SEC number, and Item 5F is present on
+  # only about two thirds of records, so it is not asserted.
+  adv_state_feed:
+    label: "State-registered investment adviser weekly compilation feed"
+    manifest_url: "https://reports.adviserinfo.sec.gov/reports/CompilationReports/CompilationReports.manifest.json"
+    base_url: "https://reports.adviserinfo.sec.gov/reports/CompilationReports/"
+    retains_history_upstream: false
+    cadence: weekly
+    wanted:
+      - key: firm_state
+        filename_prefix: "IA_FIRM_STATE_Feed_"
+        compression: gzip
+    expected_structure:
+      root_element: "IAPDFirmStateReport"
+      record_element: "Firm"
+      required_paths:
+        - "Info"
+        - "MainAddr"
+        - "Filing"
+        - "FormInfo/Part1A/Item1"
+        - "FormInfo/Part1A/Item5D"
+        - "FormInfo/Part1A/Item5K"
+        - "FormInfo/Part1A/Item7B"
+        - "FormInfo/Part1A/Item11"
+      required_attributes:
+        Info: ["FirmCrdNb", "LegalNm"]
+        Filing: ["Dt"]
+        "FormInfo/Part1A/Item5K": ["Q5K3"]
+        "FormInfo/Part1A/Item7B": ["Q7B"]
+    row_count:
+      warn_pct_change: 5.0
+      min_plausible: 15000
+
+  # Owners and executive officers with their real titles, from Schedule A of the
+  # FOIA archive. This is the only bulk source of who runs each firm and what
+  # their position is. Ends 2024-12-31 like the rest of the archive; officer
+  # rosters move slowly, and the as-of date is carried on every row.
+  schedule_a_b:
+    label: "Form ADV Schedule A/B, owners and executive officers with titles"
+    url: "https://www.sec.gov/files/adv-filing-data-20111105-20241231-part1.zip"
+    member: "IA_Schedule_A_B_20111105_20241231.csv"
+    range_fetch:
+      local_offset: 534585078
+      compressed_bytes: 72196383
+
+  # The Schedule D tables key on Filing ID, not CRD. Nothing in part 2 carries a
+  # CRD, so this crosswalk is a hard prerequisite for using any of it. It lives in
+  # part 1, which is 701 MB, but the member we need sits at a known offset and is
+  # range-fetched directly rather than pulling the whole archive.
+  adv_filing_crosswalk:
+    label: "Filing ID to CRD crosswalk (Form ADV Part 1A base table)"
+    url: "https://www.sec.gov/files/adv-filing-data-20111105-20241231-part1.zip"
+    member: "IA_ADV_Base_A_20111105_20241231.csv"
+    # Byte offset of the member's local header within the zip, and its compressed
+    # size, both read from the archive's central directory. Asserted on fetch: if
+    # the archive is rebuilt these move, and a wrong offset must fail rather than
+    # silently inflate garbage.
+    range_fetch:
+      local_offset: 85385152
+      compressed_bytes: 95465738
+    required_columns: ["FilingID", "1E1"]
+    columns:
+      filing_id: "FilingID"
+      crd: "1E1"          # Item 1.E(1), the CRD number
+
+  schedule_d_archive:
+    label: "SEC Form ADV historical bulk archive, Schedule D tables"
+    # Schedule D is absent from the weekly feed. It exists only in the pre-2025
+    # FOIA archive, which covers 2011-11-05 to 2024-12-31. Retained permanently:
+    # thirteen years of Schedule D history is the backtesting corpus for trigger
+    # definitions, not a one time bootstrap.
+    url: "https://www.sec.gov/files/adv-filing-data-20111105-20241231-part2.zip"
+    coverage_start: "2011-11-05"
+    coverage_end: "2024-12-31"
+    retain_permanently: true
+    # Only registered adviser (IA_) tables. ERA tables are excluded: every exempt
+    # reporting adviser reports a private fund, so including them destroys the
+    # signal rather than adding to it.
+    #
+    # Column names below are the SEC's own, transcribed from the archive headers.
+    # Note 5K3 spells the key "Filing ID" with a space while 7B1 spells it
+    # "FilingID" without one. That inconsistency is upstream, not ours.
+    tables:
+      - key: sched_d_5k3
+        member: "IA_Schedule_D_5K3_20111105_20241231.csv"
+        purpose: >
+          Custodians holding 10 percent or more of SMA assets. This is the Schwab
+          identification source, and it carries the amount held as well as the name.
+        required_columns: ["Filing ID", "5K(3)(a)", "5K(3)(b)", "5K(3)(g)"]
+        columns:
+          filing_id: "Filing ID"
+          custodian_legal_name: "5K(3)(a)"
+          custodian_business_name: "5K(3)(b)"
+          city: "5K(3)(c) City"
+          state: "5K(3)(c) State"
+          country: "5K(3)(c) Country"
+          is_related_person: "5K(3)(d)"
+          broker_dealer_sec_no: "5K(3)(e)"
+          adviser_sec_no: "5K(3)(f)"
+          assets_held: "5K(3)(g)"
+
+      - key: sched_d_7b1
+        member: "IA_Schedule_D_7B1_20111105_20241231.csv"
+        purpose: >
+          Private fund reporting, the primary alternatives signal for PHH. Fund type
+          and gross asset value are columns on this table, not separate tables as
+          originally assumed, so 7B1 alone carries what the scoring needs.
+        required_columns: ["FilingID", "Fund Name", "Fund ID", "Fund Type", "Gross Asset Value"]
+        columns:
+          filing_id: "FilingID"
+          fund_name: "Fund Name"
+          fund_id: "Fund ID"
+          fund_type: "Fund Type"
+          fund_type_other: "Fund Type Other"
+          gross_asset_value: "Gross Asset Value"
+          minimum_investment: "Minimum Investment"
+          country: "Country"
+          state: "State"
+          fund_of_funds: "Fund of Funds"
+
+    # Two tables in the original plan were mis-specified and are deliberately not
+    # ingested. Recorded here so the mistake is not repeated:
+    #   IA_Schedule_D_7B1A5  is Foreign Regulatory Authority, not gross asset value.
+    #   IA_Schedule_D_7B1A7  is related private funds, not fund type classification.
+    # Both real fields live on 7B1 itself.
+    not_ingested:
+      - member: "IA_Schedule_D_7B1A5_20111105_20241231.csv"
+        actual_contents: "Foreign Regulatory Authority"
+      - member: "IA_Schedule_D_7B1A7_20111105_20241231.csv"
+        actual_contents: "Related private funds (fund of funds holdings)"

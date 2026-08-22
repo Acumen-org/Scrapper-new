@@ -1,0 +1,116 @@
+# Deterministic brochure tag vocabulary. No model calls anywhere in the pipeline.
+#
+# Confidence is assembled from parts, stored separately so the UI can show why a
+# tag scored what it did (same rule as the firm scores):
+#   specificity  from the longest phrase matched: 3+ words 0.9, 2 words 0.7,
+#                single word or acronym 0.5 (word-boundary matched)
+#   hits         plus 0.02 per hit, capped at 5 hits
+#   section      plus 0.05 when the hit sits in Item 4 (Advisory Business) or
+#                Item 8 (Methods of Analysis) of Part 2A
+#   negation     multiplied by 0.6 while a negation-ambiguous hit is unreviewed.
+#                An unreviewed row NEVER makes a tag absent, only less confident.
+#
+# The verbatim supporting sentence is stored with every tag, capped at 25 words:
+# an SDR opening with the firm's own brochure language is the whole point.
+
+config_version: 1
+
+products:
+  covered_calls: acubooth
+  options_general: acubooth
+  concentrated_equity: acubooth
+  tax_management: acubooth
+  alternatives: phh
+  real_estate_direct: phh
+
+tags:
+  covered_calls:
+    phrases:
+      - "covered call"
+      - "covered calls"
+      - "buy-write"
+      - "buy write"
+      - "option overlay"
+      - "options overlay"
+      - "option writing"
+      - "writing covered calls"
+      - "premium income"
+      - "call writing"
+  options_general:
+    phrases:
+      - "option strategies"
+      - "options strategies"
+      - "use of options"
+      - "equity options"
+      - "option contracts"
+      - "protective put"
+  concentrated_equity:
+    phrases:
+      - "concentrated position"
+      - "concentrated positions"
+      - "concentrated equity"
+      - "concentrated stock"
+      - "low cost basis"
+      - "low-basis stock"
+      - "single stock risk"
+      - "single-stock concentration"
+      - "highly appreciated"
+  alternatives:
+    phrases:
+      - "alternative investments"
+      - "alternative investment"
+      - "private placements"
+      - "private placement"
+      - "private funds"
+      - "private equity"
+      - "hedge funds"
+      - "non-traded REIT"
+      - "non traded REIT"
+      - "interval fund"
+      - "private real estate"
+  real_estate_direct:
+    phrases:
+      - "direct real estate"
+      - "net lease"
+      - "1031 exchange"
+      - "1031 exchanges"
+      - "like-kind exchange"
+      - "like kind exchange"
+      - "Delaware statutory trust"
+      - "DST"
+      - "real estate investment"
+  tax_management:
+    phrases:
+      - "tax loss harvesting"
+      - "tax-loss harvesting"
+      - "tax aware"
+      - "tax-aware"
+      - "tax overlay"
+      - "tax managed"
+      - "tax-managed"
+      - "tax efficient investing"
+
+# Terms that, in the same sentence as a hit, make it negation-ambiguous. Those
+# sentences route to the review queue; the tag stays present at damped
+# confidence until a human keeps or rejects the negation.
+negation_terms:
+  - "do not"
+  - "does not"
+  - "will not"
+  - "not use"
+  - "not utilize"
+  - "not employ"
+  - "no longer"
+  - "never"
+  - "prohibit"
+  - "prohibited"
+  - "without the use"
+  - "avoid"
+  - "avoids"
+  - "not typically"
+  - "rarely"
+  - "except"
+
+section_bonus_items: [4, 8]
+snippet_max_words: 25
+max_pages: 80
