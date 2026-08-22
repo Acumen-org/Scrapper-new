@@ -113,6 +113,11 @@ generated only against the firm's own mail domain (from its brochure when
 possible), never against social or freemail domains, and a guess on an
 accept-all domain can never show as verified.
 
+Guessed addresses get a free local check: valid syntax, and whether the domain
+publishes a mail server (a DNS lookup done here, no account and no third party).
+That can prove an address is worthless; it never claims a mailbox exists, since
+only sending mail proves that. Nothing in Bellwether costs money to run.
+
 ## Reading the numbers honestly
 
 Hover any dotted-underline figure for its caveat. The two that matter most:

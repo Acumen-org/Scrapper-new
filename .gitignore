@@ -49,13 +49,3 @@ desktop.ini
 # --- logs ----------------------------------------------------------------
 *.log
 
-# --- superseded prototypes, kept on disk but never committed ---------------
-# The four original scripts this project grew out of. Excluded for three
-# reasons: they are fully replaced by prospect/ and scripts/, they depend on
-# pandas, bs4 and local CSVs that are not part of this system, and
-# "Mailwarm API.py" carries a live API key in a URL. A secret committed once
-# stays in git history forever, so it never gets committed at all.
-13F Form scraper.py
-ADV Form scraper.py
-Mailwarm API.py
-product_fit_scoring.py

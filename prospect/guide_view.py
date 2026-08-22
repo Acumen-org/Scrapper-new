@@ -291,16 +291,15 @@ for the rare day you want a pull immediately.</p>
 <section id="autopilot">
 <h2>Autopilot</h2>
 <p>Some work takes days rather than minutes: reading eight thousand brochures,
-extracting the contact details printed in them, refetching current filings for
-the flagged firms, verifying guessed emails one at a time. Those run as
+extracting the contact details printed in them, reading every firm's website
+for its team, refetching current filings for the flagged firms. Those run as
 background jobs on <a href="/health">Pipeline health</a>, each with a sentence
 on why it exists, a progress bar, and its own <strong>Start</strong> and
 <strong>Pause</strong>.</p>
 <p>Jobs run in small slices and check their state between each one, so pausing
 takes effect within seconds and never requires killing anything, and a job that
-finishes pauses itself. Email verification is the one job deliberately left
-paused: each check spends paid quota, and most firms already have a filed email
-from their brochure that needs no verifying.</p>
+finishes pauses itself. Nothing here costs money: every job talks only to the
+SEC, to advisers' own websites, or to a DNS resolver.</p>
 </section>
 
 <section id="numbers">

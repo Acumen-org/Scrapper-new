@@ -8,9 +8,14 @@ worker process at a time (pid file); starting any job from the UI launches it.
   firm_refresh  fetch current ADV Part 1 PDFs for the flagged firms (Q5K3 or
                 Q7B yes) and extract current custodian names, refreshing data
                 whose bulk source ends 2024-12-31
-  email_verify  check queued candidate emails, one per ~10s, matching the pace
-                the team already used by hand
-  cusip_verify  re-verify the target security map when older than 90 days
+  contact_extract  read filed emails and phones off cached brochure pages
+  web_enrich       read each firm's own website for people, titles and contacts
+  email_verify     syntax and mail-domain checks on guessed addresses, locally
+                   via DNS: no account, no key, no cost
+  cusip_verify     re-verify the target security map when older than 90 days
+
+Nothing here talks to a paid service. Every job reaches only the SEC, an
+adviser's own website, or a DNS resolver.
 
     python -m scripts.autopilot
 """
@@ -28,10 +33,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prospect import config, db, net, procs  # noqa: E402
+from prospect import config, db, mailcheck, net, procs  # noqa: E402
 
 PID_FILE = config.DATA_DIR / "autopilot.pid"
-PDF_DIR = config.DATA_DIR / "adv_pdfs"
 
 REFRESH_SCHEMA = """
 CREATE TABLE IF NOT EXISTS firm_refresh (
@@ -109,8 +113,10 @@ def job_firm_refresh(conn, cfg, fetch) -> bool:
                  message=f"complete: {done:,} of {total:,}")
         return False
 
+    # The PDF is parsed in memory and never opened again: the custodian names
+    # are what we wanted and they go straight into firm_refresh. Writing each
+    # one to disk built up megabytes that nothing ever read.
     import pdfplumber
-    PDF_DIR.mkdir(parents=True, exist_ok=True)
     for row in todo:
         crd = row["crd"]
         try:
@@ -124,7 +130,6 @@ def job_firm_refresh(conn, cfg, fetch) -> bool:
                          (crd, now(), None, None, "fetch_failed"))
             conn.commit()
             continue
-        (PDF_DIR / f"{crd}.pdf").write_bytes(pdf)
         try:
             with pdfplumber.open(io.BytesIO(pdf)) as doc:
                 text = "\n".join((p.extract_text() or "") for p in doc.pages)
@@ -191,43 +196,62 @@ def job_web_enrich(conn, cfg) -> bool:
     return True
 
 
+DONE_STATES = ("bad_syntax", "no_mail_server", "domain_accepts_mail")
+
+
 def job_email_verify(conn, cfg) -> bool:
-    """One queued candidate per slice, at the hand-dialed pace (10s)."""
-    row = conn.execute("SELECT * FROM contact_email WHERE status='queued'"
-                       " ORDER BY id LIMIT 1").fetchone()
+    """Syntax and mail-domain checks on queued candidates, locally and free.
+
+    This used to POST each address to an undocumented mailwarm.com endpoint. It
+    returned the same verdict for a real address and a fabricated one at the
+    same firm, so it distinguished nothing while relying on someone else's
+    service. Now every check is a syntax test and a DNS MX lookup done here: no
+    account, no key, no quota, and fast enough to do a batch per slice instead
+    of one address every ten seconds.
+    """
     pending = conn.execute("SELECT COUNT(*) n FROM contact_email"
                            " WHERE status='queued'").fetchone()["n"]
-    checked = conn.execute("SELECT COUNT(*) n FROM contact_email"
-                           " WHERE status IN ('valid','invalid')").fetchone()["n"]
+    checked = conn.execute(
+        "SELECT COUNT(*) n FROM contact_email WHERE status IN"
+        " ('bad_syntax','no_mail_server','domain_accepts_mail')").fetchone()["n"]
     set_task(conn, "email_verify", progress=checked, total=checked + pending,
              message=f"{pending:,} queued, {checked:,} checked")
-    if row is None:
+    if not pending:
         set_task(conn, "email_verify", desired_state="paused",
                  message=f"queue empty; {checked:,} checked")
         return False
-    import requests
-    try:
-        resp = requests.post("https://www.mailwarm.com/api/email-checker",
-                             json={"email": row["email"]}, timeout=45,
-                             headers={"content-type": "application/json",
-                                      "User-Agent": "Mozilla/5.0"})
-        data = resp.json() if resp.status_code == 200 else {}
-        verdict = str(data.get("result") or data.get("status") or "").lower()
-        # Catch-all domains accept every RCPT, so "deliverable" there proves
-        # nothing: that is how a guessed @linkedin.com address once came back
-        # valid. Anything hedged stays unverifiable rather than valid.
-        if any(w in verdict for w in ("catch", "accept", "unknown", "risky")):
-            status = "unverifiable"
-        elif "valid" in verdict or "deliverable" in verdict:
-            status = "valid"
+
+    rows = conn.execute("SELECT id, email FROM contact_email"
+                        " WHERE status='queued' ORDER BY id LIMIT 40").fetchall()
+    # One MX answer per domain: candidates come in threes per person and whole
+    # teams share a domain, so caching turns hundreds of lookups into a handful.
+    seen: dict[str, tuple[str, str]] = {}
+    for r in rows:
+        dom = (r["email"] or "").rsplit("@", 1)[-1].lower()
+        if dom in seen:
+            status, _ = seen[dom]
+            if not mailcheck.valid_syntax(r["email"]):
+                status = "bad_syntax"
         else:
-            status = "invalid" if verdict else "error"
-    except Exception:
-        status = "error"
-    conn.execute("UPDATE contact_email SET status=?, checked_at=? WHERE id=?",
-                 (status, now(), row["id"]))
+            status, why = mailcheck.check(r["email"])
+            if status != "unknown":       # never cache a resolver failure
+                seen[dom] = (status, why)
+        # 'unknown' means DNS was unreachable, so it stays queued for retry
+        # rather than being recorded as a finding.
+        if status == "unknown":
+            continue
+        conn.execute("UPDATE contact_email SET status=?, checked_at=? WHERE id=?",
+                     (status, now(), r["id"]))
     conn.commit()
-    time.sleep(10)
+    # Re-read after the batch: the counts above were taken before any work, so
+    # leaving them would show a progress bar one slice behind reality.
+    left = conn.execute("SELECT COUNT(*) n FROM contact_email"
+                        " WHERE status='queued'").fetchone()["n"]
+    done = conn.execute(
+        "SELECT COUNT(*) n FROM contact_email WHERE status IN"
+        " ('bad_syntax','no_mail_server','domain_accepts_mail')").fetchone()["n"]
+    set_task(conn, "email_verify", progress=done, total=done + left,
+             message=f"{left:,} queued, {done:,} checked")
     return True
 
 

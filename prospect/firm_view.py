@@ -497,12 +497,16 @@ def firm_detail(crd: str):
         crows = orows + crows
         erows = ""
         if emails:
-            chipfor = {"valid": "lead", "invalid": "dis", "queued": "partial",
-                       "candidate": "", "unverifiable": "partial", "error": "dis"}
+            chipfor = {"domain_accepts_mail": "lead", "no_mail_server": "dis",
+                       "bad_syntax": "dis", "queued": "partial",
+                       "candidate": "", "unknown": "partial"}
+            label = {"domain_accepts_mail": "domain ok", "no_mail_server": "dead domain",
+                     "bad_syntax": "malformed", "queued": "queued",
+                     "candidate": "guess", "unknown": "unchecked"}
             erows = "<div style='margin-top:10px'>" + "".join(
                 f'<div style="display:flex;gap:8px;align-items:center;padding:3px 0;'
                 f'font-size:12.5px"><span class="chip {chipfor.get(e["status"], "")}">'
-                f'{esc(e["status"])}</span> {esc(e["email"])}'
+                f'{esc(label.get(e["status"], e["status"]))}</span> {esc(e["email"])}'
                 f'<span class="meta">{esc(e["name"] or "")}</span></div>'
                 for e in emails) + "</div>"
         people_html = (
@@ -515,8 +519,9 @@ def firm_detail(crd: str):
             f'Queue for verification</button></form>'
             f'<p class="meta" style="margin-top:6px">Pattern guesses against the '
             f'firm&rsquo;s own mail domain (from its brochure when possible). '
-            f'Guesses are never shown as real; only rows marked valid have been '
-            f'individually verified, and accept-all domains can never verify.</p>')
+            f'A guess is never shown as real. <b>domain ok</b> means the domain '
+            f'can receive mail, not that this mailbox exists; <b>dead domain</b> '
+            f'means the address cannot work and should be ignored.</p>')
     else:
         people_html = ('<p class="whyempty">Nobody on file yet: no Schedule A '
                        'roster in the archive (state-registered firms are not in '

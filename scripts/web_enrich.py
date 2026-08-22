@@ -327,7 +327,30 @@ def enrich_one(conn, crd: str, website: str, ua: str, now: str) -> tuple[str, in
             people += p2
             emails += e2
         conn.commit()
+    drop_barren_cache(conn, crd)
     return "ok", pages, people, emails
+
+
+def drop_barren_cache(conn, crd: str) -> None:
+    """Delete cached HTML for this firm's pages that yielded no contact.
+
+    The web_page row stays, so the crawler still knows never to refetch the
+    page; only the bytes go. Roughly half of all pages fetched produce nothing,
+    and keeping their HTML would have grown to about a gigabyte of files that
+    answer no question anybody asks."""
+    rows = conn.execute("""
+        SELECT url, cache_path FROM web_page
+        WHERE crd=? AND cache_path IS NOT NULL
+          AND url NOT IN (SELECT source_url FROM web_contact WHERE crd=?)""",
+                        (crd, crd)).fetchall()
+    for r in rows:
+        try:
+            Path(r["cache_path"]).unlink()
+        except OSError:
+            continue
+        conn.execute("UPDATE web_page SET cache_path=NULL WHERE url=?", (r["url"],))
+    if rows:
+        conn.commit()
 
 
 def main() -> int:

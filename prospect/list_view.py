@@ -339,13 +339,13 @@ def health_view(msg: str = Query("")):
                                "names. Why: the bulk custodian source ends "
                                "December 2024, and the Schwab signal should not "
                                "rest on stale data."),
-              "email_verify": ("Email verification",
-                               "Checks guessed email addresses one at a time, "
-                               "about one per 10 seconds. Why it is paused by "
-                               "default: each check spends paid quota, and "
-                               "guesses are useful mainly for firms without a "
-                               "filed email. Start it only when a call list "
-                               "needs it."),
+              "email_verify": ("Email domain checks",
+                               "Tests guessed addresses for valid syntax and "
+                               "whether their domain publishes a mail server, "
+                               "using a local DNS lookup. Free, instant, no "
+                               "account and no third party. It tells you an "
+                               "address is worthless, never that a mailbox "
+                               "exists: only sending mail proves that."),
               "cusip_verify": ("CUSIP re-verify",
                                "Re-observes the 20 target security identifiers "
                                "against real filings when the map is over 90 "
