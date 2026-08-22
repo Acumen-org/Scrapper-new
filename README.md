@@ -6,8 +6,9 @@ calling before anyone else has noticed.
 
 Bellwether reads the adviser universe from SEC sources, scores it against two
 products, and produces a queue that three people work each morning. It is not a
-report. Everything is local: one Python process, one SQLite file
-(`prospect.db`), no cloud, no login, no account.
+report. One Python process, one SQLite file (`prospect.db`), no third-party
+enrichment service, and no data leaving the machine except requests to the SEC
+and to advisers' own public websites.
 
 ## Signing in
 
@@ -46,9 +47,10 @@ down is a thing to remember, and it does not belong in a tool people use daily.
 - **Trigger inbox**: the 9am screen. Everything that changed, highest priority
   first, one actionable line per row. Done / Snooze / Dismiss on each. Negative
   priority in dark red is a disqualifier (firm left Schwab), not a lead.
-- **Firm list**: all 8,287 in-band advisers. Filter by state, AUM band, real
+- **Firm list**: all 13,720 in-band advisers, SEC and state registered. Filter
+  by state, AUM band, real
   estate segment, open triggers, status, owner. Export the filtered view as CSV
-  (shaped for manual Twenty import, includes status and owner).
+  (shaped for manual Twenty import; carries phone, filed email, status, owner).
 - **Working lists**: the ranked outputs. Tier A top 100 (PHH), the intersection
   (both gates cleared, Alisa's list), tier C top 100 (AcuBooth), and competitor
   sponsors with Form D raise progress.
@@ -58,8 +60,9 @@ down is a thing to remember, and it does not belong in a tool people use daily.
 - **Pipeline health**: last run of every stage, snapshot inventory, row deltas,
   parse failure rates, coverage, CUSIP map age. The **Run weekly cycle now**
   button runs the whole pull-diff-rescore chain in the background, and the
-  **Autopilot** panel runs long jobs (brochures, flagged-firm refresh, email
-  verification) with Start and Pause buttons and live progress bars.
+  **Autopilot** panel runs long jobs (brochure coverage, contact extraction,
+  website enrichment, flagged-firm refresh, email verification, CUSIP re-verify),
+  each with why it exists, Start and Pause, and a live progress bar.
 - **How to use**: the operating manual as one continuous read, top to bottom,
   with a contents list on the right that tracks where you are. Every screen it
   mentions is a live link.
@@ -74,9 +77,10 @@ down is a thing to remember, and it does not belong in a tool people use daily.
 - **Saved views**: save any inbox filter combination; it appears in the sidebar.
 - **Geography** (Working lists tab): state, then city, then a dinner-ready list
   of qualified firms with CSV export.
-- Every firm page shows its **AUM trajectory** back to 2011, its **People**
-  (registered reps from the SEC individual feed), and can generate and queue
-  **email candidates** for background verification.
+- Every firm page shows its **AUM trajectory** back to 2011 with real axes, and
+  **People**: owners and executive officers with their filed titles from
+  Schedule A, then registered reps from the individual feed, then anyone found
+  on the firm's own website.
 
 ## Managing firms
 
