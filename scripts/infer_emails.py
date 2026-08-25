@@ -38,79 +38,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prospect import config, db, mailcheck, runlog  # noqa: E402
-from prospect.mailcheck import BAD_EMAIL_DOMAINS  # noqa: E402
+from prospect import config, db, emailguess, mailcheck, runlog  # noqa: E402
 
-PATTERNS = {
-    "first.last": lambda f, l: f"{f}.{l}",
-    "flast":      lambda f, l: f"{f[0]}{l}",
-    "first":      lambda f, l: f,
-    "firstlast":  lambda f, l: f"{f}{l}",
-    "first_l":    lambda f, l: f"{f}{l[0]}",
-    "f.last":     lambda f, l: f"{f[0]}.{l}",
-    "last":       lambda f, l: l,
-}
-
-
-def name_parts(full: str) -> tuple[str, str] | None:
-    parts = [x for x in re.sub(r"[^a-z ]", "", (full or "").lower()).split() if x]
-    if len(parts) < 2:
-        return None
-    return parts[0], parts[-1]
-
-
-def detect_pattern(first: str, last: str, local: str) -> str | None:
-    for pat, fn in PATTERNS.items():
-        if fn(first, last) == local:
-            return pat
-    return None
-
-
-def pretty(filed: str) -> str:
-    parts = [p.strip() for p in filed.split(",") if p.strip()]
-    return (" ".join(parts[1:] + parts[:1]) if len(parts) >= 2 else filed).title()
-
-
-def observed_pairs(conn):
-    """(crd, domain, pattern) for every real person-email we hold, plus the
-    global pattern popularity for the fallback tier."""
-    firm_pattern: dict[str, tuple[str, str]] = {}
-    popularity: Counter = Counter()
-    rows = list(conn.execute(
-        "SELECT crd, person, email FROM web_contact"
-        " WHERE person IS NOT NULL AND email IS NOT NULL"))
-    rows += [(r["crd"], r["name"], r["value"]) for r in conn.execute(
-        """SELECT f.crd, s.name, f.value FROM firm_contact_info f
-           JOIN schedule_a s ON s.crd = f.crd AND s.is_individual = 1
-           WHERE f.kind='email'""")]
-    for crd, person, email in rows:
-        np = name_parts(pretty(person) if "," in person else person)
-        if not np:
-            continue
-        local, _, dom = email.lower().partition("@")
-        if not dom or any(b in dom for b in BAD_EMAIL_DOMAINS):
-            continue
-        pat = detect_pattern(np[0], np[1], local)
-        if pat:
-            firm_pattern.setdefault(crd, (dom, pat))
-            popularity[pat] += 1
-    return firm_pattern, popularity
-
-
-def firm_domain(conn, crd: str) -> str | None:
-    r = conn.execute("""SELECT value FROM firm_contact_info
-        WHERE crd=? AND kind='email' ORDER BY id LIMIT 1""", (crd,)).fetchone()
-    if r:
-        dom = r["value"].rsplit("@", 1)[-1].lower()
-        if not any(b in dom for b in BAD_EMAIL_DOMAINS):
-            return dom
-    r = conn.execute("SELECT website FROM firm_current WHERE crd=?", (crd,)).fetchone()
-    if r and r["website"]:
-        m = re.search(r"(?:https?://)?(?:www\.)?([a-z0-9.-]+\.[a-z]{2,})",
-                      r["website"].lower())
-        if m and not any(b in m.group(1) for b in BAD_EMAIL_DOMAINS):
-            return m.group(1)
-    return None
+# One best guess per person, using the pattern the firm actually uses. The
+# generation logic is shared with the firm-page button (prospect.emailguess) so
+# the two never diverge.
+name_parts = emailguess.name_parts
+pretty = emailguess.pretty
 
 
 def targets(conn, limit: int, all_band: bool):
@@ -120,7 +54,7 @@ def targets(conn, limit: int, all_band: bool):
                OR f.crd IN (SELECT crd FROM tier_c_score WHERE rank<=1000)
                OR f.crd IN (SELECT crd FROM firm_overlay WHERE phh_13f=1))"""
     return conn.execute(f"""
-        SELECT s.crd, s.name FROM schedule_a s
+        SELECT s.crd, s.name, s.title FROM schedule_a s
         JOIN firm_current f ON f.crd = s.crd
         WHERE s.is_individual = 1
           AND f.is_era = 0 AND f.raum >= 25e6 AND f.raum < 500e6{scope}
@@ -138,11 +72,9 @@ def main() -> int:
     cfg = config.load()
     conn = db.connect()
     with runlog.Run(conn, "infer_emails", "infer", cfg.stamp) as run:
-        firm_pat, popularity = observed_pairs(conn)
-        fallback = popularity.most_common(1)[0][0] if popularity else "first.last"
+        firm_pat, fallback = emailguess.observed(conn)
         print(f"firms with an observed pattern: {len(firm_pat):,}; "
-              f"pattern popularity: {dict(popularity.most_common(5))}; "
-              f"fallback: {fallback}")
+              f"fallback pattern: {fallback}")
 
         have = {(r["crd"], (r["name"] or "").lower()) for r in conn.execute(
             "SELECT crd, name FROM contact_email")}
@@ -152,35 +84,35 @@ def main() -> int:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         mx_cache: dict[str, bool | None] = {}
         made = skipped = 0
+        # One address per person: best_email picks a single pattern, so a person
+        # never appears three times the way the old firm-page button produced.
+        dom_by_crd: dict[str, str | None] = {}
         for t in targets(conn, args.limit, args.all_band):
             person = pretty(t["name"])
             key = (t["crd"], person.lower())
             if key in have or key in real:
                 skipped += 1
                 continue
-            np = name_parts(person)
-            if not np:
+            if t["crd"] not in dom_by_crd:
+                dom_by_crd[t["crd"]] = emailguess.domain_for(conn, t["crd"])
+            guess = emailguess.best_email(person, t["crd"], firm_pat, fallback,
+                                          dom_by_crd[t["crd"]])
+            if not guess:
                 continue
-            if t["crd"] in firm_pat:
-                dom, pat = firm_pat[t["crd"]]
-                label = f"{pat} (observed at firm)"
-            else:
-                dom = firm_domain(conn, t["crd"])
-                pat, label = fallback, f"{fallback} (common pattern)"
-            if not dom:
-                continue
-            addr = f"{PATTERNS[pat](np[0], np[1])}@{dom}"
+            addr, label = guess
             if not mailcheck.valid_syntax(addr):
                 continue
+            have.add(key)         # never emit the same person twice this run
+            dom = addr.rsplit("@", 1)[-1]
             if dom not in mx_cache:
                 mx_cache[dom] = mailcheck.has_mx(dom)
             mx = mx_cache[dom]
             status = ("domain_accepts_mail" if mx else
                       "no_mail_server" if mx is False else "queued")
             conn.execute("""INSERT OR IGNORE INTO contact_email
-                (crd, name, email, pattern, status, checked_at)
-                VALUES (?,?,?,?,?,?)""",
-                         (t["crd"], person, addr, label, status, now))
+                (crd, name, title, email, pattern, status, checked_at)
+                VALUES (?,?,?,?,?,?,?)""",
+                         (t["crd"], person, t["title"], addr, label, status, now))
             made += 1
             if made % 500 == 0:
                 conn.commit()

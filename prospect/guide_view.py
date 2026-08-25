@@ -254,16 +254,22 @@ with a guess.</p>
 <li><strong>Their website</strong> and <strong>filed at firm</strong> are real:
 scraped from the firm's own team page, or printed in its brochure. A firm inbox
 like info@ is labelled as such, never pinned to a person's name.</li>
-<li><strong>Inferred</strong> is a guess. Bellwether learns the pattern each firm
-uses for its own people (if jsmith@ is real, the CEO follows the same shape) and
-applies it to everyone. The label says which pattern.</li>
+<li><strong>Inferred</strong> is a guess, one per person. Bellwether learns the
+pattern each firm uses for its own people (if jsmith@ is real, the CEO follows
+the same shape) and applies that single most likely pattern, not a menu of three
+that mostly bounce. The label says which pattern and whether it came from the
+firm's own observed addresses or the common fallback.</li>
 </ul>
 <p>Every address carries a domain check: <strong>domain ok</strong> means the
 domain can receive mail, <strong>dead domain</strong> means it cannot and you
 should skip it. None of it proves a specific mailbox exists; a bounce is the real
-test. Filter by product or to real-only, then <strong>Export Excel</strong> to
-get exactly what is on screen as an .xlsx. Phone numbers and CRDs stay as text,
-so nothing gets mangled into a number.</p>
+test. There is no way to confirm a specific mailbox for free (the paid tools do
+it by connecting to mail servers on a port cloud hosts block), so a clean send
+and a watch for bounces is the method.</p>
+<p>Filter by product or to real-only, then <strong>Export Excel</strong>. The
+sheet is one row per person, everyone at a firm grouped together, with their
+title, email, status, and phone. Phone numbers and CRDs stay as text so Excel
+does not mangle them.</p>
 </section>
 
 <section id="dinner">

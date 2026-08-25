@@ -32,31 +32,29 @@ WORKLIST = """
 WITH people AS (
     -- real person-to-email pairs scraped from the firm's own website: an actual
     -- named person with their actual address
-    SELECT w.crd, w.person, w.title AS role, w.email,
+    SELECT w.crd, w.person, w.title AS role, w.email, w.phone AS person_phone,
            'their website' AS source, 'domain_accepts_mail' AS status, 3 AS trust
     FROM web_contact w WHERE w.person IS NOT NULL AND w.email IS NOT NULL
     UNION ALL
-    -- inferred per-person guesses (pattern column records HOW; status the check)
-    SELECT ce.crd, ce.name AS person, sa.title AS role, ce.email,
+    -- inferred per-person guesses. Title was stored at generation, so no fragile
+    -- name matching. pattern records HOW; status is the domain check.
+    SELECT ce.crd, ce.name AS person, ce.title AS role, ce.email, NULL AS person_phone,
            'inferred: ' || ce.pattern AS source, ce.status, 1 AS trust
     FROM contact_email ce
-    LEFT JOIN schedule_a sa ON sa.crd=ce.crd AND sa.is_individual=1
-       AND UPPER(sa.name) LIKE '%' || UPPER(substr(ce.name, instr(ce.name,' ')+1)) || '%'
     UNION ALL
     -- firm-level inbox from a brochure. Real, but NOT a person's address, so it
     -- is labelled a firm inbox rather than pinned to a random officer's name.
     SELECT f.crd, NULL AS person, 'firm inbox' AS role, f.value AS email,
-           'filed at firm' AS source, 'domain_accepts_mail' AS status, 2 AS trust
+           NULL AS person_phone, 'filed at firm' AS source,
+           'domain_accepts_mail' AS status, 2 AS trust
     FROM firm_contact_info f WHERE f.kind='email'
 )
 SELECT p.crd, fc.legal_name, fc.state, fc.phone AS firm_phone,
-       p.person, p.role, p.email, p.source, p.status, MAX(p.trust) AS trust,
+       p.person, MAX(p.role) AS role, p.email, p.source, p.status,
+       MAX(p.trust) AS trust, MAX(p.person_phone) AS person_phone,
        (ta.crd IS NOT NULL) AS is_tier_a,
        (tc.crd IS NOT NULL) AS is_tier_c,
-       (ov.crd IS NOT NULL) AS is_intersection,
-       (SELECT wc.phone FROM web_contact wc
-        WHERE wc.crd=p.crd AND wc.person=p.person AND wc.phone IS NOT NULL
-        LIMIT 1) AS person_phone
+       (ov.crd IS NOT NULL) AS is_intersection
 FROM people p
 JOIN firm_current fc ON fc.crd=p.crd
 LEFT JOIN tier_a_rank ta ON ta.crd=p.crd AND ta.in_working_list=1
@@ -64,7 +62,9 @@ LEFT JOIN (SELECT crd FROM tier_c_score WHERE rank<=100) tc ON tc.crd=p.crd
 LEFT JOIN firm_overlay ov ON ov.crd=p.crd AND ov.phh_13f=1
 WHERE fc.is_era=0 AND fc.raum>=25e6 AND fc.raum<500e6 {extra}
 GROUP BY p.crd, p.email, COALESCE(p.person,'')
-ORDER BY MAX(p.trust) DESC, is_tier_a DESC, fc.legal_name
+-- Firm first so every person at a firm is consecutive, then real addresses
+-- above guesses, then a person's own address above the shared inbox.
+ORDER BY fc.legal_name, p.crd, MAX(p.trust) DESC, p.person
 """
 
 

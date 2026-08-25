@@ -506,21 +506,23 @@ def firm_detail(crd: str):
             erows = "<div style='margin-top:10px'>" + "".join(
                 f'<div style="display:flex;gap:8px;align-items:center;padding:3px 0;'
                 f'font-size:12.5px"><span class="chip {chipfor.get(e["status"], "")}">'
-                f'{esc(label.get(e["status"], e["status"]))}</span> {esc(e["email"])}'
-                f'<span class="meta">{esc(e["name"] or "")}</span></div>'
+                f'{esc(label.get(e["status"], e["status"]))}</span> '
+                f'<a href="mailto:{esc(e["email"])}">{esc(e["email"])}</a>'
+                f'<span class="meta">{esc(e["name"] or "")}'
+                f'{" &middot; " + esc(e["title"]) if e["title"] else ""}</span></div>'
                 for e in emails) + "</div>"
         people_html = (
             f'<table><tbody>{crows}</tbody></table>{erows}'
             f'<form method="post" action="/firm/{esc(crd)}/emails" style="margin-top:10px;'
             f'display:flex;gap:8px">'
-            f'<button type="submit" title="Builds pattern guesses for officers and '
-            f'reps and checks them instantly with a local DNS lookup">'
+            f'<button type="submit" title="Builds one best-guess email per officer '
+            f'and rep and checks the domain with a local DNS lookup">'
             f'Guess and check emails</button></form>'
-            f'<p class="meta" style="margin-top:6px">Pattern guesses against the '
-            f'firm&rsquo;s own mail domain (from its brochure when possible). '
-            f'A guess is never shown as real. <b>domain ok</b> means the domain '
-            f'can receive mail, not that this mailbox exists; <b>dead domain</b> '
-            f'means the address cannot work and should be ignored.</p>')
+            f'<p class="meta" style="margin-top:6px">One best-guess address per '
+            f'person, using the pattern the firm uses for its own people, against '
+            f'its own mail domain. <b>domain ok</b> means the domain can receive '
+            f'mail, not that this exact mailbox exists; treat a bounce as the real '
+            f'test. <b>dead domain</b> means the address cannot work.</p>')
     else:
         people_html = ('<p class="whyempty">Nobody on file yet: no Schedule A '
                        'roster in the archive (state-registered firms are not in '
@@ -704,54 +706,52 @@ def email_domain_for(c, crd: str) -> tuple[str | None, str]:
 
 @router.post("/firm/{crd}/emails")
 def gen_emails(crd: str, queue: str = Form("")):
-    """Pattern-guess emails for the firm's decision makers and reps against the
-    firm's own mail domain, and check them on the spot.
+    """One best-guess email per decision maker and rep, checked on the spot.
 
-    The check is a local DNS lookup taking milliseconds, so there is nothing to
-    queue and nothing to wait for: the verdict is on the page when it reloads.
-    The old flow inserted rows as 'queued' and depended on a background job the
-    user also had to start by hand, which read as verification simply not
-    working. It effectively was not.
+    One address per person, using the pattern the firm actually uses (see
+    prospect.emailguess), not three patterns that mostly bounce. The check is a
+    local DNS lookup taking milliseconds, so the verdict is on the page when it
+    reloads.
     """
-    import re as _re
-
-    from prospect import mailcheck
+    from prospect import emailguess, mailcheck
     c = conn()
-    domain, _why = email_domain_for(c, crd)
-    if domain:
-        # Decision makers first (Schedule A officers), then reps. Officers are
-        # who a mass email should actually reach.
-        names = []
-        for r in c.execute("""SELECT name FROM schedule_a
-                              WHERE crd=? AND is_individual=1 LIMIT 8""", (crd,)):
-            names.append(_pretty_name(r["name"]))
-        for r in c.execute("SELECT name FROM contact WHERE crd=? LIMIT 6", (crd,)):
-            names.append(r["name"])
-        # One DNS answer covers every candidate at this firm.
-        mx = mailcheck.has_mx(domain)
-        seen = set()
-        for full in names:
-            parts = [x for x in _re.sub(r"[^a-z ]", "", full.lower()).split() if x]
-            if len(parts) < 2 or (parts[0], parts[-1]) in seen:
-                continue
-            seen.add((parts[0], parts[-1]))
-            first, last = parts[0], parts[-1]
-            for pat, addr in (("first.last", f"{first}.{last}@{domain}"),
-                              ("flast", f"{first[0]}{last}@{domain}"),
-                              ("first", f"{first}@{domain}")):
-                if not mailcheck.valid_syntax(addr):
-                    status = "bad_syntax"
-                elif mx is True:
-                    status = "domain_accepts_mail"
-                elif mx is False:
-                    status = "no_mail_server"
-                else:
-                    status = "queued"    # DNS unreachable; the job retries later
-                c.execute("INSERT OR IGNORE INTO contact_email"
-                          " (crd,name,email,pattern,status,checked_at)"
-                          " VALUES (?,?,?,?,?,?)",
-                          (crd, full, addr, pat, status,
-                           datetime.now(timezone.utc).isoformat(timespec="seconds")))
+    firm_pat, fallback = emailguess.observed(c)
+    domain = emailguess.domain_for(c, crd)
+    # Regenerate cleanly: drop this firm's prior guesses so re-clicking never
+    # stacks duplicates or leaves stale three-pattern rows behind.
+    c.execute("DELETE FROM contact_email WHERE crd=? AND pattern IS NOT NULL"
+              " AND pattern != 'filed'", (crd,))
+
+    people = []           # (display name, title) officers first, then reps
+    for r in c.execute("""SELECT name, title FROM schedule_a
+                          WHERE crd=? AND is_individual=1 LIMIT 12""", (crd,)):
+        people.append((emailguess.pretty(r["name"]), r["title"]))
+    for r in c.execute("SELECT name, title FROM contact WHERE crd=? LIMIT 8", (crd,)):
+        people.append((r["name"], r["title"]))
+
+    mx = mailcheck.has_mx(domain) if domain else False
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    seen = set()
+    for full, title in people:
+        np = emailguess.name_parts(full)
+        if not np or np in seen:
+            continue
+        seen.add(np)
+        guess = emailguess.best_email(full, crd, firm_pat, fallback, domain)
+        if not guess:
+            continue
+        addr, label = guess
+        if not mailcheck.valid_syntax(addr):
+            status = "bad_syntax"
+        elif mx is True:
+            status = "domain_accepts_mail"
+        elif mx is False:
+            status = "no_mail_server"
+        else:
+            status = "queued"
+        c.execute("INSERT OR IGNORE INTO contact_email"
+                  " (crd,name,title,email,pattern,status,checked_at)"
+                  " VALUES (?,?,?,?,?,?,?)", (crd, full, title, addr, label, status, now))
     c.commit()
     c.close()
     return RedirectResponse(f"/firm/{crd}", status_code=303)

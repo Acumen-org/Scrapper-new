@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS contact_email (
     id        INTEGER PRIMARY KEY,
     crd       TEXT NOT NULL,
     name      TEXT,
+    title     TEXT,                                -- filed role, for the export
     email     TEXT NOT NULL,
     pattern   TEXT,
     status    TEXT NOT NULL DEFAULT 'candidate',  -- candidate | queued | valid | invalid | error
@@ -187,6 +188,9 @@ def _init_once() -> None:
     db.init(c)
     db.init_firm(c)
     c.executescript(APP_TABLES)
+    # Columns added to app tables after they first shipped.
+    if "title" not in {r[1] for r in c.execute("PRAGMA table_info(contact_email)")}:
+        c.execute("ALTER TABLE contact_email ADD COLUMN title TEXT")
     c.commit()
 
     # In a container, pidfiles surviving on the mounted volume are lies: the
