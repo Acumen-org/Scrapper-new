@@ -109,6 +109,7 @@ SECTIONS = [
     ("inbox", "Reading the inbox"),
     ("who", "Choosing who to call"),
     ("call", "Preparing for a call"),
+    ("outreach", "Mass email and export"),
     ("dinner", "Planning a dinner"),
     ("review", "Clearing reviews"),
     ("weekly", "The weekly pull"),
@@ -241,6 +242,28 @@ point for the filing behind it. And the people are real registered
 representatives from the SEC individual feed. Pattern-guessed emails still
 exist as a fallback, but they are labelled as guesses and kept visually apart
 from anything filed.</p>
+</section>
+
+<section id="outreach">
+<h2>Mass email and export</h2>
+<p>The <a href="/outreach">Outreach</a> screen is one row per decision maker, not
+per firm: a person, their best email, and a phone, built for a mail merge. It
+draws from three places and labels every one, so a real address is never confused
+with a guess.</p>
+<ul>
+<li><strong>Their website</strong> and <strong>filed at firm</strong> are real:
+scraped from the firm's own team page, or printed in its brochure. A firm inbox
+like info@ is labelled as such, never pinned to a person's name.</li>
+<li><strong>Inferred</strong> is a guess. Bellwether learns the pattern each firm
+uses for its own people (if jsmith@ is real, the CEO follows the same shape) and
+applies it to everyone. The label says which pattern.</li>
+</ul>
+<p>Every address carries a domain check: <strong>domain ok</strong> means the
+domain can receive mail, <strong>dead domain</strong> means it cannot and you
+should skip it. None of it proves a specific mailbox exists; a bounce is the real
+test. Filter by product or to real-only, then <strong>Export Excel</strong> to
+get exactly what is on screen as an .xlsx. Phone numbers and CRDs stay as text,
+so nothing gets mangled into a number.</p>
 </section>
 
 <section id="dinner">

@@ -10,7 +10,7 @@ FROM python:3.11-slim
 # tini reaps zombies: the app spawns autopilot and weekly-cycle subprocesses,
 # and PID 1 in a container does not reap children by default.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini curl \
+ && apt-get install -y --no-install-recommends tini curl sqlite3 \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

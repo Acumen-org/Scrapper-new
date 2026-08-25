@@ -1,0 +1,28 @@
+# Keep the image to what actually runs on the server. Everything here is either
+# Windows-only, local-dev-only, or data that belongs on the mounted volume.
+
+# Windows launchers and the desktop-shortcut icon generator. The container is
+# started by its CMD, not by these.
+Bellwether.bat
+scripts/launch.vbs
+scripts/make_icon.py
+assets/
+
+# Data and secrets never belong in an image; they live on the volume at /data.
+data/
+prospect.db
+prospect.db-wal
+prospect.db-shm
+config/users.yml
+.env
+.env.*
+
+# Repo and docs the running app does not read.
+.git/
+.gitignore
+.gitattributes
+*.md
+__pycache__/
+*.pyc
+.venv/
+venv/

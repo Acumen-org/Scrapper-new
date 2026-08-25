@@ -40,6 +40,14 @@ APP_NAME = "Bellwether"
 # deployment except running it on your own machine over plain http.
 SECURE_COOKIES = os.environ.get("BELLWETHER_HTTPS", "").lower() in ("1", "true", "yes")
 
+# Managed mode: a supervisor (Docker with restart:unless-stopped) owns the
+# process lifecycle. Quit disappears from the UI, because killing the process
+# would just make Docker restart it, and pidfiles from a previous container are
+# always stale: PID namespaces start over at 1, so a recorded pid usually names
+# some OTHER live process in the new container. Trusting one silently disables
+# the scheduler and autopilot forever, which is the worst kind of failure.
+MANAGED = os.environ.get("BELLWETHER_MANAGED", "").lower() in ("1", "true", "yes")
+
 # The signed-in user, request scoped. A context variable rather than an argument
 # threaded through every view: nav() is called from fifteen places and none of
 # them care who is signed in beyond rendering the footer. Context variables
@@ -180,6 +188,24 @@ def _init_once() -> None:
     db.init_firm(c)
     c.executescript(APP_TABLES)
     c.commit()
+
+    # In a container, pidfiles surviving on the mounted volume are lies: the
+    # new PID namespace reuses low numbers, so a stale scheduler.pid routinely
+    # names a live but unrelated process, procs.is_alive says True, nobody
+    # claims the scheduler, and the weekly pull silently never runs again.
+    #
+    # Purged exactly once per container boot: the marker lives in /tmp, which
+    # is container-local and empty on every start, and O_EXCL makes the first
+    # worker the only purger. Without this, the second worker's purge would
+    # delete the first worker's fresh scheduler claim and both would schedule.
+    if MANAGED:
+        try:
+            os.close(os.open("/tmp/bellwether_boot_purge",
+                             os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            for name in ("server.pid", "scheduler.pid", "autopilot.pid"):
+                (config.DATA_DIR / name).unlink(missing_ok=True)
+        except FileExistsError:
+            pass
 
     # Record the supervisor PID from inside the app rather than trusting the
     # launcher to have done it. Quit needs a PID it can kill, and a stale file
@@ -540,13 +566,19 @@ document.addEventListener('input',function(e){
   .then(function(d){palItems=d;palSel=0;palRender();});
  },140);
 });
+function palEsc(s){var d=document.createElement('span');
+ d.textContent=String(s==null?'':s);return d.innerHTML;}
 function palRender(){
+ /* Every field is escaped before entering innerHTML. Firm names come from SEC
+    filings, which is still text somebody else typed, and a name containing
+    markup must render as text, never execute. */
  document.getElementById('palr').innerHTML=palItems.map(function(x,i){
-  return '<a href="/firm/'+x.crd+'" style="display:flex;justify-content:space-between;'
+  return '<a href="/firm/'+encodeURIComponent(x.crd)
+   +'" style="display:flex;justify-content:space-between;'
    +'gap:10px;padding:10px 16px;text-decoration:none;font-size:13.5px;'
    +(i==palSel?'background:var(--red-bg)':'')+'">'
-   +'<span>'+x.name+'</span><span style="color:var(--faint)">CRD '+x.crd
-   +' &middot; '+(x.state||'')+' &middot; '+x.raum+'</span></a>';}).join('');
+   +'<span>'+palEsc(x.name)+'</span><span style="color:var(--faint)">CRD '+palEsc(x.crd)
+   +' &middot; '+palEsc(x.state||'')+' &middot; '+palEsc(x.raum)+'</span></a>';}).join('');
 }
 function palMove(d){palSel=Math.max(0,Math.min(palItems.length-1,palSel+d));palRender();}
 </script>
@@ -600,6 +632,7 @@ def _nav_html(active: str, inbox_n: int, review_n: int, feed_s) -> str:
         "inbox": f'<svg viewBox="0 0 24 24" {I}><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5 5h14l3 7v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/></svg>',
         "firms": f'<svg viewBox="0 0 24 24" {I}><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-4h6v4"/><path d="M9 10h.01M15 10h.01M9 14h.01M15 14h.01"/></svg>',
         "lists": f'<svg viewBox="0 0 24 24" {I}><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>',
+        "outreach": f'<svg viewBox="0 0 24 24" {I}><path d="M4 4h16v16H4z"/><path d="M4 7l8 6 8-6"/></svg>',
         "review": f'<svg viewBox="0 0 24 24" {I}><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>',
         "health": f'<svg viewBox="0 0 24 24" {I}><path d="M22 12h-4l-3 8-6-16-3 8H2"/></svg>',
         "guide": f'<svg viewBox="0 0 24 24" {I}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
@@ -607,6 +640,7 @@ def _nav_html(active: str, inbox_n: int, review_n: int, feed_s) -> str:
     items = [("inbox", "/", "Trigger inbox", inbox_n),
              ("firms", "/firms", "Firm list", None),
              ("lists", "/lists", "Working lists", None),
+             ("outreach", "/outreach", "Outreach", None),
              ("review", "/review", "Review queue", review_n),
              ("health", "/health", "Pipeline health", None),
              ("guide", "/guide", "How to use", None)]
@@ -638,11 +672,12 @@ def _nav_html(active: str, inbox_n: int, review_n: int, feed_s) -> str:
                f'<form method="post" action="/logout">'
                f'<button type="submit" title="Sign out">{out}</button>'
                f'</form></div>')
+    quit_link = ("" if MANAGED else
+                 f'<a class="quit" href="/quit">{power}Quit {APP_NAME}</a>')
     return (FAVICON + PALETTE_JS + '<nav class="side"><div class="brand">'
             f'<div class="mark">B</div><div class="t">{APP_NAME}'
             '<small>SEC filings, ranked</small></div></div>'
-            f'{links}<div class="foot">{who}'
-            f'<a class="quit" href="/quit">{power}Quit {APP_NAME}</a>'
+            f'{links}<div class="foot">{who}{quit_link}'
             f'Feed snapshot {esc(feed_s) if feed_s else "none"}<br>'
             f'Numbers carry their caveats.</div></nav>')
 
@@ -942,7 +977,7 @@ function rowKey(e){{
 
 @app.post("/action")
 def act(tid: int = Form(...), state: str = Form(...), back: str = Form("/"),
-        reason: str = Form(""), by: str = Form("bd")):
+        reason: str = Form("")):
     if state not in ("actioned", "snoozed", "dismissed"):
         return RedirectResponse("/", status_code=303)
     if not back.startswith("/"):
@@ -953,7 +988,7 @@ def act(tid: int = Form(...), state: str = Form(...), back: str = Form("/"),
         " VALUES (?,?,?,?,?)"
         " ON CONFLICT(trigger_id) DO UPDATE SET state=excluded.state,"
         " reason=excluded.reason, actioned_at=excluded.actioned_at",
-        (tid, state, reason or None, by,
+        (tid, state, reason or None, current_owner() or "bd",
          datetime.now(timezone.utc).isoformat(timespec="seconds")))
     c.commit()
     c.close()
@@ -992,7 +1027,7 @@ def api_search(q: str = Query("", min_length=0)):
 
 
 @app.post("/watch/{crd}")
-def watch_toggle(crd: str, back: str = Form("/"), by: str = Form("bd")):
+def watch_toggle(crd: str, back: str = Form("/")):
     if not back.startswith("/"):
         back = "/"
     c = conn()
@@ -1000,7 +1035,7 @@ def watch_toggle(crd: str, back: str = Form("/"), by: str = Form("bd")):
         c.execute("DELETE FROM firm_watch WHERE crd=?", (crd,))
     else:
         c.execute("INSERT INTO firm_watch VALUES (?,?,?)",
-                  (crd, by, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+                  (crd, current_owner() or "bd", datetime.now(timezone.utc).isoformat(timespec="seconds")))
     c.commit()
     c.close()
     return RedirectResponse(back, status_code=303)
@@ -1058,7 +1093,7 @@ def task_control(kind: str, action: str):
     """Start or pause an autopilot job. Start also launches the worker process
     if none is alive; Pause takes effect within one slice."""
     if kind not in ("brochures", "firm_refresh", "contact_extract",
-                    "web_enrich", "email_verify", "cusip_verify") \
+                    "web_enrich", "infer_emails", "email_verify", "cusip_verify") \
             or action not in ("start", "pause"):
         return RedirectResponse("/health", status_code=303)
     c = conn()
@@ -1096,6 +1131,16 @@ border-radius:8px;font-size:13.5px}
 def quit_confirm():
     """Confirmation, because a misclick in the sidebar should not take the
     server down under two other people who are using it."""
+    if MANAGED:
+        return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
+<title>Managed by the server</title><style>{PAGE_CSS}{QUIT_CSS}</style>
+{nav("quit")}
+<div class="quitbox"><div class="mk">B</div>
+<h1>Nothing to quit here</h1>
+<p>This {APP_NAME} runs on a server that restarts it automatically, so
+quitting from inside would only bounce it. To actually stop it, someone with
+server access runs <b>docker compose down</b>.</p>
+<div class="acts"><a href="/">Back</a></div></div>""")
     c = conn()
     try:
         jobs = c.execute("SELECT kind FROM auto_task WHERE desired_state='running'"
@@ -1131,6 +1176,8 @@ or immediately from the {APP_NAME} shortcut.</p>
 def quit_now():
     """Answer first, then die. The response has to reach the browser before the
     process serving it goes away, so the kill runs on a short timer."""
+    if MANAGED:
+        return RedirectResponse("/quit", status_code=303)
     threading.Timer(0.8, stop_everything).start()
     return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
 <title>{APP_NAME} has stopped</title>{FAVICON}
@@ -1145,10 +1192,12 @@ To start it right now, open the {APP_NAME} shortcut on your desktop.</p>
 </div>""")
 
 
-from . import firm_view, guide_view, list_view, lists_view, review_view  # noqa: E402
+from . import (firm_view, guide_view, list_view, lists_view,  # noqa: E402
+               outreach_view, review_view)
 
 app.include_router(firm_view.router)
 app.include_router(list_view.router)
 app.include_router(lists_view.router)
 app.include_router(review_view.router)
 app.include_router(guide_view.router)
+app.include_router(outreach_view.router)

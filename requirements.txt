@@ -15,5 +15,6 @@ pdfplumber==0.11.10
 PyYAML==6.0.3
 requests==2.33.0
 
-# Icon generation only (scripts.make_icon). Not imported by the app at runtime.
-Pillow==12.2.0
+# NOTE: scripts/make_icon.py (local Windows desktop icon) needs Pillow, which is
+# deliberately NOT a runtime dependency and not installed in the Docker image.
+# Install it ad hoc if you regenerate the icon: pip install Pillow

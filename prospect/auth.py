@@ -71,11 +71,23 @@ def verify_password(password: str, stored: str) -> bool:
 
 # --------------------------------------------------------------- users file
 
+# The login middleware runs on every request, so re-reading and re-parsing the
+# users YAML each time was measurable under load (p95 roughly tripled). Cache by
+# file mtime: a change to the file is picked up on the next request, and the
+# common case is a dict lookup with one stat() call.
+_USERS_CACHE: dict = {"mtime": None, "users": {}}
+
+
 def load_users() -> dict[str, dict]:
-    if not USERS_FILE.exists():
+    try:
+        mtime = USERS_FILE.stat().st_mtime
+    except OSError:
+        _USERS_CACHE.update(mtime=None, users={})
         return {}
-    data = yaml.safe_load(USERS_FILE.read_text(encoding="utf-8")) or {}
-    return data.get("users") or {}
+    if mtime != _USERS_CACHE["mtime"]:
+        data = yaml.safe_load(USERS_FILE.read_text(encoding="utf-8")) or {}
+        _USERS_CACHE.update(mtime=mtime, users=data.get("users") or {})
+    return _USERS_CACHE["users"]
 
 
 def save_users(users: dict[str, dict]) -> None:
@@ -102,19 +114,28 @@ def check_login(username: str, password: str) -> dict | None:
 
 # --------------------------------------------------------------- sessions
 
+_SECRET_CACHE: list = []
+
+
 def secret() -> bytes:
+    """The cookie-signing key. Read once and held: it never changes within a
+    process, and it is consulted on every authenticated request."""
+    if _SECRET_CACHE:
+        return _SECRET_CACHE[0]
     env = os.environ.get("BELLWETHER_SECRET")
     if env:
-        return env.encode("utf-8")
-    if SECRET_FILE.exists():
-        return SECRET_FILE.read_bytes()
-    SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-    key = secrets.token_bytes(32)
-    SECRET_FILE.write_bytes(key)
-    try:                            # best effort; no-op on Windows
-        os.chmod(SECRET_FILE, 0o600)
-    except OSError:
-        pass
+        key = env.encode("utf-8")
+    elif SECRET_FILE.exists():
+        key = SECRET_FILE.read_bytes()
+    else:
+        SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        key = secrets.token_bytes(32)
+        SECRET_FILE.write_bytes(key)
+        try:                        # best effort; no-op on Windows
+            os.chmod(SECRET_FILE, 0o600)
+        except OSError:
+            pass
+    _SECRET_CACHE.append(key)
     return key
 
 

@@ -88,9 +88,16 @@ def resolve(conn: sqlite3.Connection, snapshot_id: int) -> Path:
 
 
 def latest(conn: sqlite3.Connection, source_key: str) -> sqlite3.Row | None:
+    """The most recently CAPTURED snapshot, by id.
+
+    Never order this by published_at: the feeds publish it as MM/DD/YYYY, and
+    that string sorts "12/19/2026" above "01/02/2027". Ordered that way, every
+    January the ingest would resolve "latest" to the previous December, skip it
+    as already ingested, and the whole pipeline would quietly stop advancing.
+    Ids are assigned at capture time and only ever grow."""
     return conn.execute(
         "SELECT * FROM snapshot WHERE source_key=?"
-        " ORDER BY published_at DESC, id DESC LIMIT 1",
+        " ORDER BY id DESC LIMIT 1",
         (source_key,),
     ).fetchone()
 

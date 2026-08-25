@@ -63,6 +63,9 @@ down is a thing to remember, and it does not belong in a tool people use daily.
   **Autopilot** panel runs long jobs (brochure coverage, contact extraction,
   website enrichment, flagged-firm refresh, email verification, CUSIP re-verify),
   each with why it exists, Start and Pause, and a live progress bar.
+- **Outreach**: one row per decision maker with their best email and phone,
+  real addresses and pattern-inferred guesses both labelled, exportable as Excel
+  for a mail merge.
 - **How to use**: the operating manual as one continuous read, top to bottom,
   with a contents list on the right that tracks where you are. Every screen it
   mentions is a live link.

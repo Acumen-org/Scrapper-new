@@ -177,6 +177,10 @@ CREATE TABLE IF NOT EXISTS firm (
 );
 CREATE INDEX IF NOT EXISTS ix_firm_crd ON firm (crd);
 CREATE INDEX IF NOT EXISTS ix_firm_type ON firm (firm_type, raum);
+-- The firm list, the inbox and every scored query select the current snapshot,
+-- then filter is_era and the RAUM band, then order by RAUM. With two feeds the
+-- firm table doubled, and without this the planner scans the whole snapshot.
+CREATE INDEX IF NOT EXISTS ix_firm_band ON firm (snapshot_id, is_era, raum);
 """
 
 

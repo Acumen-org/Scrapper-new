@@ -39,6 +39,15 @@ import struct
 SYNTAX_RE = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?"
                        r"(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$")
 
+# Domains a guessed employee address can never live on: social platforms and
+# freemail. Guessing against one produced 27 confidently wrong @linkedin.com
+# addresses once. Lives here, not in a view module, so scripts can import it
+# without dragging in the web app.
+BAD_EMAIL_DOMAINS = ("linkedin.", "facebook.", "twitter.", "x.com", "instagram.",
+                     "youtube.", "tiktok.", "medium.", "vimeo.", "spotify.",
+                     "pinterest.", "yelp.", "gmail.", "yahoo.", "hotmail.",
+                     "outlook.", "aol.", "icloud.", "threads.")
+
 RESOLVERS = ("1.1.1.1", "8.8.8.8")
 QTYPE_MX = 15
 TIMEOUT = 4.0

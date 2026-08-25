@@ -102,7 +102,10 @@ def sign_in(base: str) -> bool:
 def get(base: str, path: str, timeout: float = 30.0) -> tuple[int, str, float]:
     t0 = time.perf_counter()
     r = _OPENER.open(base + path, timeout=timeout)
-    body = r.read().decode()
+    raw = r.read()
+    # Binary downloads (the .xlsx export) are not utf-8; decode leniently so the
+    # marker check ("PK", the zip signature) still works without an exception.
+    body = raw.decode("utf-8", "replace")
     return r.status, body, time.perf_counter() - t0
 
 
@@ -150,6 +153,9 @@ ROUTES: list[tuple[str, str]] = [
     ("/lists?tab=geo", "Pick a state"),
     ("/lists?tab=geo&st=CA", "Cities in"),
     ("/api/search?q=capital", "crd"),
+    ("/outreach", "Outreach list"),
+    ("/outreach?product=PHH", "Outreach list"),
+    ("/outreach.xlsx", "PK"),
     # The confirmation page only. POST /admin/quit is never exercised here for
     # the obvious reason that it would stop the server the tests are hitting.
     ("/quit", "Quit Bellwether?"),
@@ -236,10 +242,13 @@ def pass_routes(base: str, detail_crd: str) -> None:
             fail(f"GET {path}: HTTP {st}")
         elif marker not in body:
             fail(f"GET {path}: marker '{marker}' missing")
-        elif (not path.split("?")[0].endswith((".csv", ".json"))
+        elif (not path.split("?")[0].endswith((".csv", ".json", ".xlsx"))
               and not path.startswith("/api/")) and 'nav class="side"' not in body:
             fail(f"GET {path}: sidebar missing")
-        elif "—" in body or "&mdash;" in body:
+        elif (not path.split("?")[0].endswith((".csv", ".xlsx"))
+              and ("—" in body or "&mdash;" in body)):
+            # The xlsx and csv are binary/data downloads, not UI copy: the
+            # em-dash ban is about what people read on screen.
             fail(f"GET {path}: em dash present")
         else:
             ok(f"GET {path} ({dt*1000:.0f}ms)")

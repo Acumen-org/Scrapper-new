@@ -333,6 +333,13 @@ def health_view(msg: str = Query("")):
                              "individual's email or direct line; the firm's own "
                              "site is where that lives. Every page is cached and "
                              "never refetched."),
+              "infer_emails": ("Decision-maker email inference",
+                               "Builds an email for every officer on the scored "
+                               "lists from the pattern each firm uses for its own "
+                               "people, then checks the domain. Why: Schedule A "
+                               "names who runs each firm but no filing carries "
+                               "their email; the pattern makes it knowable. "
+                               "Feeds the Outreach export."),
               "firm_refresh": ("Flagged-firm refresh",
                                "Pulls the current ADV PDF for firms flagged on "
                                "custody questions and reads today's custodian "

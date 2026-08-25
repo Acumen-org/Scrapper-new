@@ -513,10 +513,9 @@ def firm_detail(crd: str):
             f'<table><tbody>{crows}</tbody></table>{erows}'
             f'<form method="post" action="/firm/{esc(crd)}/emails" style="margin-top:10px;'
             f'display:flex;gap:8px">'
-            f'<button type="submit">Guess email patterns</button>'
-            f'<button type="submit" name="queue" value="1" '
-            f'title="Marks candidates for the email verification autopilot job">'
-            f'Queue for verification</button></form>'
+            f'<button type="submit" title="Builds pattern guesses for officers and '
+            f'reps and checks them instantly with a local DNS lookup">'
+            f'Guess and check emails</button></form>'
             f'<p class="meta" style="margin-top:6px">Pattern guesses against the '
             f'firm&rsquo;s own mail domain (from its brochure when possible). '
             f'A guess is never shown as real. <b>domain ok</b> means the domain '
@@ -677,14 +676,7 @@ def save_status(crd: str, status: str = Form(""), owner: str = Form("")):
     return RedirectResponse(f"/firm/{crd}", status_code=303)
 
 
-# Domains a guessed employee address can never live on. Generating against one
-# of these produced 27 confidently wrong @linkedin.com addresses, one of which a
-# checker even blessed as valid. A guess needs the firm's own mail domain or it
-# is worse than no guess.
-BAD_EMAIL_DOMAINS = ("linkedin.", "facebook.", "twitter.", "x.com", "instagram.",
-                     "youtube.", "tiktok.", "medium.", "vimeo.", "spotify.",
-                     "pinterest.", "yelp.", "gmail.", "yahoo.", "hotmail.",
-                     "outlook.", "aol.", "icloud.", "threads.")
+from prospect.mailcheck import BAD_EMAIL_DOMAINS  # noqa: E402  single source
 
 
 def email_domain_for(c, crd: str) -> tuple[str | None, str]:
@@ -712,29 +704,54 @@ def email_domain_for(c, crd: str) -> tuple[str | None, str]:
 
 @router.post("/firm/{crd}/emails")
 def gen_emails(crd: str, queue: str = Form("")):
-    """Pattern-guess emails for the firm's top contacts against the firm's own
-    mail domain. Candidates stay candidates until verification confirms them,
-    and no candidate is ever generated on a domain the firm cannot receive
-    mail at."""
+    """Pattern-guess emails for the firm's decision makers and reps against the
+    firm's own mail domain, and check them on the spot.
+
+    The check is a local DNS lookup taking milliseconds, so there is nothing to
+    queue and nothing to wait for: the verdict is on the page when it reloads.
+    The old flow inserted rows as 'queued' and depended on a background job the
+    user also had to start by hand, which read as verification simply not
+    working. It effectively was not.
+    """
     import re as _re
+
+    from prospect import mailcheck
     c = conn()
     domain, _why = email_domain_for(c, crd)
     if domain:
-        people = c.execute("SELECT name FROM contact WHERE crd=? LIMIT 6", (crd,)).fetchall()
-        for p in people:
-            parts = [x for x in _re.sub(r"[^a-z ]", "", p["name"].lower()).split() if x]
-            if len(parts) < 2:
+        # Decision makers first (Schedule A officers), then reps. Officers are
+        # who a mass email should actually reach.
+        names = []
+        for r in c.execute("""SELECT name FROM schedule_a
+                              WHERE crd=? AND is_individual=1 LIMIT 8""", (crd,)):
+            names.append(_pretty_name(r["name"]))
+        for r in c.execute("SELECT name FROM contact WHERE crd=? LIMIT 6", (crd,)):
+            names.append(r["name"])
+        # One DNS answer covers every candidate at this firm.
+        mx = mailcheck.has_mx(domain)
+        seen = set()
+        for full in names:
+            parts = [x for x in _re.sub(r"[^a-z ]", "", full.lower()).split() if x]
+            if len(parts) < 2 or (parts[0], parts[-1]) in seen:
                 continue
+            seen.add((parts[0], parts[-1]))
             first, last = parts[0], parts[-1]
             for pat, addr in (("first.last", f"{first}.{last}@{domain}"),
                               ("flast", f"{first[0]}{last}@{domain}"),
                               ("first", f"{first}@{domain}")):
+                if not mailcheck.valid_syntax(addr):
+                    status = "bad_syntax"
+                elif mx is True:
+                    status = "domain_accepts_mail"
+                elif mx is False:
+                    status = "no_mail_server"
+                else:
+                    status = "queued"    # DNS unreachable; the job retries later
                 c.execute("INSERT OR IGNORE INTO contact_email"
-                          " (crd,name,email,pattern,status) VALUES (?,?,?,?,'candidate')",
-                          (crd, p["name"], addr, pat))
-    if queue:
-        c.execute("UPDATE contact_email SET status='queued'"
-                  " WHERE crd=? AND status='candidate'", (crd,))
+                          " (crd,name,email,pattern,status,checked_at)"
+                          " VALUES (?,?,?,?,?,?)",
+                          (crd, full, addr, pat, status,
+                           datetime.now(timezone.utc).isoformat(timespec="seconds")))
     c.commit()
     c.close()
     return RedirectResponse(f"/firm/{crd}", status_code=303)

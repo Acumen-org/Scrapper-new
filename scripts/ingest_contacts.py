@@ -79,6 +79,9 @@ def parse_shard(fh, targets: set[str]):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-shards", type=int, default=99)
+    ap.add_argument("--rescope", action="store_true",
+                    help="reprocess all shards against the current target set, "
+                         "for after the firm universe grows")
     args = ap.parse_args()
 
     cfg = config.load()
@@ -97,9 +100,16 @@ def main() -> int:
     z = zipfile.ZipFile(path)
     done = {r["member"] for r in conn.execute(
         "SELECT member FROM ingest_shard WHERE source='ia_indvl'")}
+    # A --rescope run reprocesses shards already marked done: the in-band target
+    # set grows (the state feed added ~5,400 firms after the first ingest), and
+    # people at those firms were skipped the first time through. Without this
+    # they would never be picked up, because the shard is flagged complete.
+    if args.rescope:
+        done = set()
     todo = [m for m in z.namelist() if m.endswith(".xml") and m not in done]
     todo = todo[:args.max_shards]
-    print(f"shards: {len(done)} done, {len(todo)} this run")
+    print(f"shards: {len(done)} done, {len(todo)} this run"
+          + (" (rescope: reprocessing all)" if args.rescope else ""))
 
     with runlog.Run(conn, "contacts", "ingest", cfg.stamp) as run:
         total = 0

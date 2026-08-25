@@ -199,6 +199,42 @@ def job_web_enrich(conn, cfg) -> bool:
 DONE_STATES = ("bad_syntax", "no_mail_server", "domain_accepts_mail")
 
 
+def job_infer_emails(conn, cfg) -> bool:
+    """One slice of decision-maker email inference across the scored lists.
+
+    Builds guesses from the pattern each firm uses for its own people, checks
+    them against the mail domain, and stops when every officer on the scored
+    lists has an address. Cheap: one subprocess slice, all local."""
+    total = conn.execute("""SELECT COUNT(*) n FROM schedule_a s
+        JOIN firm_current f ON f.crd=s.crd
+        WHERE s.is_individual=1 AND f.is_era=0 AND f.raum>=25e6 AND f.raum<500e6
+          AND (s.crd IN (SELECT crd FROM tier_a_rank)
+               OR s.crd IN (SELECT crd FROM tier_c_score WHERE rank<=1000)
+               OR s.crd IN (SELECT crd FROM firm_overlay WHERE phh_13f=1))
+        """).fetchone()["n"]
+    done = conn.execute("SELECT COUNT(*) n FROM contact_email").fetchone()["n"]
+    set_task(conn, "infer_emails", progress=min(done, total), total=total,
+             message=f"{done:,} decision-maker addresses inferred")
+    r = subprocess.run([sys.executable, "-m", "scripts.infer_emails",
+                        "--limit", "800"], cwd=config.ROOT,
+                       capture_output=True, text=True)
+    made = 0
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("generated"):
+            try:
+                made = int(line.split()[1].replace(",", ""))
+            except (IndexError, ValueError):
+                made = 0
+    if r.returncode != 0:
+        set_task(conn, "infer_emails", message=f"slice failed: {r.stdout[-160:]}")
+        return True
+    if made == 0:
+        set_task(conn, "infer_emails", desired_state="paused",
+                 message="complete: every scored-list officer has an address")
+        return False
+    return True
+
+
 def job_email_verify(conn, cfg) -> bool:
     """Syntax and mail-domain checks on queued candidates, locally and free.
 
@@ -276,6 +312,7 @@ def job_cusip_verify(conn, cfg) -> bool:
 JOBS = {"brochures": job_brochures, "firm_refresh": None,  # bound below
         "contact_extract": job_contact_extract,
         "web_enrich": job_web_enrich,
+        "infer_emails": job_infer_emails,
         "email_verify": job_email_verify, "cusip_verify": job_cusip_verify}
 
 
