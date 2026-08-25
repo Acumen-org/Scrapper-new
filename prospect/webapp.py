@@ -177,6 +177,22 @@ CREATE TABLE IF NOT EXISTS scheduler_state (
     last_started TEXT,                -- last automatic weekly launch
     message      TEXT
 );
+-- User-built firm buckets ("playlists"): a named set of firms you assemble by
+-- hand, separate from the scored presets. This is what the Lists section shows.
+CREATE TABLE IF NOT EXISTS user_list (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT
+);
+CREATE TABLE IF NOT EXISTS user_list_item (
+    list_id  INTEGER NOT NULL REFERENCES user_list(id),
+    crd      TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    added_by TEXT,
+    PRIMARY KEY (list_id, crd)
+);
+CREATE INDEX IF NOT EXISTS ix_uli_crd ON user_list_item (crd);
 """
 
 
@@ -636,17 +652,13 @@ def _nav_html(active: str, inbox_n: int, review_n: int, feed_s) -> str:
         "inbox": f'<svg viewBox="0 0 24 24" {I}><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5 5h14l3 7v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/></svg>',
         "firms": f'<svg viewBox="0 0 24 24" {I}><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-4h6v4"/><path d="M9 10h.01M15 10h.01M9 14h.01M15 14h.01"/></svg>',
         "lists": f'<svg viewBox="0 0 24 24" {I}><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>',
-        "outreach": f'<svg viewBox="0 0 24 24" {I}><path d="M4 4h16v16H4z"/><path d="M4 7l8 6 8-6"/></svg>',
-        "review": f'<svg viewBox="0 0 24 24" {I}><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>',
-        "health": f'<svg viewBox="0 0 24 24" {I}><path d="M22 12h-4l-3 8-6-16-3 8H2"/></svg>',
+        "system": f'<svg viewBox="0 0 24 24" {I}><path d="M22 12h-4l-3 8-6-16-3 8H2"/></svg>',
         "guide": f'<svg viewBox="0 0 24 24" {I}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
     }
-    items = [("inbox", "/", "Trigger inbox", inbox_n),
-             ("firms", "/firms", "Firm list", None),
-             ("lists", "/lists", "Working lists", None),
-             ("outreach", "/outreach", "Outreach", None),
-             ("review", "/review", "Review queue", review_n),
-             ("health", "/health", "Pipeline health", None),
+    items = [("inbox", "/", "Inbox", inbox_n),
+             ("firms", "/firms", "Firms", None),
+             ("lists", "/lists", "Lists", None),
+             ("system", "/health", "System", review_n),
              ("guide", "/guide", "How to use", None)]
     links = "".join(
         f'<a href="{u}" class="{"on" if k == active else ""}">{icons[k]}{t}'
@@ -1196,12 +1208,30 @@ To start it right now, open the {APP_NAME} shortcut on your desktop.</p>
 </div>""")
 
 
-from . import (firm_view, guide_view, list_view, lists_view,  # noqa: E402
-               outreach_view, review_view)
+from . import (firm_view, firms_view, guide_view, list_view,  # noqa: E402
+               review_view)
 
-app.include_router(firm_view.router)
-app.include_router(list_view.router)
-app.include_router(lists_view.router)
-app.include_router(review_view.router)
-app.include_router(guide_view.router)
-app.include_router(outreach_view.router)
+app.include_router(firms_view.router)     # /firms, /lists, exports, add-to-list
+app.include_router(firm_view.router)      # /firm/{crd}
+app.include_router(list_view.router)      # /health (System)
+app.include_router(review_view.router)    # /review (System)
+app.include_router(guide_view.router)     # /guide
+
+
+# Old section URLs, redirected to their new home so bookmarks and any lingering
+# links keep working after the sidebar was consolidated.
+@app.get("/lists/working")
+@app.get("/outreach")
+def _moved_outreach():
+    return RedirectResponse("/firms?view=contacts", status_code=307)
+
+
+@app.get("/outreach.xlsx")
+def _moved_outreach_xlsx():
+    return RedirectResponse("/firms/export.xlsx", status_code=307)
+
+
+@app.get("/firms.csv")
+def _moved_firms_csv(request: Request):
+    q = ("?" + request.url.query) if request.url.query else ""
+    return RedirectResponse("/firms/export.csv" + q, status_code=307)

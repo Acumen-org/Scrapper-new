@@ -15,206 +15,15 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse
 
 from .webapp import PAGE_CSS, caveat, conn, esc, money, nav
 
 # the state dropdown scans 23k rows and its answer changes weekly; cache it
-_STATES: dict = {"t": 0.0, "v": []}
-
 router = APIRouter()
 
 LIST_CSS = PAGE_CSS  # tokens and semantic classes live in the shared sheet
 
-BANDS = {
-    "": ("All AUM", None, None),
-    "25-100": ("25 to 100M", 25e6, 100e6),
-    "100-250": ("100 to 250M", 100e6, 250e6),
-    "250-500": ("250 to 500M", 250e6, 500e6),
-}
-
-
-@router.get("/firms", response_class=HTMLResponse)
-def firm_list(
-    q: str = Query(""),
-    st: str = Query(""),
-    band: str = Query(""),
-    seg: str = Query(""),
-    trig: str = Query(""),
-    stat: str = Query(""),
-    owner: str = Query(""),
-    sort: str = Query("raum"),
-    page: int = Query(1, ge=1),
-    per: int = Query(50, ge=10, le=200),
-):
-    c = conn()
-    where = ["f.is_era = 0", "f.raum >= 25e6", "f.raum < 500e6"]
-    args: list = []
-    if q:
-        where.append("(f.legal_name LIKE ? OR f.business_name LIKE ? OR f.crd = ?)")
-        args += [f"%{q}%", f"%{q}%", q]
-    if st:
-        where.append("f.state = ?"); args.append(st)
-    if band and band in BANDS and BANDS[band][1] is not None:
-        where.append("f.raum >= ? AND f.raum < ?")
-        args += [BANDS[band][1], BANDS[band][2]]
-    if seg:
-        where.append("r.segment = ?"); args.append(seg)
-    if stat:
-        where.append("fs.status = ?"); args.append(stat)
-    if owner:
-        where.append("fs.owner LIKE ?"); args.append(f"%{owner}%")
-    if trig == "open":
-        where.append("EXISTS (SELECT 1 FROM trigger_event t LEFT JOIN trigger_action a"
-                     " ON a.trigger_id = t.id WHERE t.crd = f.crd AND t.suppressed = 0"
-                     " AND a.state IS NULL)")
-
-    order = {"raum": "f.raum DESC", "hnw": "hnwshare DESC",
-             "name": "f.legal_name", "triggers": "trigs DESC"}.get(sort, "f.raum DESC")
-
-    base = f"""FROM firm_current f
-        LEFT JOIN re_segment r ON r.crd = f.crd
-        LEFT JOIN firm_custodian_profile p ON p.crd = f.crd
-        LEFT JOIN firm_status fs ON fs.crd = f.crd
-        WHERE {' AND '.join(where)}"""
-    total = c.execute(f"SELECT COUNT(*) n {base}", args).fetchone()["n"]
-    rows = c.execute(f"""
-        SELECT f.crd, f.legal_name, f.state, f.raum, f.hnw_clients, f.hnw_aum,
-               f.iar_count, f.clients_total,
-               CASE WHEN f.raum > 0 THEN 1.0 * COALESCE(f.hnw_aum,0) / f.raum END AS hnwshare,
-               r.segment, fs.status AS wstatus, fs.owner AS wowner,
-               p.primary_canonical AS cust, p.schwab_share_reported AS sshare,
-               p.as_of_filing_date AS sasof,
-               (SELECT COUNT(*) FROM trigger_event t LEFT JOIN trigger_action a
-                 ON a.trigger_id = t.id
-                WHERE t.crd = f.crd AND t.suppressed = 0 AND a.state IS NULL) AS trigs
-        {base} ORDER BY {order} LIMIT ? OFFSET ?""",
-        args + [per, (page - 1) * per]).fetchall()
-
-    import time as _time
-    if _time.monotonic() - _STATES["t"] > 60:
-        _STATES["v"] = [r["state"] for r in c.execute(
-            "SELECT DISTINCT state FROM firm_current WHERE state IS NOT NULL"
-            " AND is_era=0 ORDER BY state") if r["state"]]
-        _STATES["t"] = _time.monotonic()
-    states = _STATES["v"]
-
-    def opt(v, cur, label):
-        return f'<option value="{esc(v)}"{" selected" if v == cur else ""}>{esc(label)}</option>'
-
-    body = []
-    for r in rows:
-        segch = (f'<span class="seg {r["segment"]}">{esc(r["segment"])}</span>'
-                 if r["segment"] else "")
-        sch = "-"
-        if r["sshare"] is not None:
-            sch = caveat("schwab_share_reported", f'{r["sshare"] * 100:.0f}%')
-        body.append(
-            f'<tr><td><a href="/firm/{esc(r["crd"])}">{esc(r["legal_name"] or "(unnamed)")}</a>'
-            f'<div class="meta">CRD {esc(r["crd"])}</div></td>'
-            f'<td>{esc(r["state"] or "-")}</td>'
-            f'<td class="num">{money(r["raum"])}</td>'
-            f'<td class="num">{(r["hnwshare"] or 0) * 100:.0f}%</td>'
-            f'<td class="num">{r["hnw_clients"] or 0}</td>'
-            f'<td class="num">{r["iar_count"] or 0}</td>'
-            f'<td>{esc(r["cust"] or "-")}</td><td class="num">{sch}</td>'
-            f'<td>{segch}</td>'
-            f'<td>{esc(r["wstatus"] or "")}'
-            f'{("<div class=meta>" + esc(r["wowner"]) + "</div>") if r["wowner"] else ""}</td>'
-            f'<td class="num">{r["trigs"] or ""}</td></tr>')
-
-    pages = max(1, -(-total // per))
-    qs = (f"q={q}&st={st}&band={band}&seg={seg}&trig={trig}&stat={stat}"
-          f"&owner={owner}&sort={sort}&per={per}")
-    prev = f'<a href="/firms?{qs}&page={page-1}">Previous</a>' if page > 1 else ""
-    nxt = f'<a href="/firms?{qs}&page={page+1}">Next</a>' if page < pages else ""
-
-    return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
-<title>Firm list</title><style>{LIST_CSS}</style>
-{nav("firms")}
-<header><h1>Firm list</h1><div class="sub">{total:,} in-band registered advisers
-&middot; exempt reporting advisers excluded &middot; filtered and paged server side</div></header>
-<div class="wrap">
-<p class="back" style="font-size:13px"><a href="/">&larr; Trigger inbox</a> &middot;
-<a href="/health">Pipeline health</a></p>
-<form class="filters" method="get">
-<label>Search<input type="text" name="q" value="{esc(q)}" placeholder="name or CRD"></label>
-<label>State<select name="st">{opt("", st, "All states")}
-{"".join(opt(s, st, s) for s in states)}</select></label>
-<label>AUM band<select name="band">
-{"".join(opt(k, band, v[0]) for k, v in BANDS.items())}</select></label>
-<label>Real estate<select name="seg">{opt("", seg, "Any")}
-{"".join(opt(s, seg, s) for s in ("prospect", "competitor", "sponsor", "ambiguous", "unraised"))}
-</select></label>
-<label>Triggers<select name="trig">{opt("", trig, "Any")}{opt("open", trig, "Has open trigger")}
-</select></label>
-<label>Status<select name="stat">{opt("", stat, "Any")}
-{"".join(opt(x, stat, x) for x in ("new", "working", "meeting set", "qualified",
- "disqualified", "customer"))}</select></label>
-<label>Owner<input type="text" name="owner" value="{esc(owner)}" placeholder="anyone"></label>
-<label>Sort<select name="sort">
-{"".join(opt(k, sort, v) for k, v in [("raum", "RAUM"), ("hnw", "HNW share"),
- ("triggers", "Open triggers"), ("name", "Name")])}</select></label>
-<button class="primary" type="submit">Apply</button>
-<a href="/firms" style="align-self:center;font-size:13px">Reset</a>
-<a href="/firms.csv?{qs}" style="align-self:center;font-size:13px">Export CSV</a>
-</form>
-<table><thead><tr><th>Firm</th><th style="width:50px">St</th>
-<th class="num" style="width:90px">RAUM</th><th class="num" style="width:70px">HNW %</th>
-<th class="num" style="width:70px">HNW cl</th><th class="num" style="width:60px">IARs</th>
-<th style="width:140px">Custodian</th><th class="num" style="width:80px">Schwab</th>
-<th style="width:110px">Real estate</th><th style="width:110px">Status</th>
-<th class="num" style="width:70px">Triggers</th>
-</tr></thead><tbody>{"".join(body) or
-'<tr><td colspan="11" style="padding:26px;color:var(--faint)">Nothing matches these filters.</td></tr>'}
-</tbody></table>
-<div class="pager">{prev} Page {page} of {pages} &middot; {total:,} firms {nxt}</div>
-</div>""")
-
-
-@router.get("/firms.csv")
-def firms_csv(q: str = Query(""), st: str = Query(""), band: str = Query(""),
-              city: str = Query(""),
-              seg: str = Query(""), trig: str = Query(""), sort: str = Query("raum"),
-              per: int = Query(5000)):
-    """Export the current filtered view. Shaped for manual import into Twenty."""
-    import csv
-    import io
-    c = conn()
-    where = ["f.is_era = 0", "f.raum >= 25e6", "f.raum < 500e6"]
-    args: list = []
-    if q:
-        where.append("(f.legal_name LIKE ? OR f.crd = ?)"); args += [f"%{q}%", q]
-    if st:
-        where.append("f.state = ?"); args.append(st)
-    if city:
-        where.append("UPPER(f.city) = UPPER(?)"); args.append(city)
-    if band in BANDS and BANDS[band][1] is not None:
-        where.append("f.raum >= ? AND f.raum < ?"); args += [BANDS[band][1], BANDS[band][2]]
-    if seg:
-        where.append("r.segment = ?"); args.append(seg)
-    rows = c.execute(f"""
-        SELECT f.crd, f.legal_name, f.business_name, f.website, f.phone,
-               ce.email AS filed_email, f.city, f.state,
-               f.raum, f.hnw_clients, f.hnw_aum, f.iar_count, f.clients_total,
-               r.segment AS re_segment, r.as_of_filing_date AS re_as_of,
-               p.primary_canonical AS custodian, p.schwab_share_reported,
-               p.as_of_filing_date AS custodian_as_of,
-               fs.status AS work_status, fs.owner AS work_owner
-        FROM firm_current f LEFT JOIN re_segment r ON r.crd = f.crd
-        LEFT JOIN firm_custodian_profile p ON p.crd = f.crd
-        LEFT JOIN firm_status fs ON fs.crd = f.crd
-        LEFT JOIN (SELECT crd, MIN(value) AS email FROM firm_contact_info
-                   WHERE kind='email' GROUP BY crd) ce ON ce.crd = f.crd
-        WHERE {' AND '.join(where)} LIMIT ?""", args + [per]).fetchall()
-    buf = io.StringIO()
-    w = csv.writer(buf, lineterminator="\n")
-    cols = list(rows[0].keys()) if rows else ["crd"]
-    w.writerow(cols)
-    for r in rows:
-        w.writerow([r[k] for k in cols])
-    return PlainTextResponse(buf.getvalue(), media_type="text/csv", headers={
-        "Content-Disposition": 'attachment; filename="firms.csv"'})
 
 
 @router.get("/health", response_class=HTMLResponse)
@@ -420,12 +229,15 @@ def health_view(msg: str = Query("")):
                       'checks about 20 seconds after launch.</p>')
 
     return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
-<title>Pipeline health</title><style>{LIST_CSS}</style>
-{nav("health")}
-<header><h1>Pipeline health</h1><div class="sub">The one screen that answers: is
-the data current, is anything broken, and what is running right now. Red means
-failed or stale. Amber means flagged or due. No color means healthy.</div></header>
+<title>System</title><style>{LIST_CSS}
+.systabs a{{font-size:14px;text-decoration:none;color:var(--soft);padding:6px 2px;margin-right:16px}}
+.systabs a.on{{color:var(--red-hi);font-weight:700;border-bottom:2px solid var(--red)}}</style>
+{nav("system")}
+<header><h1>System</h1><div class="sub">Is the data current, is anything broken,
+and what is running. Red means failed or stale, amber means flagged or due, no
+color means healthy.</div></header>
 <div class="wrap">
+<p class="systabs"><a href="/health" class="on">Pipeline health</a><a href="/review">Review queue</a></p>
 
 <div class="card" style="margin-bottom:14px">{sched_html}{stale}{fwd}
 <form method="post" action="/admin/run-weekly" style="margin:8px 0 0">

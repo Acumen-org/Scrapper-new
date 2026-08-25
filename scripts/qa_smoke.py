@@ -125,21 +125,21 @@ ROUTES: list[tuple[str, str]] = [
     ("/?product=ACUBOOTH", "Trigger inbox"),
     ("/?q=CAPITAL", "Trigger inbox"),
     ("/?page=2", "Trigger inbox"),
-    ("/firms", "Firm list"),
-    ("/firms?band=100-250", "Firm list"),
-    ("/firms?seg=prospect", "Firm list"),
-    ("/firms?seg=sponsor&sort=hnw", "Firm list"),
-    ("/firms?trig=open", "Firm list"),
-    ("/firms?q=WEALTH", "Firm list"),
-    ("/firms?stat=working", "Firm list"),
-    ("/firms?page=3", "Firm list"),
-    ("/firms.csv", "crd"),
-    ("/firms.csv?seg=prospect", "crd"),
-    ("/lists", "Working lists"),
-    ("/lists?tab=working", "PHH working list"),
-    ("/lists?tab=intersection", "both gates"),
-    ("/lists?tab=tierc", "AcuBooth"),
-    ("/lists?tab=sponsors", "Competitive intelligence"),
+    ("/firms", "Firms"),
+    ("/firms?preset=phh_a", "PHH - Tier A"),
+    ("/firms?preset=phh_x", "PHH - Intersection"),
+    ("/firms?preset=acu", "AcuBooth - Tier C"),
+    ("/firms?preset=comp", "Competitors"),
+    ("/firms?band=100-250", "Firms"),
+    ("/firms?seg=prospect", "Firms"),
+    ("/firms?trig=open", "Firms"),
+    ("/firms?q=WEALTH", "Firms"),
+    ("/firms?stat=working", "Firms"),
+    ("/firms?view=contacts", "Contacts"),
+    ("/firms?view=contacts&preset=phh_a", "Contacts"),
+    ("/firms/export.csv?preset=phh_a", "crd"),
+    ("/firms/export.xlsx?preset=phh_a", "PK"),
+    ("/lists", "Lists"),
     ("/review", "Review queue"),
     ("/review?kind=match_13f", "Review queue"),
     ("/review?kind=brochure_negation", "Review queue"),
@@ -148,14 +148,9 @@ ROUTES: list[tuple[str, str]] = [
     ("/health.json", "snapshots"),
     ("/guide", "How to use"),
     ("/guide", "On this page"),
-    ("/guide", "Your morning"),
-    ("/guide", "Reading the numbers"),
-    ("/lists?tab=geo", "Pick a state"),
-    ("/lists?tab=geo&st=CA", "Cities in"),
+    ("/guide", "Finding firms"),
+    ("/guide", "Your lists"),
     ("/api/search?q=capital", "crd"),
-    ("/outreach", "Outreach list"),
-    ("/outreach?product=PHH", "Outreach list"),
-    ("/outreach.xlsx", "PK"),
     # The confirmation page only. POST /admin/quit is never exercised here for
     # the obvious reason that it would stop the server the tests are hitting.
     ("/quit", "Quit Bellwether?"),
@@ -182,7 +177,7 @@ def pass_auth(base: str) -> None:
             return exc.code, exc.headers.get("Location")
 
     for path in ("/", "/firms", "/lists", "/review", "/health", "/guide",
-                 "/firms.csv", "/api/search?q=x", "/health.json"):
+                 "/firms/export.csv", "/api/search?q=x", "/health.json"):
         code, loc = raw(path)
         (ok if code == 303 and (loc or "").startswith("/login")
          else fail)(f"GET {path} blocked without a session (got {code})")
@@ -328,7 +323,7 @@ def pass_latency(base: str, detail_crd: str) -> None:
     worst: list[tuple[float, str]] = []
     for path, _ in ROUTES[:0] or []:
         pass
-    sample = ["/", "/firms", "/lists", "/lists?tab=tierc", "/review", "/health",
+    sample = ["/", "/firms", "/lists", "/firms?preset=acu", "/review", "/health",
               "/guide", f"/firm/{detail_crd}"]
     for path in sample:
         times = []
@@ -349,7 +344,7 @@ def pass_latency(base: str, detail_crd: str) -> None:
 
 def pass_concurrency(base: str, detail_crd: str) -> None:
     print("\n[4] concurrency: 8 clients x 25 requests while ingest writes")
-    paths = ["/", "/firms", "/lists", "/lists?tab=intersection", "/review",
+    paths = ["/", "/firms", "/lists", "/firms?preset=phh_x", "/review",
              "/health", "/guide", f"/firm/{detail_crd}", "/firms?seg=prospect"]
     errors: list[str] = []
     times: list[float] = []

@@ -107,15 +107,13 @@ SECTIONS = [
     ("what", "What this is"),
     ("daily", "Your morning"),
     ("inbox", "Reading the inbox"),
-    ("who", "Choosing who to call"),
+    ("firms", "Finding firms"),
+    ("outreach", "Emails and export"),
+    ("lists", "Your lists"),
     ("call", "Preparing for a call"),
-    ("outreach", "Mass email and export"),
-    ("dinner", "Planning a dinner"),
-    ("review", "Clearing reviews"),
+    ("system", "Keeping it healthy"),
     ("weekly", "The weekly pull"),
-    ("autopilot", "Autopilot"),
     ("numbers", "Reading the numbers"),
-    ("keys", "Keyboard"),
     ("ops", "Starting and stopping"),
 ]
 
@@ -195,61 +193,38 @@ its keep, save it and it appears in the sidebar for good.</p>
 watched firm never gets lost behind a filter.</p>
 </section>
 
-<section id="who">
-<h2>Choosing who to call</h2>
-<p>Four lists, in descending order of how much they have already proven.</p>
-<h3>The intersection</h3>
-<p><a href="/lists?tab=intersection">Twenty one firms</a> whose clients already
-buy private funds <em>and</em> already hold real estate income stocks. Both hard
-objections, illiquidity and the asset class itself, are pre cleared. Sorted by
-position size, because a six million dollar position and a four thousand dollar
-one are not the same evidence. Rows marked <strong>possible legacy</strong> are a
-single small holding that may just have been inherited.</p>
-<h3>Tier A</h3>
-<p>The <a href="/lists?tab=working">Prairie Hill top hundred</a>: a real high net
-worth book, proven appetite for illiquid funds, and no competing real estate
-product of their own. Every score shows the four components that produced it, so
-you can disagree with a rank and see exactly why it landed there.</p>
-<h3>Tier C</h3>
-<p>The <a href="/lists?tab=tierc">AcuBooth list</a>, ranked by how many accounts a
-single yes could produce. Read the banner: this ranks who is worth the free
-holdings analysis, and it can never show sellable accounts, because those accounts
-are held away and appear in no filing anywhere.</p>
-<h3>Sponsors</h3>
-<p><a href="/lists?tab=sponsors">Competitors</a>, with their fundraising progress
-where a Form D exists. Intelligence, not pipeline.</p>
-</section>
-
-<section id="call">
-<h2>Preparing for a call</h2>
-<p>Open any firm by clicking its name, or press <kbd>Ctrl</kbd><kbd>K</kbd> and
-type a few letters of it from anywhere in the app.</p>
-<ol>
-<li>Read down the page. Scale and client mix, then the real estate verdict
-<strong>with the four numbers that produced it</strong>, then funds, holdings,
-the firm's own brochure sentences, its people, and its history.</li>
-<li>Press <strong>Copy to clipboard</strong>. You get a prep sheet with the
-caveats written in, ready to paste anywhere.</li>
-<li>Star the firm to watch it, set its status and owner so nobody duplicates
-your work, and write what happened into the notes.</li>
-</ol>
-<p>Three things on that page are worth knowing about. <strong>How to reach
-them</strong> shows only details the firm itself filed: its main office phone
-from Form ADV, and the emails and numbers printed on its own brochure, each
-marked <em>filed</em>. The chart is the firm's regulatory AUM going back to
-2011 with real axes, so a growth claim on a call can be specific; hover any
-point for the filing behind it. And the people are real registered
-representatives from the SEC individual feed. Pattern-guessed emails still
-exist as a fallback, but they are labelled as guesses and kept visually apart
-from anything filed.</p>
+<section id="firms">
+<h2>Finding firms</h2>
+<p>The <a href="/firms">Firms</a> section is where you find, filter, and export.
+Pick a <strong>preset</strong> from the dropdown, then narrow with the filters or
+the search box.</p>
+<ul>
+<li><strong>PHH, Tier A</strong>: the Prairie Hill top hundred, a real high net
+worth book and proven appetite for illiquid funds, with no competing product of
+their own. Each row shows its score.</li>
+<li><strong>PHH, Intersection</strong>: firms whose clients already buy private
+funds <em>and</em> already hold real estate income stocks, both objections
+pre cleared.</li>
+<li><strong>AcuBooth, Tier C</strong>: ranked by how many accounts a single yes
+could produce. It ranks who is worth the free holdings analysis, never sellable
+accounts, which are held away and appear in no filing.</li>
+<li><strong>Competitors and sponsors</strong>: firms running their own real
+estate funds. Intelligence, not pipeline.</li>
+<li><strong>All firms</strong>, or one of your own lists.</li>
+</ul>
+<p>Two tabs show that set two ways. <strong>Firms</strong> is one row per firm;
+<strong>Contacts</strong> is one row per person, the mail merge list. Search by
+name or CRD from the box, or press <kbd>Ctrl</kbd><kbd>K</kbd> from anywhere.
+Every view exports, and any firm can be dropped into one of your lists with the
+control on its row.</p>
 </section>
 
 <section id="outreach">
-<h2>Mass email and export</h2>
-<p>The <a href="/outreach">Outreach</a> screen is one row per decision maker, not
-per firm: a person, their best email, and a phone, built for a mail merge. It
-draws from three places and labels every one, so a real address is never confused
-with a guess.</p>
+<h2>Emails and export</h2>
+<p>The <a href="/firms?view=contacts">Contacts</a> tab is one row per decision
+maker: a person, their best email, and a phone, built for a mail merge. It draws
+from three places and labels every one, so a real address is never confused with
+a guess.</p>
 <ul>
 <li><strong>Their website</strong> and <strong>filed at firm</strong> are real:
 scraped from the firm's own team page, or printed in its brochure. A firm inbox
@@ -257,50 +232,59 @@ like info@ is labelled as such, never pinned to a person's name.</li>
 <li><strong>Inferred</strong> is a guess, one per person. Bellwether learns the
 pattern each firm uses for its own people (if jsmith@ is real, the CEO follows
 the same shape) and applies that single most likely pattern, not a menu of three
-that mostly bounce. The label says which pattern and whether it came from the
-firm's own observed addresses or the common fallback.</li>
+that mostly bounce.</li>
 </ul>
 <p>Every address carries a domain check: <strong>domain ok</strong> means the
 domain can receive mail, <strong>dead domain</strong> means it cannot and you
-should skip it. None of it proves a specific mailbox exists; a bounce is the real
-test. There is no way to confirm a specific mailbox for free (the paid tools do
-it by connecting to mail servers on a port cloud hosts block), so a clean send
-and a watch for bounces is the method.</p>
-<p>Filter by product or to real-only, then <strong>Export Excel</strong>. The
-sheet is one row per person, everyone at a firm grouped together, with their
-title, email, status, and phone. Phone numbers and CRDs stay as text so Excel
-does not mangle them.</p>
+should skip it. None of it proves a specific mailbox exists, and there is no free
+way to confirm one (the paid tools connect to mail servers on a port cloud hosts
+block), so a clean send and a watch for bounces is the method.</p>
+<p>Filter however you like, then <strong>Export contacts</strong>. The sheet is
+one row per person, everyone at a firm grouped together, with their title, email,
+status, and phone, kept as text so Excel does not mangle them.</p>
 </section>
 
-<section id="dinner">
-<h2>Planning a dinner</h2>
-<p>The format needs ten to twelve qualified firms within driving distance of one
-room, which a nationally ranked list cannot answer.</p>
+<section id="lists">
+<h2>Your lists</h2>
+<p>The presets are built in. <a href="/lists">Lists</a> are the ones you build
+yourself, like playlists: a hand-picked bucket of firms. Add a firm to a list
+from the control on its row in Firms, or create an empty one first. Open a list
+to work it as a filtered Firms view, and export its firms or contacts like any
+other set. Deleting a list never touches the firms in it.</p>
+</section>
+
+<section id="call">
+<h2>Preparing for a call</h2>
+<p>Open any firm by clicking its name, or press <kbd>Ctrl</kbd><kbd>K</kbd> and
+type a few letters of it from anywhere.</p>
 <ol>
-<li>Open <a href="/lists?tab=geo">Geography</a> and pick a state. The columns
-show how many tier A, intersection, and tier C firms sit there.</li>
-<li>Pick a city. Firms cluster by metro, and the zip prefix tells you how tight
-that cluster really is.</li>
-<li>Work the list, intersection firms first. Export it as CSV for the invitations
-when the shape looks right.</li>
+<li>Read down the page. Scale and client mix, then the real estate verdict
+<strong>with the four numbers that produced it</strong>, then funds, holdings,
+the firm's own brochure sentences, its people, and its history.</li>
+<li>Press <strong>Copy to clipboard</strong> for a prep sheet with the caveats
+written in, ready to paste anywhere.</li>
+<li>Star the firm to watch it, set its status and owner so nobody duplicates your
+work, and write what happened into the notes.</li>
 </ol>
+<p><strong>How to reach them</strong> at the top shows the filed and scraped
+contact details; the chart is the firm's regulatory AUM back to 2011 with real
+axes, hover a point for the filing behind it; and the people are the officers and
+reps we hold, with a button to guess and check one email each.</p>
 </section>
 
-<section id="review">
-<h2>Clearing reviews</h2>
-<p>The <a href="/review">review queue</a> asks for judgement the system will not
-make on its own. Two kinds, both two buttons, and both safe to skip.</p>
-<p><strong>Is this the same firm?</strong> An SEC filer matched an adviser by
-name, but not confidently enough to merge. Confirm only when you are sure: a
-wrong link puts holdings a firm does not own into a call opener, which is the one
-error that costs credibility rather than time.</p>
-<p><strong>Is this really a negation?</strong> A brochure sentence pairs one of
-our phrases with words like "do not". Read it. If the firm truly says it does not
-do this, the tag flips to an explicit negative signal, which is useful in its own
-right.</p>
-<p class="note">An unreviewed row never deletes a signal. It only holds its
-confidence lower until somebody looks. The queue can sit for months without
-breaking anything downstream.</p>
+<section id="system">
+<h2>Keeping it healthy</h2>
+<p>The <a href="/health">System</a> section has two tabs. <strong>Pipeline
+health</strong> answers whether the data is current and whether anything broke:
+red is failed or stale, amber is flagged or due, no colour is healthy. The
+background jobs live here too, each with why it exists and its own Start and
+Pause. Nothing here costs money to run.</p>
+<p><strong>Review queue</strong> asks for the occasional judgement the system
+will not make on its own: whether an uncertain firm match is really the same
+firm, and whether a brochure sentence is really a negation. Both are two buttons
+and both are safe to skip. An unreviewed row never deletes a signal; it only
+holds its confidence lower until somebody looks, so the queue can sit for
+months.</p>
 </section>
 
 <section id="weekly">
@@ -315,20 +299,6 @@ the top panel says when the pull last ran, and the page shows red for failed or
 stale, amber for flagged or due. A flagged row means the SEC changed something
 upstream, and the message on the row says what. The manual button still exists
 for the rare day you want a pull immediately.</p>
-</section>
-
-<section id="autopilot">
-<h2>Autopilot</h2>
-<p>Some work takes days rather than minutes: reading eight thousand brochures,
-extracting the contact details printed in them, reading every firm's website
-for its team, refetching current filings for the flagged firms. Those run as
-background jobs on <a href="/health">Pipeline health</a>, each with a sentence
-on why it exists, a progress bar, and its own <strong>Start</strong> and
-<strong>Pause</strong>.</p>
-<p>Jobs run in small slices and check their state between each one, so pausing
-takes effect within seconds and never requires killing anything, and a job that
-finishes pauses itself. Nothing here costs money: every job talks only to the
-SEC, to advisers' own websites, or to a DNS resolver.</p>
 </section>
 
 <section id="numbers">
@@ -352,21 +322,6 @@ baseline to compare against, never as today.</li>
 a hundred million in listed equities, so most firms this size never have to
 file.</li>
 </ul>
-</section>
-
-<section id="keys">
-<h2>Keyboard</h2>
-<div class="keys">
-<div><span class="k"><kbd>Ctrl</kbd><kbd>K</kbd></span>
-<span>Jump to any firm by name or CRD, from any screen</span></div>
-<div><span class="k"><kbd>j</kbd> <kbd>k</kbd></span>
-<span>Move down and up the inbox</span></div>
-<div><span class="k"><kbd>d</kbd></span><span>Mark the selected row done</span></div>
-<div><span class="k"><kbd>s</kbd></span><span>Snooze it</span></div>
-<div><span class="k"><kbd>x</kbd></span><span>Dismiss it</span></div>
-<div><span class="k"><kbd>Enter</kbd></span>
-<span>Open the selected row's firm</span></div>
-</div>
 </section>
 
 <section id="ops">

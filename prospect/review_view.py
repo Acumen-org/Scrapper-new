@@ -156,14 +156,17 @@ def review_queue(kind: str = Query(""), page: int = Query(1, ge=1),
         counts = (n_match, n_neg)
 
     return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
-<title>Review queue</title><style>{REVIEW_CSS}</style>
-{nav("review")}
-<header><h1>Review queue</h1>
-<div class="sub">You never have to clear this queue. An unreviewed row always
-defaults to the safe reading; reviewing just sharpens the firms you are about
-to call.</div></header>
+<title>System</title><style>{REVIEW_CSS}
+.systabs a{{font-size:14px;text-decoration:none;color:var(--soft);padding:6px 2px;margin-right:16px}}
+.systabs a.on{{color:var(--red-hi);font-weight:700;border-bottom:2px solid var(--red)}}</style>
+{nav("system")}
+<header><h1>System</h1>
+<div class="sub">You never have to clear the review queue. An unreviewed row
+always defaults to the safe reading; reviewing just sharpens the firms you are
+about to call.</div></header>
 <div class="wrap">
-<p style="font-size:13px"><a href="/">&larr; Trigger inbox</a> &middot;
+<p class="systabs"><a href="/health">Pipeline health</a><a href="/review" class="on">Review queue</a></p>
+<p style="font-size:13px">
 {tab('', 'All', sum(counts))} &middot;
 {tab('match_13f', '13F matches', counts[0])} &middot;
 {tab('brochure_negation', 'Brochure negations', counts[1])}</p>
