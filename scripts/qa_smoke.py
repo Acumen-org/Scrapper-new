@@ -249,6 +249,24 @@ def pass_routes(base: str, detail_crd: str) -> None:
             ok(f"GET {path} ({dt*1000:.0f}ms)")
 
 
+def pass_markup(base: str) -> None:
+    """Markup and styling, from scripts.qa_html.
+
+    A page can return 200 with all the right words in it and still be visually
+    broken: a duplicate style attribute silently dropped, a class with no rule,
+    an unclosed tag reflowing the layout. Run here so one command covers both,
+    while the session from sign_in is still live."""
+    print("\n[1b] markup, CSS and template checks")
+    from scripts import qa_html
+    before = len(qa_html.FAILURES)
+    for pth in qa_html.PAGES + qa_html.detail_pages():
+        qa_html.check_page(base, pth, _OPENER)
+    found = qa_html.FAILURES[before:]
+    FAILURES.extend(found)
+    if not found:
+        ok(f"{len(qa_html.PAGES) + 1} pages: markup, CSS and templates clean")
+
+
 def pass_writes(base: str, db_path: str) -> None:
     print("\n[2] write round-trips (disposable rows)")
     c = sqlite3.connect(db_path, timeout=30)
@@ -397,6 +415,7 @@ def main() -> int:
     created = sign_in(args.base)
     try:
         pass_routes(args.base, detail_crd)
+        pass_markup(args.base)
         pass_writes(args.base, "prospect.db")
         pass_latency(args.base, detail_crd)
         pass_concurrency(args.base, detail_crd)

@@ -26,6 +26,18 @@ from .webapp import PAGE_CSS, conn, current_owner, esc, money, nav
 
 router = APIRouter()
 
+FIRMS_CSS = PAGE_CSS + """
+.vtab{font-size:14px;text-decoration:none;color:var(--soft);padding:6px 2px;
+margin-right:18px;display:inline-block}
+.vtab:hover{color:var(--ink)}
+.vtab.on{color:var(--red-hi);font-weight:700;border-bottom:2px solid var(--red)}
+.toolbar{display:flex;justify-content:space-between;align-items:flex-end;
+gap:16px;flex-wrap:wrap;margin:6px 0 14px}
+.toolbar .count{font-size:13px;color:var(--soft)}
+.toolbar .count b{color:var(--ink)}
+.listpick{min-width:0;padding:3px 7px;font-size:11.5px}
+"""
+
 STATUS_LABEL = {"domain_accepts_mail": "domain ok", "no_mail_server": "dead domain",
                 "bad_syntax": "malformed", "queued": "unchecked", "candidate": "guess"}
 
@@ -160,6 +172,10 @@ def firms(preset: str = Query("all"), view: str = Query("firms"),
         body, total = _firms_body(c, where, args, has_score, preset, page, per,
                                   _qs(preset, view, q, st, band, seg, stat, owner,
                                       trig, list_id))
+    # Read the state list before closing: calling _states(conn()) from inside
+    # the template opened a second connection on every page load and never
+    # closed it.
+    state_list = _states(c)
     c.close()
 
     def opt(v, cur, label):
@@ -178,10 +194,12 @@ def firms(preset: str = Query("all"), view: str = Query("firms"),
         f'My list: {esc(l["name"])}</option>' for l in lists)
 
     def vtab(v, label):
-        on = ' style="font-weight:700;color:var(--red-hi);border-bottom:2px solid var(--red)"' \
-             if view == v else ' style="color:var(--soft)"'
+        # One class, styled in the sheet. Two style attributes on one element
+        # means the browser keeps the first and silently drops the second, which
+        # is how these tabs lost their underline removal and padding.
         href = "/firms?" + _qs(preset, v, q, st, band, seg, stat, owner, trig, list_id)
-        return f'<a href="{href}"{on} style="text-decoration:none;padding:6px 2px;margin-right:16px">{label}</a>'
+        cls = "vtab on" if view == v else "vtab"
+        return f'<a class="{cls}" href="{href}">{label}</a>'
 
     title = active_list_name and f"My list: {esc(active_list_name)}" or \
         PRESETS.get(preset, ("Firms",))[0]
@@ -189,7 +207,7 @@ def firms(preset: str = Query("all"), view: str = Query("firms"),
     exp_label = "Export contacts (Excel)" if view == "contacts" else "Export firms (CSV)"
 
     return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
-<title>Firms</title><style>{PAGE_CSS}</style>
+<title>Firms</title><style>{FIRMS_CSS}</style>
 {nav("firms")}
 <header><h1>Firms</h1>
 <div class="sub">Find, filter, and export firms and their contacts. A preset
@@ -205,7 +223,7 @@ filters narrow it; the two tabs show firms or the mail-merge contact list.</div>
 <input type="hidden" name="list" value="{esc(list_id)}">
 <label>Search<input type="text" name="q" value="{esc(q)}" placeholder="name or CRD"></label>
 <label>State<select name="st">{opt("", st, "All states")}
-{"".join(opt(s, st, s) for s in _states(conn()))}</select></label>
+{"".join(opt(s, st, s) for s in state_list)}</select></label>
 <label>AUM band<select name="band">
 {"".join(opt(k, band, v[0]) for k, v in BANDS.items())}</select></label>
 <label>Real estate<select name="seg">{opt("", seg, "Any")}
@@ -218,10 +236,10 @@ filters narrow it; the two tabs show firms or the mail-merge contact list.</div>
 <button class="primary" type="submit">Apply</button>
 <a href="/firms" style="align-self:center;font-size:13px">Reset</a>
 </form>
-<div style="display:flex;justify-content:space-between;align-items:center;margin:2px 0 12px">
+<div class="toolbar">
 <div>{vtab("firms","Firms")}{vtab("contacts","Contacts")}</div>
-<div style="font-size:13px"><b>{title}</b> &middot; {total:,} {"people" if view=="contacts" else "firms"}
-&middot; <a href="{exp}">{exp_label}</a></div>
+<div class="count"><b>{title}</b>, {total:,} {"people" if view=="contacts" else "firms"}
+&nbsp;&middot;&nbsp; <a href="{exp}">{exp_label}</a></div>
 </div>
 {body}
 <div class="pager">{prev} Page {page} of {pages} {nxt}</div>
@@ -282,7 +300,8 @@ def _firms_body(c, where, args, has_score, preset, page, per, qs):
 
     body = []
     for r in rows:
-        seg = f'<span class="seg {r["segment"]}">{esc(r["segment"])}</span>' if r["segment"] else ""
+        seg = (f'<span class="seg {esc(r["segment"])}">{esc(r["segment"])}</span>'
+               if r["segment"] else "")
         score = ""
         if r["score"] is not None:
             score = f'<td class="pri">{r["score"]:.1f}<div class="meta">#{r["srank"]}</div></td>'
@@ -293,13 +312,18 @@ def _firms_body(c, where, args, has_score, preset, page, per, qs):
             contact.append(f'<span class="chip lead">{r["n_email"]} email</span>')
         if r["phone"]:
             contact.append('<span class="chip">phone</span>')
+        # Built outside the f-string below: Python 3.11 forbids backslashes in
+        # an f-string expression, so nested quotes have to be resolved here.
+        contact_cell = " ".join(contact) or '<span class="meta">-</span>'
+        owner_div = (f'<div class="meta">{esc(r["wowner"])}</div>'
+                     if r["wowner"] else "")
         addform = (
             f'<form method="post" action="/firms/addtolist" style="display:inline">'
             f'<input type="hidden" name="crd" value="{esc(r["crd"])}">'
             f'<input type="hidden" name="back" value="/firms?{esc(qs)}">'
             f'<input type="hidden" name="new_name" value="">'
             f'<select name="list_id" onchange="addToList(this)" '
-            f'style="min-width:0;padding:3px 6px;font-size:11.5px">'
+            f'class="listpick">'
             f'<option value="">+ list</option>{listopts}'
             f'<option value="__new">+ new list...</option></select></form>')
         body.append(
@@ -309,16 +333,18 @@ def _firms_body(c, where, args, has_score, preset, page, per, qs):
             f'<td class="num">{(100*(r["hnw_aum"] or 0)/r["raum"]) if r["raum"] else 0:.0f}%</td>'
             f'<td class="num">{r["hnw_clients"] or 0}</td>'
             f'<td>{seg}</td>'
-            f'<td>{" ".join(contact) or "<span class=meta>-</span>"}</td>'
-            f'<td>{esc(r["wstatus"] or "")}'
-            f'{("<div class=meta>"+esc(r["wowner"])+"</div>") if r["wowner"] else ""}</td>'
+            f'<td>{contact_cell}</td>'
+            f'<td>{esc(r["wstatus"] or "")}{owner_div}</td>'
             f'<td class="num">{r["trigs"] or ""}</td>'
             f'<td>{addform}</td></tr>')
-    sc_h = "<th style='width:70px'>Score</th>" if has_score else ""
+    sc_h = '<th style="width:70px">Score</th>' if has_score else ""
+    ncols = 9 if has_score else 8
+    empty = (f'<tr><td colspan="{ncols}" style="padding:26px;color:var(--faint)">'
+             f'No firms match these filters.</td></tr>')
     table = (f'<table><thead><tr>{sc_h}<th>Firm</th><th class="num">HNW%</th>'
              f'<th class="num">HNW cl</th><th>Real estate</th><th>Contacts</th>'
              f'<th>Status</th><th class="num">Trig</th><th>List</th></tr></thead>'
-             f'<tbody>{"".join(body) or ("<tr><td colspan=9 style=padding:26px;color:var(--faint)>No firms match.</td></tr>")}</tbody></table>')
+             f'<tbody>{"".join(body) or empty}</tbody></table>')
     return table, total
 
 
@@ -337,18 +363,25 @@ def _contacts_body(c, where, args, page, per):
             "dis" if r["status"] in ("no_mail_server", "bad_syntax") else "partial")
         src_chip = "lead" if r["trust"] == 3 else "partial"
         phone = r["person_phone"] or r["firm_phone"] or "-"
+        # A firm inbox has no person. Say so rather than rendering an empty
+        # bold cell that reads as missing data.
+        who = (f'<b>{esc(r["person"])}</b>' if r["person"]
+               else '<span style="color:var(--faint)">Shared inbox</span>')
         body.append(
             f'<tr><td><a href="/firm/{esc(r["crd"])}">{esc(r["legal_name"] or "")}</a>'
             f'<div class="meta">CRD {esc(r["crd"])} &middot; {esc(r["state"] or "-")}</div></td>'
-            f'<td><b>{esc(r["person"] or "")}</b><div class="meta">{esc(r["role"] or "")}</div></td>'
+            f'<td>{who}<div class="meta">{esc(r["role"] or "")}</div></td>'
             f'<td><a href="mailto:{esc(r["email"])}">{esc(r["email"])}</a>'
             f'<div class="meta"><span class="chip {src_chip}">{esc(r["source"])}</span> '
             f'<span class="chip {chip}">{esc(STATUS_LABEL.get(r["status"], r["status"]))}</span></div></td>'
             f'<td>{esc(phone)}</td></tr>')
+    empty = ('<tr><td colspan="4" style="padding:26px;color:var(--faint)">'
+             'No contacts for this set. Widen the filter, or let the website '
+             'enrichment and email inference jobs finish.</td></tr>')
     table = (f'<table><thead><tr><th style="width:280px">Firm</th>'
              f'<th style="width:220px">Person</th><th>Email</th>'
              f'<th style="width:150px">Phone</th></tr></thead>'
-             f'<tbody>{"".join(body) or ("<tr><td colspan=4 style=padding:26px;color:var(--faint)>No contacts for this set. Run the enrichment jobs, or widen the filter.</td></tr>")}</tbody></table>')
+             f'<tbody>{"".join(body) or empty}</tbody></table>')
     return table, total
 
 
@@ -441,22 +474,48 @@ def my_lists(response_class=HTMLResponse):
             f'<input type="hidden" name="list_id" value="{l["id"]}">'
             f'<button type="submit" style="padding:3px 10px;font-size:11.5px">Delete</button>'
             f'</form></td></tr>')
+    empty = ('<tr><td colspan="4" style="padding:26px;color:var(--faint)">'
+             'No lists yet. Add firms to one from the Firms section, or create '
+             'an empty list below.</td></tr>')
     table = (f'<table><thead><tr><th>List</th><th class="num">Firms</th>'
              f'<th>Open and export</th><th></th></tr></thead>'
-             f'<tbody>{"".join(rows) or ("<tr><td colspan=4 style=padding:26px;color:var(--faint)>No lists yet. Build one by adding firms from the Firms section, or create an empty one below.</td></tr>")}</tbody></table>')
+             f'<tbody>{"".join(rows) or empty}</tbody></table>')
+
+    # Saved filters: the other kind of saved thing, moved here out of the
+    # sidebar so everything you saved lives in one section.
+    c2 = conn()
+    views = c2.execute("SELECT id,name,page,qs FROM saved_view ORDER BY name").fetchall()
+    c2.close()
+    vrows = "".join(
+        f'<tr><td><a href="{"/firms" if v["page"]=="firms" else "/"}?{esc(v["qs"])}">'
+        f'<b>{esc(v["name"])}</b></a>'
+        f'<div class="meta">{"Firms filter" if v["page"]=="firms" else "Inbox filter"}</div></td>'
+        f'<td><form method="post" action="/views/delete">'
+        f'<input type="hidden" name="vid" value="{v["id"]}">'
+        f'<button type="submit" style="padding:3px 10px;font-size:11.5px">Delete</button>'
+        f'</form></td></tr>' for v in views)
+    vtable = (f'<h2 style="font-size:13px;text-transform:uppercase;'
+              f'letter-spacing:.08em;color:var(--faint);margin:28px 0 4px">'
+              f'Saved filters</h2>'
+              f'<p class="meta" style="margin:0 0 10px">Filter combinations you '
+              f'saved from the Inbox or Firms. Open one to jump straight back to '
+              f'that view.</p>'
+              f'<table><tbody>{vrows}</tbody></table>') if views else ""
+
     return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
 <title>Lists</title><style>{PAGE_CSS}</style>
 {nav("lists")}
 <header><h1>Lists</h1>
-<div class="sub">Your own firm buckets, like playlists. Assemble a set of firms
-by hand, then open it as a filtered Firms view or export its contacts. Separate
-from the scored presets, which are built in.</div></header>
+<div class="sub">Everything you saved. Lists are firm buckets you build by hand,
+like playlists: open one as a filtered Firms view, or export its contacts.
+Saved filters are shortcuts back to a filter combination.</div></header>
 <div class="wrap">
-<form class="filters" method="post" action="/lists/create" style="margin-bottom:16px">
-<label>New list<input type="text" name="name" placeholder="e.g. Q3 dinner, Boston push" required></label>
+<form class="filters" method="post" action="/lists/create">
+<label>New list<input type="text" name="name" placeholder="e.g. Q3 push, Boston metro" required></label>
 <button class="primary" type="submit">Create list</button>
 </form>
 {table}
+{vtable}
 </div>""")
 
 

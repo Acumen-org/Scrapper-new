@@ -525,6 +525,9 @@ color:var(--amber);line-height:1.6}
 /* Surfaces separate by tone, not by outline. One border less per element is the
    single biggest thing that stops a dense screen looking cluttered. */
 .card{background:var(--card);border:0;border-radius:14px;padding:17px 19px}
+/* Two-up layout, shared. Defined once here rather than per view, so a page
+   using class="grid" always gets the columns even without an inline override. */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
 .ok{color:var(--ok)} .bad{color:var(--red-hi)} .warnc{color:var(--amber)}
 .seg{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
 padding:2px 9px;border-radius:99px}
@@ -664,17 +667,9 @@ def _nav_html(active: str, inbox_n: int, review_n: int, feed_s) -> str:
         f'<a href="{u}" class="{"on" if k == active else ""}">{icons[k]}{t}'
         + (f'<span class="cnt">{n:,}</span>' if n else "") + "</a>"
         for k, u, t, n in items)
-    c2 = conn()
-    views = c2.execute("SELECT id,name,page,qs FROM saved_view ORDER BY name").fetchall()
-    c2.close()
-    if views:
-        vlinks = "".join(
-            f'<a href="{"/firms" if v["page"] == "firms" else "/"}?{esc(v["qs"])}" '
-            f'style="font-size:12.5px;padding:5px 11px">'
-            f'<span style="color:var(--faint)">&#9656;</span> {esc(v["name"])}</a>'
-            for v in views)
-        links += ('<div style="margin:12px 10px 4px;font-size:9.5px;letter-spacing:.12em;'
-                  'text-transform:uppercase;color:var(--faint)">Saved views</div>' + vlinks)
+    # Saved filters used to hang here as a second list under the five sections.
+    # They now live in Lists alongside the firm buckets, because two similar
+    # "things you saved" in two places is what made the sidebar confusing.
     power = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
              'stroke-width="1.8" stroke-linecap="round"><path d="M12 3v9"/>'
              '<path d="M6.4 6.4a8 8 0 1 0 11.2 0"/></svg>')
@@ -1076,7 +1071,9 @@ def view_delete(vid: int = Form(...)):
     c.execute("DELETE FROM saved_view WHERE id=?", (vid,))
     c.commit()
     c.close()
-    return RedirectResponse("/", status_code=303)
+    # Saved filters are managed in Lists now, so return there rather than
+    # bouncing the user to the inbox.
+    return RedirectResponse("/lists", status_code=303)
 
 
 @app.get("/favicon.ico")

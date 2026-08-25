@@ -26,7 +26,6 @@ router = APIRouter()
 STATUSES = ["new", "working", "meeting set", "qualified", "disqualified", "customer"]
 
 DETAIL_CSS = PAGE_CSS + """
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
 .card h2{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.09em;
 color:var(--faint);font-weight:600}
 .reach{display:flex;gap:9px;align-items:baseline;padding:5px 0;font-size:13.5px;
@@ -422,25 +421,47 @@ def firm_detail(crd: str):
     # How to reach them: real filed details first, guesses clearly second.
     # Order of trust: the firm's own brochure, then its Form ADV, then pattern
     # guesses, which stay visually subordinate because they are guesses.
+    import re as _re
+
+    def _key(v: str) -> str:
+        """Comparison key for de-duplicating a contact detail.
+
+        The same phone arrives in different shapes: Form ADV files
+        '415-501-9987' while the brochure prints '(415) 501-9987'. Comparing the
+        raw strings listed one number twice on the page, which reads as two
+        numbers. Digits for phones, lowercase for emails."""
+        v = (v or "").strip().lower()
+        return _re.sub(r"\D", "", v) if "@" not in v else v
+
     reach = []
+    seen_reach: set[str] = set()
     if f["phone"]:
+        seen_reach.add(_key(f["phone"]))
         reach.append(f'<div class="reach"><span class="chip lead">filed</span>'
                      f'<b>{esc(f["phone"])}</b>'
                      f'<span class="meta">main office, Form ADV</span></div>')
     for r in filed_info:
+        if _key(r["value"]) in seen_reach:
+            continue
+        seen_reach.add(_key(r["value"]))
         label = "email" if r["kind"] == "email" else "phone"
         val = (f'<a href="mailto:{esc(r["value"])}">{esc(r["value"])}</a>'
                if label == "email" else f'<b>{esc(r["value"])}</b>')
-        ctx = esc((r["context"] or "")[:70])
+        # The context is the brochure line the detail sat on. Often that line
+        # IS just the detail, and repeating it beside itself reads as a glitch.
+        raw_ctx = " ".join((r["context"] or "").split())
+        useful = (raw_ctx and _key(raw_ctx) != _key(r["value"])
+                  and raw_ctx.strip(" :") != r["value"])
+        ctx = esc(raw_ctx[:70]) if useful else ""
+        title_attr = f' title="{ctx}"' if ctx else ""
+        where = f"brochure, page 1-3{', ' + ctx if ctx else ''}"
         reach.append(f'<div class="reach"><span class="chip lead">filed</span>'
-                     f'{val}<span class="meta" title="{ctx}">brochure, page 1-3'
-                     f'{", " + ctx if ctx else ""}</span></div>')
-    filed_vals = {f["phone"]} | {r["value"] for r in filed_info}
+                     f'{val}<span class="meta"{title_attr}>{where}</span></div>')
     for r in web_firm:
         val = r["email"] or r["phone"]
-        if not val or val in filed_vals:
+        if not val or _key(val) in seen_reach:
             continue
-        filed_vals.add(val)
+        seen_reach.add(_key(val))
         shown = (f'<a href="mailto:{esc(val)}">{esc(val)}</a>'
                  if r["email"] else f"<b>{esc(val)}</b>")
         reach.append(f'<div class="reach"><span class="chip">their site</span>'
