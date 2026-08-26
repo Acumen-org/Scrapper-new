@@ -566,7 +566,8 @@ def add_to_list(crd: str = Form(...), list_id: str = Form(...),
     if list_id == "__new":
         name = (new_name.strip() or "My list")[:60]
         cur = c.execute("INSERT INTO user_list (name, created_at, created_by)"
-                        " VALUES (?,?,?)", (name, now, current_owner() or None))
+                        " VALUES (?,?,?) RETURNING id",
+                        (name, now, current_owner() or None))
         lid = cur.lastrowid
     elif list_id:
         lid = int(list_id)

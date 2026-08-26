@@ -1,4 +1,4 @@
-"""SQLite store.
+"""The store, on PostgreSQL.
 
 Two rules shape this schema:
 
@@ -13,10 +13,9 @@ Two rules shape this schema:
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
-from . import config
+from . import config, pg
 
 SCHEMA = """
 -- ---------------------------------------------------------------- provenance
@@ -125,16 +124,16 @@ CREATE INDEX IF NOT EXISTS ix_7b1_type ON sched_d_7b1 (fund_type);
 """
 
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
-    path = path or config.DB_PATH
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+def connect(path: Path | None = None) -> pg.Connection:
+    """The `path` argument is accepted and ignored.
+
+    It is kept only so that the call sites that still pass one keep working
+    through the migration; a Postgres connection comes from BELLWETHER_DSN.
+    It will be removed once nothing passes it."""
+    return pg.connect()
 
 
-def init(conn: sqlite3.Connection) -> None:
+def init(conn: pg.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.commit()
 

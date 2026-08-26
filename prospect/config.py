@@ -23,6 +23,9 @@ CONFIG_DIR = ROOT / "config"
 # local checkout behaves exactly as before with no environment set.
 DATA_DIR = Path(os.environ.get("BELLWETHER_DATA") or ROOT / "data")
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
+# Retained so the handful of call sites that still name it keep importing, and
+# because the SQLite file is still what the migration reads from. Nothing writes
+# to it any more; the live store is Postgres, reached through BELLWETHER_DSN.
 DB_PATH = Path(os.environ.get("BELLWETHER_DB") or ROOT / "prospect.db")
 
 # The accounts file is the one piece of config that is written at runtime rather

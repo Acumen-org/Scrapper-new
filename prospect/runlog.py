@@ -7,9 +7,10 @@ is loud by construction: the context manager records the exception and re-raises
 
 from __future__ import annotations
 
-import sqlite3
 import traceback
 from datetime import datetime, timezone
+
+from . import pg
 
 
 def _now() -> str:
@@ -19,7 +20,7 @@ def _now() -> str:
 class Run:
     """Context manager wrapping one source/stage execution."""
 
-    def __init__(self, conn: sqlite3.Connection, source_key: str, stage: str,
+    def __init__(self, conn: pg.Connection, source_key: str, stage: str,
                  config_stamp: str):
         self.conn = conn
         self.source_key = source_key
@@ -41,7 +42,7 @@ class Run:
     def __enter__(self) -> "Run":
         cur = self.conn.execute(
             "INSERT INTO run_log (source_key, stage, started_at, status, config_stamp)"
-            " VALUES (?,?,?,'running',?)",
+            " VALUES (?,?,?,'running',?) RETURNING id",
             (self.source_key, self.stage, _now(), self.config_stamp),
         )
         self.id = cur.lastrowid

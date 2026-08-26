@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from datetime import datetime, timezone
+
+from . import pg
 
 
 class SchemaViolation(RuntimeError):
@@ -25,7 +26,7 @@ def fingerprint(columns: list[str]) -> str:
     return hashlib.sha256("\x1f".join(columns).encode("utf-8")).hexdigest()
 
 
-def record_columns(conn: sqlite3.Connection, source_key: str, member: str,
+def record_columns(conn: pg.Connection, source_key: str, member: str,
                    columns: list[str], snapshot_id: int | None = None) -> str:
     """Store the observed header. Idempotent per distinct layout."""
     fp = fingerprint(columns)
@@ -40,7 +41,7 @@ def record_columns(conn: sqlite3.Connection, source_key: str, member: str,
     return fp
 
 
-def known_layouts(conn: sqlite3.Connection, source_key: str, member: str) -> list[list[str]]:
+def known_layouts(conn: pg.Connection, source_key: str, member: str) -> list[list[str]]:
     rows = conn.execute(
         "SELECT columns_json FROM source_schema WHERE source_key=? AND member=?"
         " ORDER BY id",
