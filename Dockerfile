@@ -23,8 +23,23 @@ COPY prospect/ ./prospect/
 COPY scripts/ ./scripts/
 COPY config/ ./config/
 
-# Runs unprivileged. The volume is chowned to this uid by the compose file.
+# Runs unprivileged.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin bellwether
+
+# /data has to exist, and be owned by the app, before VOLUME declares it. Docker
+# seeds a fresh named volume from whatever is at the mount point in the image,
+# ownership included; with no /data here it invents one owned by root and the
+# app cannot write its own database, accounts, or session key into it. A bind
+# mount takes its owner from the host instead, which is why the Nomad job tells
+# you to chown the host volume by hand.
+RUN mkdir -p /data && chown 10001:10001 /data
+
+# config/ is the one code directory written at runtime: the weekly cycle
+# regenerates target_securities.yml through scripts.build_cusip_map. COPY leaves
+# it owned by root, and the app is not root, so without this the weekly cycle
+# dies on a permission error the first time a CUSIP refresh comes due.
+RUN chown -R 10001:10001 /app/config
+
 USER 10001
 
 ENV PYTHONUNBUFFERED=1 \
@@ -32,6 +47,17 @@ ENV PYTHONUNBUFFERED=1 \
     BELLWETHER_DATA=/data \
     BELLWETHER_DB=/data/prospect.db \
     BELLWETHER_HTTPS=1
+
+# Accounts belong on the volume, not in the image. Left in config/ they are
+# created successfully, work until the next deploy, and then vanish with the
+# container that held them, locking everyone out of a running server.
+ENV BELLWETHER_USERS=/data/users.yml
+
+# Under any orchestrator the app does not own its own lifetime: this hides the
+# sidebar's Quit link, turns /quit into an explanation rather than a shutdown,
+# and clears the pidfiles a dead container left behind on the volume. One click
+# in the sidebar should not stop the server under the two people using it.
+ENV BELLWETHER_MANAGED=1
 
 VOLUME ["/data"]
 EXPOSE 8787

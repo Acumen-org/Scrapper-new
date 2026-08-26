@@ -25,6 +25,13 @@ DATA_DIR = Path(os.environ.get("BELLWETHER_DATA") or ROOT / "data")
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
 DB_PATH = Path(os.environ.get("BELLWETHER_DB") or ROOT / "prospect.db")
 
+# The accounts file is the one piece of config that is written at runtime rather
+# than edited by hand, so it is the one that cannot live inside the image: a
+# container's filesystem is rebuilt on every deploy, and accounts created in it
+# would disappear with it. Overridable for that reason alone; unset, it stays in
+# config/ exactly as before.
+USERS_FILE = Path(os.environ.get("BELLWETHER_USERS") or CONFIG_DIR / "users.yml")
+
 
 class ConfigError(RuntimeError):
     """Raised when config is missing or internally inconsistent."""

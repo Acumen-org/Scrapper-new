@@ -10,6 +10,12 @@
 
 fastapi==0.133.1
 uvicorn==0.41.0
+# FastAPI needs this to read a Form(...), which is every POST the app has,
+# starting with the login. Without it the app does not fail at the first login
+# attempt -- it refuses to import at all, so the server never starts. It was
+# absent here while still present in the Windows environment, which is exactly
+# why it went unnoticed until the image was run.
+python-multipart==0.0.32
 lxml==6.1.1
 pdfplumber==0.11.10
 PyYAML==6.0.3

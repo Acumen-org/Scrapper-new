@@ -16,11 +16,14 @@ machine that runs Bellwether.
 
 ## 1. Put the code on GitHub (do this first, whichever host you pick)
 
-`gh` is not installed here, so create the repository in the browser: New
-repository, name it `bellwether`, **Private**, and do not add a README or
-.gitignore (this repo has its own).
+`gh` is installed on this machine, so this is one command from this folder:
 
-Then, from this folder:
+```bash
+gh repo create bellwether --private --source=. --remote=origin --push
+```
+
+If you would rather use the browser: New repository, name it `bellwether`,
+**Private**, and do not add a README or .gitignore (this repo has its own). Then:
 
 ```bash
 git remote add origin https://github.com/<your-org>/bellwether.git
@@ -149,6 +152,64 @@ If you go this way, attach a persistent volume (Fly: `fly volumes create
 bellwether_data --size 20`), mount it at `/data`, and run a single machine, never
 two. Two machines writing one SQLite file over a network filesystem will corrupt
 it.
+
+---
+
+## Option D: Nomad
+
+Use this if you already run a Nomad cluster. If you do not, Option A is the same
+two containers with less to learn, and nothing here is better for three people.
+
+The job is [`bellwether.nomad.hcl`](bellwether.nomad.hcl), and its header carries
+the full prerequisites: CNI plugins on the client, two host volumes declared in
+`client.hcl`, and the secrets stored as Nomad variables. The short version:
+
+```bash
+nomad var put nomad/jobs/bellwether \
+  secret=$(python3 -c "import secrets; print(secrets.token_hex(32))") \
+  contact=contact@acumen-strategy.com
+
+docker build -t registry.example.com/bellwether:$(date +%F) .
+docker push  registry.example.com/bellwether:$(date +%F)
+
+nomad job run \
+  -var image=registry.example.com/bellwether:$(date +%F) \
+  -var hostname=bellwether.acumen-strategy.com \
+  bellwether.nomad.hcl
+```
+
+Three differences from compose that are worth knowing before you rely on it:
+
+**Nomad does not build images.** Compose had `build: .`. Here the image must be
+in a registry the client can pull from, and the tag must be real — never
+`:latest`, because `auto_revert` has nothing to revert to when every build shares
+a name. Forget the push and Nomad quietly places the previous image.
+
+**`count = 1` and `canary = 0` are load-bearing.** A canary runs *alongside* the
+old allocation, which is two processes writing one SQLite file. Same hazard as
+running two machines on Fly. Do not scale this job.
+
+**The job is pinned to one client** by its host volume, and does not relocate.
+That is the intended behaviour, not a limitation to work around.
+
+---
+
+## Where the state lives
+
+Four things survive a redeploy, and all four are on the mounted volume rather
+than in the image. This matters because the image is rebuilt and replaced every
+time you deploy, and anything written inside it goes with it.
+
+| | Path on the volume | Set by |
+| --- | --- | --- |
+| Database | `/data/prospect.db` | `BELLWETHER_DB` |
+| Snapshots, brochures, caches, logs | `/data/` | `BELLWETHER_DATA` |
+| Accounts | `/data/users.yml` | `BELLWETHER_USERS` |
+| Session signing key | `/data/secret_key` | `BELLWETHER_SECRET`, or generated |
+
+The Dockerfile sets the first three, so compose and Nomad both get them without
+being told. Locally, with none of them set, everything stays where it always
+was: the database beside the code, accounts in `config/users.yml`.
 
 ---
 

@@ -7,7 +7,10 @@ people sharing a login and nobody knowing who did what.
 
 Design, kept deliberately small:
 
-  - Users live in config/users.yml, which is gitignored. Passwords are stored
+  - Users live in config/users.yml, which is gitignored, or wherever
+    BELLWETHER_USERS points -- a container puts it on the mounted volume, since
+    accounts written inside an image do not survive the next deploy. Passwords
+    are stored
     only as PBKDF2-SHA256 hashes, never in the clear, and the file holds no
     plaintext even briefly (scripts.manage_users hashes before writing).
   - Sessions are a signed cookie, not server state, so restarting the server
@@ -36,7 +39,7 @@ import yaml
 
 from . import config
 
-USERS_FILE = config.CONFIG_DIR / "users.yml"
+USERS_FILE = config.USERS_FILE
 SECRET_FILE = config.DATA_DIR / "secret_key"
 COOKIE = "bellwether_session"
 SESSION_DAYS = 30
