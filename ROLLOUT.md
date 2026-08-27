@@ -245,19 +245,25 @@ exposing its API, which is a decision to make on purpose rather than inherit.
 
 ### Deploys
 
-Push to `main` and CI builds and publishes the image for you. Then either let
-the CI deploy step do it (set the secrets above), or from the server:
+Push to `main` and CI builds and publishes the image for you, tagged with the
+commit sha. Then either let the CI deploy step do it (set the secrets above), or
+from the server, passing that sha:
 
 ```bash
-nomad job run   -var image=ghcr.io/acumen-org/scrapper-new:latest   -var hostname=bellwether.pmx.acumen-strategy.com   bellwether.nomad.hcl
+nomad job run   -var image=ghcr.io/acumen-org/scrapper-new:<12-char-sha>   -var hostname=bellwether.pmx.acumen-strategy.com   bellwether.nomad.hcl
 ```
 
-Pin the sha tag instead of `latest` when you want a deploy you can point at
-later, and to roll back:
+Never pass `:latest`, for the reason the jobspec's own `image` variable gives:
+Nomad cannot tell you which build is running when every build shares a name, and
+`auto_revert` then has nothing to revert to. The sha tag is what makes a rollback
+possible:
 
 ```bash
 nomad job run -var image=ghcr.io/acumen-org/scrapper-new:<previous-sha> ...
 ```
+
+CI still publishes a `latest` tag for convenience when reading the registry, but
+it is never what gets deployed.
 
 Fully by hand, if CI is down:
 
