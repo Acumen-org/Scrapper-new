@@ -7,9 +7,10 @@
 #           without this passing.
 #   image   builds the container and publishes it to GHCR, tagged with the
 #           commit sha and with "latest". Only on main, only after the gate.
-#   deploy  tells Nomad to run the new image. Skipped automatically unless the
-#           NOMAD_ADDR and NOMAD_TOKEN secrets are set, so the rest of the
-#           pipeline is useful from day one without exposing Nomad to GitHub.
+#   release advances the `release` branch to the tested commit. A timer on the
+#           server watches that branch and deploys it, so nothing about the
+#           server is exposed to GitHub and no secrets are stored here.
+#   image   publishes to GHCR as a rollback artifact. Not the deploy path.
 #
 # The gate deliberately runs scripts.qa_pg, not scripts.qa_smoke: qa_smoke needs
 # a populated database (it looks up a real tier A firm to open), which CI does
@@ -74,16 +75,33 @@ jobs:
           python -m compileall -q prospect scripts
           python -c "from prospect import webapp; print('app imports,', len(webapp.app.routes), 'routes')"
       - name: No em dashes in shipped source
+        run: python -m scripts.qa_style
+
+  release:
+    # Fast-forwards the `release` branch to this tested commit. The server's
+    # timer watches that branch, so this is the gate between "tests passed" and
+    # "the website may run it". Nothing else advances the branch.
+    needs: gate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # GITHUB_TOKEN can move the branch; no PAT needed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Advance release to this commit
         run: |
-          if grep -rlP '\x{2014}' --include='*.py' --include='*.md' --include='*.yml' \
-               prospect scripts config *.md 2>/dev/null \
-             | grep -v 'qa_smoke.py\|qa_html.py'; then
-            echo "em dash found in the files listed above"; exit 1
-          fi
-          echo "clean"
+          git push origin "${GITHUB_SHA}:refs/heads/release"
+          echo "release now points at ${GITHUB_SHA::12}"
+          echo "the server deploys it within a few minutes"
 
   image:
+    # A rollback artifact in the registry, not the deploy path: the server builds
+    # locally because the image is private and the jobspec holds no credentials.
+    # continue-on-error so a registry problem never blocks a release.
     needs: gate
+    continue-on-error: true
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -119,43 +137,3 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Say what shipped
         run: echo "pushed ${{ steps.meta.outputs.tag }}"
-
-  deploy:
-    needs: image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Is Nomad configured?
-        id: cfg
-        env:
-          ADDR: ${{ secrets.NOMAD_ADDR }}
-          HOST: ${{ secrets.BELLWETHER_HOST }}
-        run: |
-          if [ -n "$ADDR" ] && [ -n "$HOST" ]; then
-            echo "ready=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=no" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Skip note
-        if: steps.cfg.outputs.ready != 'yes'
-        run: |
-          echo "NOMAD_ADDR is not set, so nothing was deployed."
-          echo "The image is built and in GHCR; deploy it from the server with:"
-          echo "  nomad job run -var image=${{ needs.image.outputs.tag }} \\"
-          echo "    -var hostname=bellwether.pmx.acumen-strategy.com bellwether.nomad.hcl"
-      - name: Install the Nomad CLI
-        if: steps.cfg.outputs.ready == 'yes'
-        run: |
-          curl -fsSL https://releases.hashicorp.com/nomad/1.8.4/nomad_1.8.4_linux_amd64.zip -o /tmp/n.zip
-          unzip -q /tmp/n.zip -d /tmp && sudo mv /tmp/nomad /usr/local/bin/
-          nomad version
-      - name: Deploy
-        if: steps.cfg.outputs.ready == 'yes'
-        env:
-          NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
-          NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
-        run: |
-          nomad job run \
-            -var image=${{ needs.image.outputs.tag }} \
-            -var hostname=${{ secrets.BELLWETHER_HOST }} \
-            bellwether.nomad.hcl

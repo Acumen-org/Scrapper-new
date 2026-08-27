@@ -1,0 +1,13 @@
+[Unit]
+Description=Deploy the newest CI-approved Bellwether build
+Documentation=https://github.com/Acumen-org/Scrapper-new/blob/main/ROLLOUT.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=BELLWETHER_REPO=/opt/bellwether
+Environment=BELLWETHER_HOST=bellwether.pmx.acumen-strategy.com
+ExecStart=/opt/bellwether/scripts/autodeploy.sh
+# The script takes its own lock, logs to the journal, and exits 0 when there is
+# nothing to do. So a non-zero exit here is a real failure worth alerting on.

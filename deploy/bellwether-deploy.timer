@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a new Bellwether release every 3 minutes
+
+[Timer]
+# 90 seconds after boot so Docker and Nomad are up first, then every 3 minutes.
+OnBootSec=90s
+OnUnitActiveSec=3min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

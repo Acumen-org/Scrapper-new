@@ -306,3 +306,79 @@ second job wanting them will not place.
 **Nothing is scheduled to verify the backups restore.** Until you have restored
 one into a scratch volume and signed in against it, you have a backup procedure,
 not a backup.
+
+---
+
+## Push to live: the automatic path
+
+Set up once, then a push is the whole workflow. Nothing about the server is
+exposed to GitHub and no credentials are stored there.
+
+**How it fits together.** CI runs the gate on every push. Only when the gate
+passes does it fast-forward a `release` branch to that commit. A timer on the
+server checks `release` every three minutes, and when it moves, builds the image
+from that exact commit and runs the Nomad job. `auto_revert` in the jobspec means
+an unhealthy new version is replaced by the previous one automatically.
+
+`release` exists so the server can never deploy a commit whose tests failed.
+Watching `main` directly would race CI and occasionally ship a red build.
+
+The server builds the image locally rather than pulling from GHCR. The repo is
+private, so its package is too, and the jobspec carries no registry credentials.
+Building on the box needs no secret anywhere. CI still publishes to GHCR as a
+rollback artifact.
+
+### One-time setup on the server
+
+Run as root on the Nomad client that holds the data volume.
+
+```bash
+# 1. The repo, at a fixed path the timer expects.
+#    If it is already cloned somewhere else, move it or set BELLWETHER_REPO.
+git clone https://github.com/Acumen-org/Scrapper-new.git /opt/bellwether
+cd /opt/bellwether
+
+# 2. Prove the deploy script works before automating it. Changes nothing.
+./scripts/autodeploy.sh --dry-run
+
+# 3. Install the timer.
+cp deploy/bellwether-deploy.service deploy/bellwether-deploy.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now bellwether-deploy.timer
+
+# 4. Confirm it is scheduled and watch the first run.
+systemctl list-timers bellwether-deploy.timer
+journalctl -u bellwether-deploy.service -f
+```
+
+If the repo lives somewhere other than `/opt/bellwether`, edit
+`Environment=BELLWETHER_REPO=` in the service file rather than moving anything.
+
+### Day to day
+
+```bash
+git add -A && git commit -m "what changed" && git push
+```
+
+Then watch the Actions tab. Green means the release branch moved; the site
+updates within about three minutes. Nothing else to do.
+
+### When something looks wrong
+
+```bash
+# What did the deployer last do, and why?
+journalctl -u bellwether-deploy.service -n 50
+
+# What is actually running, and is it healthy?
+nomad job status bellwether
+
+# Deploy right now instead of waiting for the timer.
+systemctl start bellwether-deploy.service
+
+# Roll back to a known good commit: point release at it and let the timer follow.
+git push --force origin <good-sha>:refs/heads/release
+```
+
+The deployer refuses to run if the server's copy of the repo has uncommitted
+edits, rather than building something that is not in git and cannot be rolled
+back to. If it ever says that, either commit those edits or `git checkout .`
