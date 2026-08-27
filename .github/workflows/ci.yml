@@ -1,0 +1,161 @@
+# Push to main, get a tested image. That is the whole point of this file.
+#
+# Three jobs, in order, each gating the next:
+#
+#   gate    runs the Postgres adapter checks against a real throwaway database
+#           on every push and every pull request. Nothing merges or ships
+#           without this passing.
+#   image   builds the container and publishes it to GHCR, tagged with the
+#           commit sha and with "latest". Only on main, only after the gate.
+#   deploy  tells Nomad to run the new image. Skipped automatically unless the
+#           NOMAD_ADDR and NOMAD_TOKEN secrets are set, so the rest of the
+#           pipeline is useful from day one without exposing Nomad to GitHub.
+#
+# The gate deliberately runs scripts.qa_pg, not scripts.qa_smoke: qa_smoke needs
+# a populated database (it looks up a real tier A firm to open), which CI does
+# not have. qa_smoke stays the pre-merge check you run against a real instance.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:        # lets you deploy the current main by hand
+
+concurrency:
+  # One pipeline per branch. A second push supersedes the first rather than
+  # racing it to the registry.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_USER: ci
+          POSTGRES_DB: bellwether_ci
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Postgres adapter checks
+        env:
+          BELLWETHER_DSN: postgresql://ci:ci@localhost:5432/bellwether_ci
+          BELLWETHER_DATA: ${{ runner.temp }}/data
+        run: |
+          mkdir -p "$BELLWETHER_DATA"
+          python -m scripts.qa_pg
+      - name: Every script parses and the app imports
+        env:
+          BELLWETHER_DSN: postgresql://ci:ci@localhost:5432/bellwether_ci
+          BELLWETHER_DATA: ${{ runner.temp }}/data
+        run: |
+          python -m compileall -q prospect scripts
+          python -c "from prospect import webapp; print('app imports,', len(webapp.app.routes), 'routes')"
+      - name: No em dashes in shipped source
+        run: |
+          if grep -rlP '\x{2014}' --include='*.py' --include='*.md' --include='*.yml' \
+               prospect scripts config *.md 2>/dev/null \
+             | grep -v 'qa_smoke.py\|qa_html.py'; then
+            echo "em dash found in the files listed above"; exit 1
+          fi
+          echo "clean"
+
+  image:
+    needs: gate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # GITHUB_TOKEN can push to GHCR with this; no PAT needed
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Work out the tag
+        id: meta
+        run: |
+          # Lowercase: GHCR rejects uppercase repository names.
+          repo=$(echo "${{ env.IMAGE }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=${{ env.REGISTRY }}/$repo" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ env.REGISTRY }}/$repo:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Say what shipped
+        run: echo "pushed ${{ steps.meta.outputs.tag }}"
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Is Nomad configured?
+        id: cfg
+        env:
+          ADDR: ${{ secrets.NOMAD_ADDR }}
+          HOST: ${{ secrets.BELLWETHER_HOST }}
+        run: |
+          if [ -n "$ADDR" ] && [ -n "$HOST" ]; then
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Skip note
+        if: steps.cfg.outputs.ready != 'yes'
+        run: |
+          echo "NOMAD_ADDR is not set, so nothing was deployed."
+          echo "The image is built and in GHCR; deploy it from the server with:"
+          echo "  nomad job run -var image=${{ needs.image.outputs.tag }} \\"
+          echo "    -var hostname=bellwether.pmx.acumen-strategy.com bellwether.nomad.hcl"
+      - name: Install the Nomad CLI
+        if: steps.cfg.outputs.ready == 'yes'
+        run: |
+          curl -fsSL https://releases.hashicorp.com/nomad/1.8.4/nomad_1.8.4_linux_amd64.zip -o /tmp/n.zip
+          unzip -q /tmp/n.zip -d /tmp && sudo mv /tmp/nomad /usr/local/bin/
+          nomad version
+      - name: Deploy
+        if: steps.cfg.outputs.ready == 'yes'
+        env:
+          NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
+          NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
+        run: |
+          nomad job run \
+            -var image=${{ needs.image.outputs.tag }} \
+            -var hostname=${{ secrets.BELLWETHER_HOST }} \
+            bellwether.nomad.hcl

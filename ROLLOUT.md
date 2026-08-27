@@ -225,17 +225,46 @@ Revisit when the queue holds review decisions somebody would not want to redo.
 
 ### The QA gate as a merge gate
 
-`python -m scripts.qa_smoke` already checks the login wall, every route, every
-write path, latency, and behaviour under concurrent load while the ingester
-writes. It exits nonzero on failure, so it is usable as CI unchanged. There is no
-CI configured today; a GitHub Actions workflow that builds the image and runs the
-gate on every pull request is the highest-value thing left in this repo.
+`python -m scripts.qa_smoke` checks the login wall, every route, every write
+path, latency, and behaviour under concurrent load while the ingester writes. It
+needs a populated database (it opens a real tier A firm), so it stays the check
+you run against a real instance before merging.
+
+CI now exists: `.github/workflows/ci.yml`. On every push and pull request it
+stands up a throwaway Postgres, runs `scripts.qa_pg` against it, compiles every
+module, imports the app, and fails on an em dash in shipped source. On a push to
+`main` that passes, it builds the image and publishes it to GHCR tagged with the
+commit sha and `latest`. GHCR needs no secret: the workflow's own `GITHUB_TOKEN`
+has `packages: write`.
+
+The deploy step is opt-in. It runs only when both `NOMAD_ADDR` and
+`BELLWETHER_HOST` repository secrets are set (plus `NOMAD_TOKEN` if the cluster
+is ACL-enabled); otherwise it prints the exact `nomad job run` line for the new
+image and stops. That default is deliberate: reaching Nomad from GitHub means
+exposing its API, which is a decision to make on purpose rather than inherit.
 
 ### Deploys
 
+Push to `main` and CI builds and publishes the image for you. Then either let
+the CI deploy step do it (set the secrets above), or from the server:
+
 ```bash
-git pull && python -m scripts.qa_smoke      # must print ALL CHECKS PASS
-docker build -t ghcr.io/<org>/bellwether:$(date +%F) . && docker push ...
+nomad job run   -var image=ghcr.io/acumen-org/scrapper-new:latest   -var hostname=bellwether.pmx.acumen-strategy.com   bellwether.nomad.hcl
+```
+
+Pin the sha tag instead of `latest` when you want a deploy you can point at
+later, and to roll back:
+
+```bash
+nomad job run -var image=ghcr.io/acumen-org/scrapper-new:<previous-sha> ...
+```
+
+Fully by hand, if CI is down:
+
+```bash
+git pull
+docker build -t ghcr.io/acumen-org/scrapper-new:$(git rev-parse --short=12 HEAD) .
+docker push ghcr.io/acumen-org/scrapper-new:$(git rev-parse --short=12 HEAD)
 nomad job run -var image=... -var hostname=... bellwether.nomad.hcl
 ```
 
