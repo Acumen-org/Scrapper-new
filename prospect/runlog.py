@@ -96,6 +96,13 @@ class Run:
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         if exc_type is not None:
+            # A failed statement aborts the whole Postgres transaction, so the
+            # bookkeeping UPDATE below cannot run until it is rolled back --
+            # and the InFailedSqlTransaction it would raise masks the real error.
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
             detail = "".join(traceback.format_exception_only(exc_type, exc)).strip()
             msg = f"{self.message}; {detail}" if self.message else detail
             self.conn.execute(

@@ -189,6 +189,7 @@ sources:
           fund_type_other: "Fund Type Other"
           gross_asset_value: "Gross Asset Value"
           minimum_investment: "Minimum Investment"
+          owners: "Owners"
           country: "Country"
           state: "State"
           fund_of_funds: "Fund of Funds"

@@ -213,7 +213,7 @@ def decide_negation(nid: int = Form(...), decision: str = Form(...)):
             # every ambiguous sentence for this tag resolved in the tag's favour:
             # lift the damp
             c.execute("UPDATE brochure_tag SET negation_damp=1.0,"
-                      " confidence=MIN(1.0, confidence/0.6)"
+                      " confidence=LEAST(1.0, confidence/0.6)"
                       " WHERE crd=? AND tag=? AND negation_damp<1.0",
                       (row["crd"], row["tag"]))
         elif decision == "negation_confirmed":

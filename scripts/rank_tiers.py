@@ -123,7 +123,7 @@ def fund_profile(conn, crds):
         FROM sched_d_7b1 s
         JOIN filing_crd fc ON fc.filing_id=s.filing_id
         JOIN latest l ON l.crd=s.crd AND l.d=fc.filing_date
-        GROUP BY s.crd""")
+        GROUP BY s.crd, l.d""")
     for r in q:
         if r["crd"] in crds:
             out[r["crd"]] = r
@@ -156,7 +156,7 @@ def main() -> int:
         SELECT s.crd, f.raum, SUM(COALESCE(s.gross_asset_value,0)) gav
         FROM sched_d_7b1 s JOIN filing_crd fc ON fc.filing_id=s.filing_id
         JOIN latest l ON l.crd=s.crd AND l.d=fc.filing_date
-        JOIN firm_current f ON f.crd=s.crd GROUP BY s.crd"""):
+        JOIN firm_current f ON f.crd=s.crd GROUP BY s.crd, f.raum"""):
         gav_by_crd[r["crd"]] = r["gav"]
         ratio = (r["gav"] / r["raum"]) if r["raum"] else None
         src_by_crd[r["crd"]] = ("unknown" if ratio is None else

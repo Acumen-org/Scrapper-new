@@ -377,14 +377,11 @@ def stop_everything() -> None:
     _kill_tree(target)
 
 
-def conn() -> sqlite3.Connection:
+def conn():
     """Per-request connection. No DDL here, ever: reads must never become
     writes. Generous busy timeout so a writer's brief commit never bounces a
     click while background ingest is running."""
-    c = sqlite3.connect(config.DB_PATH, timeout=20.0)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA busy_timeout=20000")
-    return c
+    return db.connect()
 
 
 def esc(v) -> str:
@@ -621,6 +618,14 @@ def nav(active: str) -> str:
         try:
             return c.execute(sql).fetchone()["n"]
         except Exception:
+            # Postgres aborts the whole transaction on a failed statement, so
+            # swallowing the error is not enough: without the rollback every
+            # later query on this connection fails too, and the badge count
+            # this was meant to degrade gracefully takes the page down.
+            try:
+                c.rollback()
+            except Exception:
+                pass
             return 0
 
     inbox_n = one("""SELECT COUNT(*) n FROM trigger_event t

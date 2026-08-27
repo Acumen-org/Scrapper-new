@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS sched_d_7b1 (
     fund_type_other     TEXT,
     gross_asset_value   INTEGER,
     minimum_investment  INTEGER,
+    owners              INTEGER,
     state               TEXT,
     country             TEXT,
     fund_of_funds       TEXT,

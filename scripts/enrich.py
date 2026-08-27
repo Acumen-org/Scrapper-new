@@ -27,6 +27,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from prospect import config, custodians, db, runlog, snapshot  # noqa: E402
 
+def _open_text(path):
+    """The crosswalk member is stored inflated (ingest_schedule_d writes it that
+    way), while the weekly feeds are gzipped. Sniff rather than assume, so
+    either form reads correctly."""
+    with open(path, "rb") as fh:
+        magic = fh.read(2)
+    if magic == b"\x1f\x8b":
+        return gzip.open(path, "rt", encoding="utf-8-sig", errors="replace")
+    return open(path, "rt", encoding="utf-8-sig", errors="replace")
+
+
 DATE_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y")
 
 
@@ -73,7 +84,7 @@ def step_dates(conn, cfg) -> None:
     print(f"reading dates from {path.name}")
 
     batch, n, unparsed = [], 0, 0
-    with gzip.open(path, "rt", encoding="utf-8-sig", errors="replace") as fh:
+    with _open_text(path) as fh:
         for rec in csv.DictReader(fh):
             fid = (rec.get("FilingID") or "").strip()
             if not fid:
@@ -128,7 +139,7 @@ def step_custodians(conn, cfg) -> None:
     for i in range(0, len(updates), 5000):
         conn.executemany(
             "UPDATE sched_d_5k3 SET custodian_entity=?, custodian_canonical=?"
-            " WHERE custodian_business_name IS ? AND custodian_legal_name IS ?",
+            " WHERE custodian_business_name IS NOT DISTINCT FROM ? AND custodian_legal_name IS NOT DISTINCT FROM ?",
             updates[i:i + 5000])
         conn.commit()
 

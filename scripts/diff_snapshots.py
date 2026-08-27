@@ -134,8 +134,8 @@ def apply_recency(conn, stamp_like: str, rec: dict, today: str) -> None:
         SET age_days = CAST(julianday(?) - julianday(detected_date) AS INTEGER)
         WHERE config_stamp LIKE ?""", (today, stamp_like))
     conn.execute("""UPDATE trigger_event
-        SET recency_weight = MAX(?, POWER(0.5, age_days / ?)),
-            priority = MAX(?, POWER(0.5, age_days / ?)) * COALESCE(direction_weight, 1.0)
+        SET recency_weight = GREATEST(?, POWER(0.5, age_days / ?)),
+            priority = GREATEST(?, POWER(0.5, age_days / ?)) * COALESCE(direction_weight, 1.0)
         WHERE config_stamp LIKE ? AND age_days IS NOT NULL""",
         (floor, float(half), floor, float(half), stamp_like))
     conn.commit()

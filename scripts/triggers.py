@@ -165,8 +165,8 @@ def apply_weights(conn, rec_cfg, today) -> None:
     """, (today,))
     conn.execute("""
         UPDATE trigger_event
-           SET recency_weight = MAX(?, POWER(0.5, age_days / ?)),
-               priority = MAX(?, POWER(0.5, age_days / ?)) * COALESCE(direction_weight, 1.0)
+           SET recency_weight = GREATEST(?, POWER(0.5, age_days / ?)),
+               priority = GREATEST(?, POWER(0.5, age_days / ?)) * COALESCE(direction_weight, 1.0)
          WHERE age_days IS NOT NULL
     """, (floor, float(half), floor, float(half)))
     conn.commit()
@@ -181,7 +181,8 @@ def base_rates(conn) -> None:
     print(f"  {'year':<6} {'live':>7} {'suppressed':>11} {'firms w/ data':>14} {'live rate':>10}")
     rows = conn.execute("""
         SELECT substr(detected_date,1,4) y,
-               SUM(suppressed=0) live, SUM(suppressed=1) supp
+               COUNT(*) FILTER (WHERE suppressed=0) live,
+               COUNT(*) FILTER (WHERE suppressed=1) supp
         FROM trigger_event WHERE trigger_type LIKE 'custodian_change%'
         GROUP BY 1 ORDER BY 1""").fetchall()
     for r in rows:

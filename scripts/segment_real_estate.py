@@ -128,7 +128,8 @@ def main() -> int:
             JOIN firm_current f ON f.crd=s.crd
             WHERE s.fund_type='Real Estate Fund'
               AND f.is_era=0 AND f.raum>=25e6 AND f.raum<500e6
-            GROUP BY s.crd""").fetchall()
+            GROUP BY s.crd, l.d, fs.f, f.raum, f.legal_name,
+                     f.hnw_clients, f.hnw_aum""").fetchall()
 
         out = []
         for r in rows:

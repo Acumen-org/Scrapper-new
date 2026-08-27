@@ -20,6 +20,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from prospect import config, db, guard, runlog  # noqa: E402
 
+def _open_text(path):
+    """The crosswalk member is stored inflated (ingest_schedule_d writes it that
+    way), while the weekly feeds are gzipped. Sniff rather than assume, so
+    either form reads correctly."""
+    with open(path, "rb") as fh:
+        magic = fh.read(2)
+    if magic == b"\x1f\x8b":
+        return gzip.open(path, "rt", encoding="utf-8-sig", errors="replace")
+    return open(path, "rt", encoding="utf-8-sig", errors="replace")
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS firm_history (
     crd         TEXT NOT NULL,
@@ -60,7 +71,7 @@ def main() -> int:
             path = config.SNAPSHOT_DIR / row["rel_path"]
             print(f"streaming {path.name}")
             batch, n = [], 0
-            with gzip.open(path, "rt", encoding="utf-8-sig", errors="replace") as fh:
+            with _open_text(path) as fh:
                 rdr = csv.DictReader(fh)
                 guard.require_columns(list(rdr.fieldnames or []),
                                       ["1E1", "DateSubmitted", "5F2c", "5B1"],
