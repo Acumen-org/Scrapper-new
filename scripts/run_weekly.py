@@ -60,6 +60,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip", default="", help="comma separated step names to skip")
     ap.add_argument("--brochure-slice", type=int, default=150)
+    ap.add_argument("--web-slice", type=int, default=150)
     args = ap.parse_args()
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
 
@@ -79,6 +80,7 @@ def main() -> int:
         run("scripts.ingest_schedule_d")
         run("scripts.enrich")
         run("scripts.custodian_share")
+        run("scripts.ingest_schedule_a")
 
     if "diff" not in skip:
         run("scripts.diff_snapshots")
@@ -102,6 +104,12 @@ def main() -> int:
     if "brochures" not in skip:
         run("scripts.brochures", "--scope", "band",
             "--limit", str(args.brochure_slice))
+    # Third-party websites, not SEC endpoints: slower, and a site being
+    # down is normal rather than a failure. Sliced like the brochures so
+    # the cycle keeps a predictable length.
+    if "web" not in skip:
+        run("scripts.web_enrich", "--limit", str(args.web_slice))
+
     if "cusip" not in skip:
         conn = db.connect()
         if cusip_due(conn):
