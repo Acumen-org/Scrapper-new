@@ -138,10 +138,18 @@ def resolve_via_fts(ticker, pattern, fetch, ua):
 def sample_filings(conn, n: int):
     """Spread the sample across quarters so a ticker that only recently began
     trading is still observable."""
+    # One filing per filer, then a random sample of those. SQLite returned an
+    # arbitrary row per GROUP BY cik; Postgres requires the choice to be
+    # explicit, and DISTINCT ON needs its own ORDER BY, so the randomising sort
+    # moves outside.
     return conn.execute("""
-        SELECT cik, accession, company_name, quarter FROM edgar_13f_filer
-        WHERE accession IS NOT NULL
-        GROUP BY cik ORDER BY RANDOM() LIMIT ?""", (n,)).fetchall()
+        SELECT * FROM (
+            SELECT DISTINCT ON (cik) cik, accession, company_name, quarter
+            FROM edgar_13f_filer
+            WHERE accession IS NOT NULL
+            ORDER BY cik, quarter DESC
+        ) one_per_filer
+        ORDER BY RANDOM() LIMIT ?""", (n,)).fetchall()
 
 
 def main() -> int:
