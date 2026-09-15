@@ -273,7 +273,7 @@ def _weekly_due(c) -> tuple[bool, str]:
     if age_days < FEED_DUE_DAYS:
         return False, f"feed captured {age_days:.1f} days ago; due at {FEED_DUE_DAYS}"
     busy = c.execute("SELECT COUNT(*) n FROM run_log WHERE status='running'"
-                     " AND started_at > datetime('now','-2 hours')").fetchone()["n"]
+                     " AND started_at::timestamptz > NOW() - INTERVAL '2 hours'").fetchone()["n"]
     if busy:
         return False, "a run is already in flight"
     return True, f"feed is {age_days:.1f} days old"
@@ -1094,7 +1094,7 @@ def run_weekly_now():
     import sys as _sys
     c = conn()
     busy = c.execute("SELECT COUNT(*) n FROM run_log WHERE status='running'"
-                     " AND started_at > datetime('now','-2 hours')").fetchone()["n"]
+                     " AND started_at::timestamptz > NOW() - INTERVAL '2 hours'").fetchone()["n"]
     c.close()
     if busy:
         return RedirectResponse("/health?msg=already-running", status_code=303)
