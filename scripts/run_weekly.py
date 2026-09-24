@@ -60,6 +60,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip", default="", help="comma separated step names to skip")
     ap.add_argument("--brochure-slice", type=int, default=150)
+    ap.add_argument("--web-slice", type=int, default=150)
     args = ap.parse_args()
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
 
@@ -69,16 +70,46 @@ def main() -> int:
     if "firms" not in skip:
         run("scripts.ingest_firms")
         run("scripts.ingest_firms", "--source", "adv_state_feed")
+    # The static bulk archives and everything derived from them. All of
+    # these are no-ops once held: the archives never change, the crosswalk
+    # loads once, and enrich skips what it has already backfilled. They are
+    # in the cycle so a fresh install builds its own schema rather than
+    # needing a runbook.
+    if "archive" not in skip:
+        run("scripts.snapshot_archive", "--source", "schedule_d_archive")
+        run("scripts.ingest_schedule_d")
+        run("scripts.enrich")
+        run("scripts.custodian_share")
+        run("scripts.ingest_schedule_a")
+
     if "diff" not in skip:
         run("scripts.diff_snapshots")
         run("scripts.diff_snapshots", "--source", "adv_state_feed")
         run("scripts.build_firm_history")
+    # After enrich (custodian_entity) and the diffs, before the rescore
+    # that reads trigger priorities.
+    if "triggers" not in skip:
+        run("scripts.triggers")
+
+    # The ADV-to-13F intersection, which the working lists and the review
+    # queue both read.
+    if "overlay" not in skip:
+        run("scripts.ingest_13f_index")
+        run("scripts.match_13f")
+        run("scripts.build_overlay")
+
     if "rescore" not in skip:
         run("scripts.rank_tiers")
         run("scripts.segment_real_estate")
     if "brochures" not in skip:
         run("scripts.brochures", "--scope", "band",
             "--limit", str(args.brochure_slice))
+    # Third-party websites, not SEC endpoints: slower, and a site being
+    # down is normal rather than a failure. Sliced like the brochures so
+    # the cycle keeps a predictable length.
+    if "web" not in skip:
+        run("scripts.web_enrich", "--limit", str(args.web_slice))
+
     if "cusip" not in skip:
         conn = db.connect()
         if cusip_due(conn):

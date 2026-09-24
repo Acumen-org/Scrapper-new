@@ -203,7 +203,7 @@ def main() -> int:
         run.rows_out = len(out)
 
     print("\nmatch outcomes:")
-    for r in conn.execute("""SELECT status, COUNT(*) n, ROUND(AVG(confidence),3) c
+    for r in conn.execute("""SELECT status, COUNT(*) n, ROUND(AVG(confidence)::numeric,3) c
                              FROM adv_13f_match GROUP BY 1 ORDER BY n DESC"""):
         print(f"  {r['status']:<10} {r['n']:>5,}  mean confidence {r['c']}")
     print("\nby basis:")

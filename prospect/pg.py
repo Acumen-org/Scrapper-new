@@ -201,6 +201,11 @@ def translate(sql: str, has_params: bool = False) -> str | tuple[str, tuple]:
     sql = _JULIANDAY.sub(r"(\1)::date", sql)
     # SQLite's datetime('now') is Postgres NOW(). Both callers write it to a
     # bookkeeping column, so the extra precision and offset do no harm.
+    # datetime('now','-2 hours') and friends. The modifier maps straight onto
+    # an interval; the bare form is handled after so it does not swallow this.
+    sql = _DATETIME_MOD.sub(
+        lambda m: f"NOW() {'-' if m.group(1) == '-' else '+'} INTERVAL '{m.group(2)}'",
+        sql)
     sql = _DATETIME_NOW.sub("NOW()", sql)
     # SQLite's GROUP_CONCAT defaults to a comma; Postgres STRING_AGG requires
     # the separator spelled out. Two-argument calls carry their own.
@@ -220,6 +225,9 @@ _GROUP_CONCAT_2 = re.compile(
 _GROUP_CONCAT_1 = re.compile(r"GROUP_CONCAT\s*\(\s*([^()]+?)\s*\)", re.I)
 
 _PLAIN_INTEGER = re.compile(r"\bINTEGER\b(?!\s+GENERATED)", re.I)
+
+_DATETIME_MOD = re.compile(
+    r"datetime\s*\(\s*'now'\s*,\s*'([+-])(\d+\s+\w+)'\s*\)", re.I)
 
 _DATETIME_NOW = re.compile(r"datetime\s*\(\s*'now'\s*\)", re.I)
 

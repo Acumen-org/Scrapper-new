@@ -104,10 +104,17 @@ def main() -> int:
             print(f"archive history already built ({have:,} rows)")
 
         # append every held feed snapshot as a point on the line (idempotent)
+        # firm is keyed (snapshot_id, crd), so once a second weekly snapshot
+        # lands the same firm appears twice, and two rows for one (crd,
+        # filing_date) reach the upsert in a single statement. SQLite took the
+        # last one; Postgres rejects the whole command. Pick the newest
+        # snapshot per key explicitly rather than relying on that.
         conn.execute("""
             INSERT OR REPLACE INTO firm_history
-            SELECT f.crd, f.filing_date, f.raum, f.iar_count, 'feed'
-            FROM firm f WHERE f.filing_date IS NOT NULL""")
+            SELECT DISTINCT ON (f.crd, f.filing_date)
+                   f.crd, f.filing_date, f.raum, f.iar_count, 'feed'
+            FROM firm f WHERE f.filing_date IS NOT NULL
+            ORDER BY f.crd, f.filing_date, f.snapshot_id DESC""")
         conn.commit()
         pts = conn.execute("SELECT COUNT(*) n FROM firm_history").fetchone()["n"]
         firms = conn.execute("SELECT COUNT(DISTINCT crd) n FROM firm_history").fetchone()["n"]

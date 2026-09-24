@@ -132,7 +132,8 @@ def job_firm_refresh(conn, cfg, fetch) -> bool:
             continue
         try:
             with pdfplumber.open(io.BytesIO(pdf)) as doc:
-                text = "\n".join((p.extract_text() or "") for p in doc.pages)
+                # NUL bytes from embedded fonts are rejected by Postgres.
+                text = "\n".join((p.extract_text() or "") for p in doc.pages).replace("\x00", "")
             names = []
             for n in CUSTODIAN_RE.findall(text):
                 n = " ".join(n.split())

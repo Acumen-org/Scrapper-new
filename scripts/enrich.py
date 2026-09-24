@@ -173,12 +173,17 @@ def step_funds(conn, cfg) -> None:
         print(f"owners already backfilled ({done:,})")
     else:
         conn.execute(
+            # json_extract is SQLite's; Postgres reaches into JSON with ->>.
+            # The regex guard skips the handful of rows where Owners is not a
+            # plain number rather than failing the whole statement.
             "UPDATE sched_d_7b1 SET owners ="
-            " CAST(NULLIF(json_extract(raw_json,'$.Owners'),'') AS INTEGER)")
+            " NULLIF(raw_json::json->>'Owners','')::numeric::bigint"
+            " WHERE raw_json::json->>'Owners' ~ '^[0-9.]+$'")
         conn.commit()
     r = conn.execute(
-        "SELECT COUNT(*) n, SUM(owners IS NOT NULL) o,"
-        " SUM(minimum_investment IS NOT NULL) m FROM sched_d_7b1").fetchone()
+        "SELECT COUNT(*) n, COUNT(*) FILTER (WHERE owners IS NOT NULL) o,"
+        " COUNT(*) FILTER (WHERE minimum_investment IS NOT NULL) m"
+        " FROM sched_d_7b1").fetchone()
     print(f"  7B1 rows {r['n']:,}   owners {r['o']:,}   minimum_investment {r['m']:,}")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_7b1_cap ON sched_d_7b1 (owners, gross_asset_value)")
     conn.commit()

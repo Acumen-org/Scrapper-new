@@ -72,7 +72,8 @@ LEFT JOIN tier_a_rank ta ON ta.crd=p.crd AND ta.in_working_list=1
 LEFT JOIN (SELECT crd FROM tier_c_score WHERE rank<=100) tc ON tc.crd=p.crd
 LEFT JOIN firm_overlay ov ON ov.crd=p.crd AND ov.phh_13f=1
 WHERE fc.is_era=0 AND fc.raum>=25e6 AND fc.raum<500e6 {extra}
-GROUP BY p.crd, p.email, COALESCE(p.person,'')
+GROUP BY p.crd, p.email, COALESCE(p.person,''), p.person, p.source, p.status,
+         fc.legal_name, fc.state, fc.phone, ta.crd, tc.crd, ov.crd
 ORDER BY fc.legal_name, p.crd, MAX(p.trust) DESC, p.person
 """
 

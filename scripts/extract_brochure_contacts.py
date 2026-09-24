@@ -52,7 +52,8 @@ def extract(pdf_path: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]
     """(emails, phones) as (value, context) pairs from the first pages."""
     import pdfplumber
     with pdfplumber.open(pdf_path) as pdf:
-        text = "\n".join((p.extract_text() or "") for p in pdf.pages[:PAGES])
+        # NUL bytes from embedded fonts are rejected by Postgres text columns.
+        text = "\n".join((p.extract_text() or "") for p in pdf.pages[:PAGES]).replace("\x00", "")
     emails, phones = [], []
     for m in EMAIL_RE.findall(text):
         low = m.lower().strip(".")

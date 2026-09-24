@@ -135,7 +135,11 @@ def extract_text(pdf: bytes, max_pages: int) -> tuple[str, int]:
         pages = len(doc.pages)
         for pg in doc.pages[:max_pages]:
             parts.append(pg.extract_text() or "")
-    return "\n".join(parts), pages
+    # Some embedded fonts make pdfplumber emit NUL bytes. SQLite stored them
+    # without complaint; Postgres rejects them outright in a text column, so
+    # every snippet lifted from such a brochure failed on insert. They carry
+    # no meaning -- strip them once here rather than at each call site.
+    return "\n".join(parts).replace("\x00", ""), pages
 
 
 def item_spans(text: str) -> list[tuple[int, int]]:
