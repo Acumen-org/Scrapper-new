@@ -84,4 +84,4 @@ jobs:
           NOMAD_VAR_image_tag: ${{ needs.build.outputs.IMAGE_TAG }}
           NOMAD_VAR_harbor_username: ${{ secrets.HARBOR_USERNAME }}
           NOMAD_VAR_harbor_password: ${{ secrets.HARBOR_PASSWORD }}
-        run: nomad job run bellwether.nomad.hcl
+        run: nomad job run nomad/bellwether.nomad.hcl
