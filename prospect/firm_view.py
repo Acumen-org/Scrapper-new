@@ -1,54 +1,80 @@
-"""Firm detail: the click-through target from the inbox, structured as call prep.
+"""Firm page: everything needed to decide whether to call, and what to say.
 
-Two rules this page exists to enforce:
+One continuous document with a rail beside it. The document answers, in
+order: how does this firm fit each product and exactly why; what changed; what
+it says in its own words; who to reach; and the facts underneath. The rail
+holds what you act on: status, owner, notes, lists and the call prep.
 
-  1. A classification is shown with its inputs beside it. Fund gross asset value,
-     RAUM ratio, investor count and minimum investment sit in one row above the
-     verdict, so anyone can disagree with the call and see exactly what drove it.
-     A wrong classification must never be invisible.
+Rules this page enforces:
 
-  2. Every archive-derived figure carries its as-of date, not just Schwab share.
-     The historical archive ends 2024-12-31 and every firm has amended since.
+  1. A score is always shown with its inputs. Every criterion row carries the
+     evidence that set its level, so anyone can disagree with it and see why.
+  2. A person's judgement is labelled as one. A manual level shows who set it,
+     when, and what the filings alone would have said.
+  3. Every archive-derived figure carries its as-of date.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .webapp import (CAVEATS, PAGE_CSS, TYPE_LABEL, caveat, conn, current_owner,
-                     esc, money, nav)
+from . import products, ui
+from .webapp import (escn, nice_name, STATUSES, TYPE_LABEL, caveat, conn, current_owner, esc, money,
+                     page, tier_chip)
 
 router = APIRouter()
 
-STATUSES = ["new", "working", "meeting set", "qualified", "disqualified", "customer"]
-
-DETAIL_CSS = PAGE_CSS + """
-.card h2{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.09em;
-color:var(--faint);font-weight:600}
-.reach{display:flex;gap:9px;align-items:baseline;padding:5px 0;font-size:13.5px;
+FIRM_CSS = """
+.doc{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:44px;align-items:start}
+@media (max-width:1180px){.doc{grid-template-columns:minmax(0,1fr)}}
+.rail{position:sticky;top:22px;display:flex;flex-direction:column;gap:14px}
+.rail .panel h3{margin-bottom:8px}
+.rail form label{margin-bottom:8px}
+.rail select,.rail input[type=text]{width:100%;min-width:0}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+.facts .n{font:600 18px "Segoe UI",sans-serif;font-variant-numeric:tabular-nums}
+.facts .l{font-size:11px;color:var(--faint)}
+.sub-line{color:var(--soft);font-size:13.5px;margin-top:8px}
+.sub-line a{color:var(--soft)}
+details.fit{border-top:1px solid var(--rule);padding:0}
+details.fit:last-of-type{border-bottom:1px solid var(--rule)}
+details.fit > summary{display:grid;grid-template-columns:22px minmax(150px,220px) 50px 110px 1fr;
+align-items:center;gap:12px;padding:13px 2px}
+details.fit > summary:hover{background:rgba(255,255,255,.02)}
+details.fit > summary .caret{color:var(--faint);transition:transform .15s;font-size:11px}
+details.fit[open] > summary .caret{transform:rotate(90deg)}
+details.fit .pname{font-weight:600;font-size:15px}
+details.fit .what{color:var(--soft);font-size:13px}
+details.fit .inner{padding:4px 0 22px 34px}
+.bd td{vertical-align:top;font-size:13px}
+.bd .ev{color:var(--soft);line-height:1.45}
+.bd .pts{font-variant-numeric:tabular-nums;font-weight:600}
+.bd .man{color:var(--amber);font-size:11.5px;margin-top:4px}
+.bd form{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.adj > summary{display:inline-block;font-size:12px;color:var(--faint);margin-top:5px;
+text-decoration:underline;text-decoration-color:var(--rule2);text-underline-offset:3px}
+.adj > summary:hover{color:var(--red-hi)}
+.bd form select{min-width:0;max-width:270px;font-size:12.5px;padding:4px 7px}
+.bd form input{min-width:0;width:170px;font-size:12.5px;padding:4px 7px}
+.gline{font-size:12.5px;color:var(--soft);padding:2px 0}
+.gline b{color:var(--ok);font-weight:600}
+.gline b.x{color:var(--red-hi)}
+.tp{padding:10px 0;border-bottom:1px solid var(--rule)}
+.tp:last-child{border-bottom:0}
+.tp .q{font:italic 14.5px/1.55 Georgia,serif;color:var(--ink)}
+.reach{display:flex;gap:10px;align-items:baseline;padding:6px 0;font-size:13.5px;
 border-bottom:1px solid var(--rule)}
-.reach:last-of-type{border-bottom:0}
-.reach .meta{margin-top:0}
-.whyempty{color:var(--faint);font-size:13px;line-height:1.6;margin:2px 0 0}
-.kv{display:grid;grid-template-columns:150px 1fr;gap:5px 12px;font-size:13.5px}
-.kv dt{color:var(--soft)}
-.kv dd{margin:0}
-.inputs{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0 4px}
-.inputs div{border:1px solid var(--rule);padding:8px 10px}
-.inputs .n{font-size:19px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.inputs .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint)}
-.verdict{padding:9px 12px;border-left:3px solid var(--ok);background:var(--ok-bg);
-font-size:13.5px;margin-top:8px;border-radius:0 8px 8px 0}
-.verdict.sponsor,.verdict.competitor{border-left-color:var(--red);background:var(--red-bg)}
-.asof{font-size:11px;color:var(--faint);white-space:nowrap}
-textarea{width:100%;min-height:90px}
-pre.prep{white-space:pre-wrap;background:var(--side);border:1px solid var(--rule);
-border-radius:8px;padding:12px;font:12.5px/1.55 ui-monospace,Consolas,monospace;
-max-height:340px;overflow:auto}
-.back{font-size:13px}
+.reach:last-child{border-bottom:0}
+pre.prep{white-space:pre-wrap;background:var(--side);border-radius:8px;padding:12px;
+font:12px/1.55 ui-monospace,Consolas,monospace;max-height:280px;overflow:auto;margin:10px 0 0}
+.inputs{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin:8px 0 10px}
+.inputs .n{font:600 18px "Segoe UI",sans-serif;font-variant-numeric:tabular-nums}
+.inputs .l{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.07em}
 """
 
 
@@ -62,26 +88,22 @@ def _pretty_name(filed: str) -> str:
 
 
 def _yearpos(iso: str) -> float:
-    """A date as a fractional year, for honest x positions."""
     y, m, d = int(iso[:4]), int(iso[5:7] or 1), int(iso[8:10] or 1)
     return y + (m - 1) / 12 + (d - 1) / 365
 
 
 def aum_chart(history) -> str:
-    """Regulatory AUM over time as an inline SVG with axes.
-
-    Every mark answers a question: the y gridlines say what the dollars are,
-    the year scale says when, the dots are the actual filings (hover one for
-    its date and value), and the label on the right is where the firm is now."""
+    """Regulatory AUM over time as an inline SVG with real axes: dollar
+    gridlines, a year scale, and every filing as a hoverable point."""
     if len(history) < 2:
-        return ('<p style="color:var(--faint);font-size:13px">Only one filing on '
-                'record, so there is no trajectory to draw yet. The weekly feed '
-                'adds a point whenever the firm files.</p>')
+        return ('<p class="muted small">Only one filing on record, so there is no '
+                'trajectory to draw yet. The weekly feed adds a point whenever the '
+                'firm files.</p>')
     vals = [h["raum"] for h in history]
     xs = [_yearpos(h["filing_date"]) for h in history]
     lo, hi = min(vals), max(vals)
     x0, x1 = xs[0], xs[-1]
-    W, H, PADL, PADR, PADT, PADB = 640, 150, 8, 74, 10, 22
+    W, H, PADL, PADR, PADT, PADB = 680, 150, 8, 74, 10, 22
     rngy = (hi - lo) or 1
     rngx = (x1 - x0) or 1
 
@@ -90,9 +112,6 @@ def aum_chart(history) -> str:
 
     pts = " ".join(f"{X(x):.1f},{Y(v):.1f}" for x, v in zip(xs, vals))
     area = (f"{X(xs[0]):.1f},{H-PADB} " + pts + f" {X(xs[-1]):.1f},{H-PADB}")
-
-    # Y gridlines at low, middle, high; labels on the right where the eye
-    # lands after following the line.
     grid = []
     for v in (lo, (lo + hi) / 2, hi):
         y = Y(v)
@@ -100,8 +119,6 @@ def aum_chart(history) -> str:
                     f'stroke="var(--rule)" stroke-width="1"/>'
                     f'<text x="{W-PADR+6}" y="{y+3.5:.1f}" fill="var(--faint)" '
                     f'font-size="10.5" font-family="Segoe UI">{money(v)}</text>')
-
-    # Year ticks: at most ~7 labels however long the span is.
     step = max(1, round(rngx / 6))
     ticks = []
     yr = int(x0) + (1 if x0 % 1 > 0.5 else 0)
@@ -114,23 +131,19 @@ def aum_chart(history) -> str:
                          f'font-size="10.5" font-family="Segoe UI" '
                          f'text-anchor="middle">{yr}</text>')
         yr += step
-
-    # Every filing is a real, hoverable point.
     dots = "".join(
         f'<circle cx="{X(x):.1f}" cy="{Y(v):.1f}" r="2.6" fill="var(--ok)" '
         f'opacity=".85"><title>{esc(h["filing_date"])}: {money(v)}</title></circle>'
         for x, v, h in zip(xs, vals, history))
-
     growth = ""
     if vals[0]:
         pct = (vals[-1] - vals[0]) / vals[0] * 100
         growth = (f' &middot; {pct:+.0f}% over the span'
                   if abs(pct) >= 1 else " &middot; roughly flat")
     return (
-        f'<div class="meta" style="margin-bottom:6px">Regulatory AUM as filed, '
-        f'{len(history)} filings from {esc(history[0]["filing_date"][:4])} to '
-        f'{esc(history[-1]["filing_date"][:4])}. Now {money(vals[-1])}{growth}. '
-        f'Hover a point for its filing.</div>'
+        f'<div class="meta" style="margin-bottom:6px">{len(history)} filings from '
+        f'{esc(history[0]["filing_date"][:4])} to {esc(history[-1]["filing_date"][:4])}. '
+        f'Now {money(vals[-1])}{growth}. Hover a point for its filing.</div>'
         f'<svg viewBox="0 0 {W} {H}" style="width:100%;height:{H}px;display:block">'
         f'{"".join(grid)}{"".join(ticks)}'
         f'<polygon points="{area}" fill="var(--ok)" opacity=".07"/>'
@@ -138,63 +151,6 @@ def aum_chart(history) -> str:
         f'stroke-width="1.8"/>{dots}'
         f'<circle cx="{X(xs[-1]):.1f}" cy="{Y(vals[-1]):.1f}" r="3.6" '
         f'fill="var(--ok)"/></svg>')
-
-
-def call_prep(f, seg, prof, trigs, funds) -> str:
-    """Plain text, paste-ready. Every archive figure carries its as-of date."""
-    L = [f"{f['legal_name']}  (CRD {f['crd']})"]
-    if f["business_name"] and f["business_name"] != f["legal_name"]:
-        L.append(f"dba {f['business_name']}")
-    L.append(" ".join(x for x in (f["city"], f["state"], f["website"]) if x))
-    L.append("")
-    L.append(f"RAUM {money(f['raum'])}  ({money(f['raum_disc'])} discretionary)")
-    hs = (f["hnw_aum"] or 0) / f["raum"] * 100 if f["raum"] else 0
-    L.append(f"High net worth: {f['hnw_clients'] or 0} clients, "
-             f"{money(f['hnw_aum'])} ({hs:.0f}% of RAUM)")
-    L.append(f"Other individuals: {f['retail_clients'] or 0} clients, {money(f['retail_aum'])}")
-    L.append(f"{f['iar_count'] or 0} adviser reps, {f['total_employees'] or 0} employees")
-    L.append(f"Last ADV filing {f['filing_date']}, registered {f['registered_date']}")
-    if f["disciplinary"] == "Y":
-        L.append("NOTE: discloses a disciplinary event at Item 11")
-
-    if prof:
-        L.append("")
-        line = f"Custodian: {prof['primary_canonical'] or 'unknown'}"
-        if prof["schwab_share_reported"] is not None:
-            line += (f", Schwab {prof['schwab_share_reported'] * 100:.0f}% of REPORTED "
-                     f"custodian assets (as of {prof['as_of_filing_date']})")
-        L.append(line)
-        L.append("  Caveat: only custodians at 10%+ of SMA assets are reported, so this is an")
-        L.append("  upper bound. Schwab presence indicates the late-2026 institutional")
-        L.append("  opportunity, not accounts sellable today.")
-
-    if seg:
-        L.append("")
-        L.append(f"Real estate classification: {seg['segment'].upper()} "
-                 f"(as of {seg['as_of_filing_date']})")
-        L.append(f"  {seg['rationale']}")
-        L.append(f"  fund {money(seg['total_gav'])} / {(seg['raum_ratio'] or 0) * 100:.1f}% of "
-                 f"RAUM / {seg['total_owners'] or 0} investors / min "
-                 f"{money(seg['min_investment'])}")
-
-    if funds:
-        L.append("")
-        L.append("Private funds advised:")
-        for x in funds:
-            L.append(f"  {x['fund_type']}: {x['fund_name']} - {money(x['gross_asset_value'])}, "
-                     f"{x['owners'] or 0} investors, min {money(x['minimum_investment'])} "
-                     f"(as of {x['d']})")
-
-    if trigs:
-        L.append("")
-        L.append("Trigger history:")
-        for t in trigs:
-            L.append(f"  {t['detected_date']}  {t['description']}")
-
-    L.append("")
-    L.append("Schedule D figures derive from the SEC historical archive ending 2024-12-31.")
-    L.append("The firm has filed at least one amendment since.")
-    return "\n".join(L)
 
 
 COPY_JS = """
@@ -217,270 +173,301 @@ function copyPrep(){
     window.getSelection().removeAllRanges();
   }
 }
+function addToList(sel){
+  if(!sel.value) return;
+  var f = sel.form;
+  if(sel.value==='__new'){
+    var name = prompt('Name for the new list:');
+    if(!name){ sel.value=''; return; }
+    f.new_name.value = name;
+  }
+  f.submit();
+}
 """
 
 
+def _fit_section(crd: str, results: dict, ranks: dict, focus: str) -> str:
+    """One expandable row per product, best first; the focused one open."""
+    order = sorted(results.values(), key=lambda r: (
+        r.product != focus, {"scored": 0, "disqualified": 1, "gated": 2}[r.status],
+        -r.score))
+    out = []
+    for i, r in enumerate(order):
+        p = products.product(r.product)
+        is_open = r.product == focus or (not focus and i == 0 and r.status == "scored")
+        if r.status == "scored":
+            rank = ranks.get(r.product)
+            head = (f'{tier_chip(r.tier)}<span class="score {r.tier if r.tier in ("A", "B", "C") else ""}">'
+                    f'<span>{r.score:.0f}</span><span class="b"><i style="width:{r.score:.0f}%">'
+                    f'</i></span></span><span class="what">{esc(r.action)}'
+                    f'{f" &middot; #{rank:,} on the list" if rank else ""}'
+                    f'{" &middot; " + esc(r.pitch) if r.pitch else ""}</span>')
+        elif r.status == "disqualified":
+            head = (f'<span class="chip dis">removed</span><span></span>'
+                    f'<span class="what">{esc(r.reason)}</span>')
+        else:
+            head = (f'<span class="tier">-</span><span class="muted small">not eligible</span>'
+                    f'<span class="what">{esc(r.reason)}</span>')
+        inner = _breakdown(crd, r) if r.status == "scored" else _gates_html(r)
+        out.append(
+            f'<details class="fit" id="fit-{r.product}"{" open" if is_open else ""}>'
+            f'<summary><span class="caret">&#9654;</span>'
+            f'<span class="pname">{esc(p["name"])}</span>{head}</summary>'
+            f'<div class="inner">{inner}</div></details>')
+    return "".join(out)
+
+
+def _gates_html(r) -> str:
+    lines = "".join(
+        f'<div class="gline"><b class="{"" if g["passed"] else "x"}">'
+        f'{"Pass" if g["passed"] else ("Removed" if g.get("disqualifier") else "Fails")}</b> '
+        f'{esc(g["label"])}: <span class="muted">{esc(g["evidence"])}</span></div>'
+        for g in r.gates)
+    return lines or '<p class="muted small">No gate information.</p>'
+
+
+def _breakdown(crd: str, r) -> str:
+    p = products.product(r.product)
+    crit_cfg = {c["key"]: c for c in p["criteria"]}
+    rows = []
+    for comp in r.components:
+        cfg = crit_cfg[comp["key"]]
+        man = ""
+        form = ""
+        if comp["manual"]:
+            ov = comp["override"]
+            if ov:
+                man = (f'<div class="man">Set by {esc(ov["by"] or "someone")} on '
+                       f'{esc(ov["at"])}{": " + esc(ov["note"]) if ov["note"] else ""}. '
+                       f'Filings alone: {ov["computed"]:.0f} ({esc(ov["computed_evidence"])})</div>')
+            opts = "".join(
+                f'<option value="{pts}"{" selected" if ov and float(pts) == comp["points"] else ""}>'
+                f'{int(pts)}: {esc(lbl)}</option>' for pts, lbl in cfg["levels"])
+            first = ('<option value="">Use the filings</option>' if ov else
+                     '<option value="">Set a level from what you know</option>')
+            form = (f'<details class="adj"{" open" if False else ""}><summary>'
+                    f'{"Change" if ov else "Adjust"}</summary>'
+                    f'<form method="post" action="/firm/{esc(crd)}/level">'
+                    f'<input type="hidden" name="product" value="{esc(r.product)}">'
+                    f'<input type="hidden" name="criterion" value="{esc(comp["key"])}">'
+                    f'<select name="points" title="Set this level from what you know">'
+                    f'{first}{opts}</select>'
+                    f'<input type="text" name="note" placeholder="Why (optional)" '
+                    f'value="{esc(ov["note"]) if ov else ""}">'
+                    f'<button class="sm" type="submit">Save</button></form></details>')
+        rows.append(
+            f'<tr><td style="width:24%"><b>{esc(comp["label"])}</b>{man}</td>'
+            f'<td class="ev">{esc(comp["evidence"])}'
+            f'<div class="meta">Level: {esc(comp["level"])}</div>{form}</td>'
+            f'<td class="num pts" style="width:62px">{comp["points"]:.0f}</td>'
+            f'<td class="num muted" style="width:56px">{comp["weight"]}%</td>'
+            f'<td class="num pts" style="width:62px">+{comp["contrib"]:.1f}</td></tr>')
+    for pen in r.penalties:
+        rows.append(f'<tr><td><b class="bad">{esc(pen["label"])}</b></td>'
+                    f'<td class="ev">{esc(pen["evidence"])}</td><td></td><td></td>'
+                    f'<td class="num pts bad">-{pen["points"]}</td></tr>')
+    rows.append(f'<tr><td colspan="4" class="num muted">Score</td>'
+                f'<td class="num pts" style="font-size:16px">{r.score:.1f}</td></tr>')
+    gates = "".join(
+        f'<div class="gline"><b>Pass</b> {esc(g["label"])}: '
+        f'<span class="muted">{esc(g["evidence"])}</span></div>' for g in r.gates)
+    sig = ""
+    if r.signals:
+        sig = ('<h3 style="margin-top:16px">Talking points and flags</h3>' + "".join(
+            f'<div class="gline"><span class="chip">{esc(s["label"])}</span> '
+            f'{esc(s["text"])}</div>' for s in r.signals[:8]))
+    rules = "".join(f'<div class="note plain small">{esc(x)}</div>'
+                    for x in p.get("rules", []))
+    return (f'<table class="bd"><thead><tr><th>Criterion</th><th>Evidence</th>'
+            f'<th class="num">Points</th><th class="num">Weight</th>'
+            f'<th class="num">Adds</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
+            f'<h3 style="margin-top:16px">Gates passed</h3>{gates}{sig}{rules}'
+            f'<p class="small muted" style="margin-top:10px">'
+            f'<a href="/lists/{r.product}?view=rules">How {esc(p["name"])} is scored</a></p>')
+
+
+def call_prep(f, results, trigs, points, reach_lines, officers) -> str:
+    """Plain text, paste-ready. Carries the reasons, not just the scores."""
+    L = [f"{nice_name(f['legal_name'])}  (CRD {f['crd']})"]
+    if f["business_name"] and f["business_name"] != f["legal_name"]:
+        L.append(f"dba {f['business_name']}")
+    L.append(" ".join(x for x in (f["city"], f["state"], f["website"]) if x))
+    hs = (f["hnw_aum"] or 0) / f["raum"] * 100 if f["raum"] else 0
+    L.append(f"{money(f['raum'])} AUM, {f['iar_count'] or 0} advisors, "
+             f"{f['hnw_clients'] or 0} HNW clients ({hs:.0f}% of assets)")
+    for r in sorted(results.values(), key=lambda r: -r.score):
+        if r.status != "scored":
+            continue
+        p = products.product(r.product)
+        L.append("")
+        L.append(f"{p['name']}: tier {r.tier}, score {r.score:.0f} ({r.action})")
+        if r.pitch:
+            L.append(f"  Angle: {r.pitch}")
+        for c in r.top_reasons(3):
+            if c["contrib"] > 0:
+                L.append(f"  {c['label']}: {c['evidence']}")
+    if trigs:
+        L.append("")
+        L.append("What changed:")
+        for t in trigs[:5]:
+            L.append(f"  {t['detected_date']}  {t['description']}")
+    if points:
+        L.append("")
+        L.append("In their own words:")
+        for tp in points[:6]:
+            L.append(f"  {tp['label']}: \"{tp['text']}\"")
+    if reach_lines:
+        L.append("")
+        L.append("How to reach them:")
+        L.extend(reach_lines)
+    if officers:
+        L.append("")
+        L.append("Who runs it (Schedule A):")
+        for o in officers[:6]:
+            L.append(f"  {_pretty_name(o['name'])}: {o['title'] or ''}")
+    return "\n".join(L)
+
+
 @router.get("/firm/{crd}", response_class=HTMLResponse)
-def firm_detail(crd: str):
+def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     c = conn()
     f = c.execute("SELECT * FROM firm_current WHERE crd=?", (crd,)).fetchone()
     if f is None:
-        return HTMLResponse(f"<p>No firm with CRD {esc(crd)}</p>", status_code=404)
+        c.close()
+        return page("Not found", "firms",
+                    f'<div class="pg"><h1>No firm with CRD {esc(crd)}</h1>'
+                    f'<p class="lede"><a href="/firms">Search firms</a></p></div>',
+                    status=404)
 
-    seg = c.execute("SELECT * FROM re_segment WHERE crd=?", (crd,)).fetchone()
-    prof = c.execute("SELECT * FROM firm_custodian_profile WHERE crd=?", (crd,)).fetchone()
-    trigs = c.execute("""SELECT t.*, a.state FROM trigger_event t
-        LEFT JOIN trigger_action a ON a.trigger_id = t.id
-        WHERE t.crd = ? ORDER BY t.detected_date DESC""", (crd,)).fetchall()
-    funds = c.execute("""
-        WITH latest AS (SELECT MAX(fc.filing_date) d FROM sched_d_7b1 s
-          JOIN filing_crd fc ON fc.filing_id = s.filing_id WHERE s.crd = ?)
-        SELECT s.*, fc.filing_date d FROM sched_d_7b1 s
-        JOIN filing_crd fc ON fc.filing_id = s.filing_id, latest
-        WHERE s.crd = ? AND fc.filing_date = latest.d
-        ORDER BY s.gross_asset_value DESC""", (crd, crd)).fetchall()
-    note = c.execute("SELECT note FROM firm_note WHERE crd=?", (crd,)).fetchone()
-    fs = c.execute("SELECT * FROM firm_status WHERE crd=?", (crd,)).fetchone()
-    cur_status = fs["status"] if fs else ""
-    status_opts = "".join(
-        f'<option value="{esc(x)}"{" selected" if x == cur_status else ""}>{esc(x)}</option>'
-        for x in [""] + STATUSES)
+    feats = products.load_features(c, [crd])
+    d = feats[crd]
+    results = products.evaluate_all(d)
+    ranks = {r["product"]: r["rank"] for r in c.execute(
+        "SELECT product, rank FROM product_score WHERE crd=? AND status='scored'", (crd,))}
 
-    def maybe(sql, args=()):
+    def rows(sql, args=()):
         try:
             return c.execute(sql, args).fetchall()
         except Exception:
+            c.rollback()
             return []
 
-    holdings = maybe("""
-        SELECT ticker, quarter, MAX(value_usd) v, MAX(shares) sh
-        FROM holding_13f WHERE crd=? GROUP BY ticker, quarter
-        ORDER BY ticker, quarter""", (crd,))
-    match = maybe("""SELECT * FROM adv_13f_match WHERE crd=?
-                     ORDER BY confidence DESC LIMIT 1""", (crd,))
-    match = match[0] if match else None
-    tags = maybe("""SELECT * FROM brochure_tag WHERE crd=?
-                    ORDER BY present DESC, confidence DESC""", (crd,))
-    contacts = maybe("""SELECT * FROM contact WHERE crd=? ORDER BY title LIMIT 14""", (crd,))
-    emails = maybe("""SELECT * FROM contact_email WHERE crd=? ORDER BY status, email""", (crd,))
-    filed_info = maybe("""SELECT * FROM firm_contact_info WHERE crd=?
-                          ORDER BY kind, id""", (crd,))
-    scanned = bool(maybe("SELECT 1 FROM contact_scan WHERE crd=?", (crd,)))
-    officers = maybe("""SELECT * FROM schedule_a WHERE crd=? AND is_individual=1
-                        ORDER BY (control_person!='Y'), name LIMIT 20""", (crd,))
-    web_people = maybe("""SELECT * FROM web_contact WHERE crd=? AND person IS NOT NULL
-                          ORDER BY id LIMIT 20""", (crd,))
-    web_firm = maybe("""SELECT * FROM web_contact WHERE crd=? AND person IS NULL
-                        ORDER BY (email IS NULL), id LIMIT 6""", (crd,))
-    history = maybe("""SELECT filing_date, raum FROM firm_history
-                       WHERE crd=? AND raum IS NOT NULL
-                       ORDER BY filing_date""", (crd,))
-    watched = bool(maybe("SELECT 1 FROM firm_watch WHERE crd=?", (crd,)))
-    bro = maybe("SELECT * FROM brochure WHERE crd=?", (crd,))
+    trigs = rows("""SELECT t.*, a.state FROM trigger_event t
+        LEFT JOIN trigger_action a ON a.trigger_id = t.id
+        WHERE t.crd = ? AND t.suppressed=0 ORDER BY t.detected_date DESC""", (crd,))
+    funds = rows("""
+        WITH latest AS (SELECT MAX(fc.filing_date) d FROM sched_d_7b1 s
+          JOIN filing_crd fc ON fc.filing_id = s.filing_id WHERE s.crd = ?)
+        SELECT s.fund_type, s.fund_name, s.gross_asset_value, s.owners,
+               s.minimum_investment, fc.filing_date d FROM sched_d_7b1 s
+        JOIN filing_crd fc ON fc.filing_id = s.filing_id, latest
+        WHERE s.crd = ? AND fc.filing_date = latest.d
+        ORDER BY s.gross_asset_value DESC NULLS LAST""", (crd, crd))
+    note = rows("SELECT note FROM firm_note WHERE crd=?", (crd,))
+    fs = rows("SELECT * FROM firm_status WHERE crd=?", (crd,))
+    fs = fs[0] if fs else None
+    officers = rows("""SELECT * FROM schedule_a WHERE crd=? AND is_individual=1
+                       ORDER BY (control_person!='Y'), name LIMIT 20""", (crd,))
+    reps = rows("SELECT * FROM contact WHERE crd=? ORDER BY title LIMIT 14", (crd,))
+    emails = rows("SELECT * FROM contact_email WHERE crd=? ORDER BY status, email", (crd,))
+    filed_info = rows("SELECT * FROM firm_contact_info WHERE crd=? ORDER BY kind, id", (crd,))
+    web_people = rows("""SELECT * FROM web_contact WHERE crd=? AND person IS NOT NULL
+                         ORDER BY id LIMIT 20""", (crd,))
+    web_firm = rows("""SELECT * FROM web_contact WHERE crd=? AND person IS NULL
+                       ORDER BY (email IS NULL), id LIMIT 6""", (crd,))
+    history = rows("""SELECT filing_date, raum FROM firm_history
+                      WHERE crd=? AND raum IS NOT NULL ORDER BY filing_date""", (crd,))
+    watched = bool(rows("SELECT 1 FROM firm_watch WHERE crd=?", (crd,)))
+    bro = rows("SELECT * FROM brochure WHERE crd=?", (crd,))
     bro = bro[0] if bro else None
+    match = rows("SELECT * FROM adv_13f_match WHERE crd=? ORDER BY confidence DESC LIMIT 1",
+                 (crd,))
+    match = match[0] if match else None
+    in_lists = rows("""SELECT u.id, u.name FROM user_list u JOIN user_list_item i
+                       ON i.list_id=u.id WHERE i.crd=? ORDER BY u.name""", (crd,))
+    all_lists = rows("SELECT id, name FROM user_list ORDER BY name")
+    c.close()
 
+    focus = p if p in products.product_keys() else ""
     hs = (f["hnw_aum"] or 0) / f["raum"] * 100 if f["raum"] else 0
 
-    def asof(d):
-        return f'<span class="asof">as of {esc(d)}</span>' if d else ""
+    # ---- why now
+    trow = []
+    for t in trigs[:30]:
+        kind = products.trigger_products().get(t["trigger_type"], {}).get("kind")
+        chip = "dis" if kind == "disqualifier" else "lead"
+        old = (" " + caveat("archive_as_of", "archive")
+               if t["detected_date"] < "2025-01-01" else "")
+        trow.append(f'<tr><td style="white-space:nowrap">{esc(t["detected_date"])}{old}</td>'
+                    f'<td><span class="chip {chip}">'
+                    f'{esc(TYPE_LABEL.get(t["trigger_type"], t["trigger_type"]))}</span></td>'
+                    f'<td class="why">{esc(t["description"])}</td>'
+                    f'<td>{esc(t["state"] or "")}</td></tr>')
+    trig_html = (f'<table><tbody>{"".join(trow)}</tbody></table>' if trow else
+                 '<p class="muted">Nothing has changed at this firm since tracking began: '
+                 'no assets jump, no custodian move, no advisors added. Steady is a '
+                 'finding, not missing data.</p>')
 
-    if seg:
-        cls = seg["segment"] if seg["segment"] in ("sponsor", "competitor") else ""
-        seg_html = (
-            '<div class="inputs">'
-            f'<div><div class="n">{money(seg["total_gav"])}</div>'
-            '<div class="l">Fund gross asset value</div></div>'
-            f'<div><div class="n">{(seg["raum_ratio"] or 0) * 100:.1f}%</div>'
-            '<div class="l">Share of RAUM</div></div>'
-            f'<div><div class="n">{seg["total_owners"] or 0}</div>'
-            '<div class="l">Investors</div></div>'
-            f'<div><div class="n">{money(seg["min_investment"])}</div>'
-            '<div class="l">Minimum investment</div></div>'
-            '</div>'
-            f'<div class="verdict {cls}"><b>{esc(seg["segment"].upper())}</b>: '
-            f'{esc(seg["rationale"])}<br>{caveat("archive_as_of", "archive-derived")} '
-            f'{asof(seg["as_of_filing_date"])}</div>')
-    else:
-        seg_html = ('<p class="whyempty">This firm advises no real estate fund, '
-                    'so it was never a candidate for the sponsor-or-prospect '
-                    'classification. For Prairie Hill that is the common and '
-                    'often better case: no competing product of their own.</p>')
+    # ---- talking points: the firm's own words, grouped by product family
+    points = []
+    for fam in ("phh", "acubooth", "glynac"):
+        points += [dict(tp, fam=fam) for tp in products.talking_points(d, fam)]
+    fam_name = {"phh": "PHH", "acubooth": "AcuBooth", "glynac": "Glynac"}
+    tp_html = "".join(
+        f'<div class="tp"><span class="chip">{esc(fam_name[tp["fam"]])}</span> '
+        f'<b class="small">{esc(tp["label"])}</b>'
+        f'<div class="q">{"&ldquo;" + esc(tp["text"]) + "&rdquo;" if tp["kind"] == "brochure" else esc(tp["text"])}</div></div>'
+        for tp in points)
+    if not tp_html:
+        tp_html = ('<p class="muted">' + (
+            "The brochure does not use any of the product vocabulary (covered calls, "
+            "alternatives, real estate, 1031, reporting platforms)."
+            if bro and bro["status"] == "ok" else
+            "Brochure not read yet; the brochure job on System works through the "
+            "product lists best first.") + "</p>")
+    if bro:
+        tp_html += (f'<p class="meta" style="margin-top:8px">From the Part 2A brochure '
+                    f'{esc(bro["brochure_name"] or "")} filed {esc(bro["date_submitted"] or "?")}. '
+                    f'Deterministic phrase matching, no model calls.</p>')
 
-    trows = "".join(
-        f'<tr><td style="white-space:nowrap">{esc(t["detected_date"])}</td>'
-        f'<td><span class="chip">'
-        f'{esc(TYPE_LABEL.get(t["trigger_type"], t["trigger_type"]))}</span></td>'
-        f'<td>{esc(t["description"])}</td>'
-        f'<td class="pri">{(t["priority"] or 0):+.2f}</td>'
-        f'<td>{esc(t["state"] or "")}</td></tr>' for t in trigs) or \
-        ('<tr><td colspan="5" class="whyempty">Nothing has changed at this firm '
-         'since tracking began: no AUM jump, no custodian move, no headcount '
-         'growth. Steady is a finding, not missing data.</td></tr>')
-
-    # An empty section must say WHY it is empty, or it reads as broken. Most
-    # firms this size run no private funds; that is information, not a gap.
-    if funds:
-        frows = "".join(
-            f'<tr><td>{esc(x["fund_type"])}</td><td>{esc(x["fund_name"])}</td>'
-            f'<td>{money(x["gross_asset_value"])}</td><td>{x["owners"] or 0}</td>'
-            f'<td>{money(x["minimum_investment"])}</td><td>{asof(x["d"])}</td></tr>'
-            for x in funds)
-        funds_html = ('<table><thead><tr><th>Type</th><th>Fund</th>'
-                      '<th>Gross asset value</th><th>Investors</th>'
-                      '<th>Minimum</th><th>As of</th></tr></thead>'
-                      f'<tbody>{frows}</tbody></table>')
-    else:
-        funds_html = ('<p class="whyempty">No private funds on Schedule D 7.B(1). '
-                      'That is typical: only about one in five firms this size '
-                      'advises any private fund. For Prairie Hill it means the '
-                      'illiquid-fund conversation starts from zero here.</p>')
-
-    schwab = "-"
-    if prof and prof["schwab_share_reported"] is not None:
-        schwab = (caveat("schwab_share_reported",
-                         f'{prof["schwab_share_reported"] * 100:.0f}% of reported')
-                  + " " + asof(prof["as_of_filing_date"]))
-
-    website = (f'<a href="{esc(f["website"])}" target="_blank" rel="noopener">'
-               f'{esc(f["website"])}</a>') if f["website"] else "-"
-    disc = ('&middot; <b style="color:#9e3b2e">discloses a disciplinary event</b>'
-            if f["disciplinary"] == "Y" else "")
-    est = money((f["raum"] or 0) / f["clients_total"]) if f["clients_total"] else "-"
-
-    # ---- 13F holdings card. Match confidence is shown honestly next to the data.
-    if holdings:
-        by_ticker: dict[str, list] = {}
-        for h in holdings:
-            by_ticker.setdefault(h["ticker"], []).append(h)
-        hrows = []
-        for tk, seq in sorted(by_ticker.items()):
-            seq.sort(key=lambda x: x["quarter"])
-            latest = seq[-1]
-            arc = " &rarr; ".join(f'{x["quarter"]} {money(x["v"])}' for x in seq)
-            opened = (len(seq) == 1 and len({s["quarter"] for s in holdings}) > 1)
-            hrows.append(
-                f'<tr><td><b>{esc(tk)}</b></td>'
-                f'<td class="num">{money(latest["v"])}</td>'
-                f'<td class="num">{latest["sh"] or "-"}</td>'
-                f'<td style="font-size:12px">{arc}</td>'
-                f'<td>{"recently opened" if opened else ""}</td></tr>')
-        conf_note = ""
-        if match:
-            band = ("auto-accepted" if match["status"] == "auto"
-                    else esc(match["status"]))
-            conf_note = (f'<p class="asof">ADV-to-13F link: {esc(match["name_edgar"] or "")} '
-                         f'(CIK {esc(match["cik"])}), confidence {match["confidence"]:.2f}, '
-                         f'{band}, basis {esc(match["match_basis"])}. A wrong link would put '
-                         f'holdings the firm does not own into this page.</p>')
-        holdings_html = (f'{conf_note}<table><thead><tr><th>Ticker</th>'
-                         '<th class="num">Latest value</th><th class="num">Shares</th>'
-                         '<th>By quarter</th><th></th></tr></thead>'
-                         f'<tbody>{"".join(hrows)}</tbody></table>')
-    else:
-        holdings_html = ('<p style="color:var(--faint)">No target-security 13F holdings. '
-                         'Absence is not a negative signal: the 13F threshold is $100M '
-                         'in listed equities and most firms this size never file.</p>')
-
-    # ---- brochure tags card, verbatim snippet next to each tag
-    if tags:
-        trows2 = []
-        for t in tags:
-            state = ("<b style='color:var(--red-hi)'>states they do NOT</b>" if not t["present"]
-                     else (f'{t["confidence"]:.2f}'
-                           + (' <span class="asof">damped, negation pending review</span>'
-                              if (t["negation_damp"] or 1.0) < 1.0 else "")))
-            trows2.append(
-                f'<tr><td><b>{esc(t["tag"])}</b>'
-                f'<div class="meta">via "{esc(t["best_phrase"] or "")}", {t["hits"]} hits'
-                f'{", Item " + str(t["section_item"]) if t["section_item"] else ""}</div></td>'
-                f'<td class="num">{state}</td>'
-                f'<td style="font-size:12.5px">&ldquo;{esc(t["best_snippet"] or "")}&rdquo;</td></tr>')
-        bro_meta = (f'<p class="asof">Brochure: {esc(bro["brochure_name"] or "")}, filed '
-                    f'{esc(bro["date_submitted"] or "?")}, {bro["pages"] or "?"} pages. '
-                    'Deterministic phrase matching, no model calls.</p>') if bro else ""
-        tags_html = (f'{bro_meta}<table><thead><tr><th style="width:220px">Tag</th>'
-                     '<th class="num" style="width:150px">Confidence</th>'
-                     '<th>Supporting sentence, verbatim</th></tr></thead>'
-                     f'<tbody>{"".join(trows2)}</tbody></table>')
-    elif bro:
-        tags_html = (f'<p class="whyempty">Brochure processed ({esc(bro["status"])}); '
-                     'none of the vocabulary phrases (covered calls, real estate, '
-                     'alternatives, held-away accounts) appear in it. The firm '
-                     'simply does not talk about these things in its Part 2A.</p>')
-    else:
-        tags_html = ('<p class="whyempty">Brochure not fetched yet. The brochure '
-                     'coverage job on <a href="/health">Pipeline health</a> works '
-                     'through all in-band firms; this one is still in the queue.</p>')
-
-    # AUM trajectory: a real chart, not a decorative line. Time on the x axis
-    # (filings are not evenly spaced, so index position lied about pace),
-    # dollar gridlines on the y, a year scale underneath, and every filing
-    # point hoverable with its date and value.
-    spark_html = aum_chart(history)
-
-    # How to reach them: real filed details first, guesses clearly second.
-    # Order of trust: the firm's own brochure, then its Form ADV, then pattern
-    # guesses, which stay visually subordinate because they are guesses.
-    import re as _re
-
+    # ---- reach and people
     def _key(v: str) -> str:
-        """Comparison key for de-duplicating a contact detail.
-
-        The same phone arrives in different shapes: Form ADV files
-        '415-501-9987' while the brochure prints '(415) 501-9987'. Comparing the
-        raw strings listed one number twice on the page, which reads as two
-        numbers. Digits for phones, lowercase for emails."""
         v = (v or "").strip().lower()
-        return _re.sub(r"\D", "", v) if "@" not in v else v
+        return re.sub(r"\D", "", v) if "@" not in v else v
 
-    reach = []
-    seen_reach: set[str] = set()
+    reach, seen, reach_lines = [], set(), []
     if f["phone"]:
-        seen_reach.add(_key(f["phone"]))
+        seen.add(_key(f["phone"]))
         reach.append(f'<div class="reach"><span class="chip lead">filed</span>'
-                     f'<b>{esc(f["phone"])}</b>'
-                     f'<span class="meta">main office, Form ADV</span></div>')
+                     f'<b>{esc(f["phone"])}</b><span class="meta">main office, Form ADV</span></div>')
+        reach_lines.append(f"  {f['phone']} (main office, Form ADV)")
     for r in filed_info:
-        if _key(r["value"]) in seen_reach:
+        if _key(r["value"]) in seen:
             continue
-        seen_reach.add(_key(r["value"]))
-        label = "email" if r["kind"] == "email" else "phone"
+        seen.add(_key(r["value"]))
         val = (f'<a href="mailto:{esc(r["value"])}">{esc(r["value"])}</a>'
-               if label == "email" else f'<b>{esc(r["value"])}</b>')
-        # The context is the brochure line the detail sat on. Often that line
-        # IS just the detail, and repeating it beside itself reads as a glitch.
-        raw_ctx = " ".join((r["context"] or "").split())
-        useful = (raw_ctx and _key(raw_ctx) != _key(r["value"])
-                  and raw_ctx.strip(" :") != r["value"])
-        ctx = esc(raw_ctx[:70]) if useful else ""
-        title_attr = f' title="{ctx}"' if ctx else ""
-        where = f"brochure, page 1-3{', ' + ctx if ctx else ''}"
-        reach.append(f'<div class="reach"><span class="chip lead">filed</span>'
-                     f'{val}<span class="meta"{title_attr}>{where}</span></div>')
+               if r["kind"] == "email" else f'<b>{esc(r["value"])}</b>')
+        reach.append(f'<div class="reach"><span class="chip lead">filed</span>{val}'
+                     f'<span class="meta">printed in their brochure</span></div>')
+        reach_lines.append(f"  {r['value']} ({r['kind']}, their brochure)")
     for r in web_firm:
         val = r["email"] or r["phone"]
-        if not val or _key(val) in seen_reach:
+        if not val or _key(val) in seen:
             continue
-        seen_reach.add(_key(val))
-        shown = (f'<a href="mailto:{esc(val)}">{esc(val)}</a>'
-                 if r["email"] else f"<b>{esc(val)}</b>")
-        reach.append(f'<div class="reach"><span class="chip">their site</span>'
-                     f'{shown}<span class="meta">from the firm&rsquo;s own '
-                     f'website</span></div>')
-    if not filed_info:
-        reach_note = ("No email or phone beyond the main line appears in the "
-                      "first pages of this firm's brochure." if scanned else
-                      "Brochure not yet scanned for contact details; the "
-                      "contact extraction job fills this in.")
-        reach.append(f'<p class="meta" style="margin:4px 0 0">{reach_note}</p>')
-    reach_html = "".join(reach)
+        seen.add(_key(val))
+        shown = (f'<a href="mailto:{esc(val)}">{esc(val)}</a>' if r["email"]
+                 else f"<b>{esc(val)}</b>")
+        reach.append(f'<div class="reach"><span class="chip">their site</span>{shown}'
+                     f'<span class="meta">from their own website</span></div>')
+        reach_lines.append(f"  {val} (their website)")
+    reach_html = "".join(reach) or '<p class="muted">No phone or email on file yet.</p>'
 
-    # Leadership first: Schedule A names who runs and owns the firm, with the
-    # title as filed. Reps from the individual feed follow. Web-found details
-    # (email, phone, title from the firm's own site) attach to matching names.
     web_by_name = {}
     for w in web_people:
         web_by_name.setdefault(w["person"].lower(), w)
+        bits = " / ".join(x for x in (w["email"], w["phone"]) if x)
+        if bits:
+            reach_lines.append(f"  {bits} ({w['person']}, their website)")
 
     def person_extra(name: str) -> str:
         w = web_by_name.get(name.lower())
@@ -491,185 +478,197 @@ def firm_detail(crd: str):
             bits.append(f'<a href="mailto:{esc(w["email"])}">{esc(w["email"])}</a>')
         if w["phone"]:
             bits.append(esc(w["phone"]))
-        if not bits:
-            return ""
         return (f'<div class="meta">{" &middot; ".join(bits)} '
-                f'<span class="chip lead" style="margin-left:4px">their site</span></div>')
+                f'<span class="chip lead">their site</span></div>') if bits else ""
 
-    orows = ""
-    if officers:
-        def own(o):
-            c_ = " &middot; control person" if o["control_person"] == "Y" else ""
-            return f'{esc(o["title"] or "")}{c_}'
-        orows = "".join(
-            f'<tr><td><b>{esc(_pretty_name(o["name"]))}</b>{person_extra(_pretty_name(o["name"]))}</td>'
-            f'<td style="font-size:12.5px;color:var(--soft)">{own(o)}'
-            f'<div class="meta">Schedule A, as of {esc(o["as_of"] or "archive")}</div></td></tr>'
-            for o in officers)
+    prow = "".join(
+        f'<tr><td><b>{esc(_pretty_name(o["name"]))}</b>{person_extra(_pretty_name(o["name"]))}</td>'
+        f'<td class="soft small">{esc(nice_name(o["title"] or ""))}'
+        f'{" &middot; control person" if o["control_person"] == "Y" else ""}'
+        f'<div class="meta">Schedule A, as of {esc(o["as_of"] or "archive")}</div></td></tr>'
+        for o in officers)
+    officer_names = {_pretty_name(o["name"]).lower() for o in officers}
+    prow += "".join(
+        f'<tr><td><b>{esc(r["name"])}</b>{person_extra(r["name"])}</td>'
+        f'<td class="soft small">{esc(r["title"] or "")}</td></tr>'
+        for r in reps if r["name"].lower() not in officer_names)
+    erows = ""
+    if emails:
+        chipfor = {"domain_accepts_mail": "lead", "no_mail_server": "dis",
+                   "bad_syntax": "dis", "queued": "warn"}
+        label = {"domain_accepts_mail": "domain ok", "no_mail_server": "dead domain",
+                 "bad_syntax": "malformed", "queued": "unchecked", "candidate": "guess"}
+        erows = ('<h3 style="margin-top:16px">Guessed addresses</h3>' + "".join(
+            f'<div class="reach"><span class="chip {chipfor.get(e["status"], "")}">'
+            f'{esc(label.get(e["status"], e["status"]))}</span>'
+            f'<a href="mailto:{esc(e["email"])}">{esc(e["email"])}</a>'
+            f'<span class="meta">{esc(e["name"] or "")}</span></div>' for e in emails))
+    people_html = (
+        (f'<table><tbody>{prow}</tbody></table>' if prow else
+         '<p class="muted">Nobody on file yet: no Schedule A roster (state-registered '
+         'firms are not in the SEC archive) and no reps in the individual feed.</p>')
+        + erows +
+        f'<form method="post" action="/firm/{esc(crd)}/emails" style="margin-top:12px">'
+        f'<button type="submit" class="sm" title="One best-guess email per officer, '
+        f'checked against the domain with a free DNS lookup">Guess emails for these people'
+        f'</button></form>'
+        f'<p class="meta">A guess uses the pattern the firm uses for its own people. '
+        f'<b>domain ok</b> means the domain takes mail, not that the mailbox exists.</p>')
 
-    if contacts or officers:
-        crows = "".join(
-            f'<tr><td><b>{esc(p["name"])}</b>{person_extra(p["name"])}</td>'
-            f'<td style="font-size:12.5px;color:var(--soft)">{esc(p["title"] or "")}</td></tr>'
-            for p in contacts
-            # a rep who is also an officer already has a better row above
-            if not officers or p["name"].lower() not in
-            {_pretty_name(o["name"]).lower() for o in officers})
-        crows = orows + crows
-        erows = ""
-        if emails:
-            chipfor = {"domain_accepts_mail": "lead", "no_mail_server": "dis",
-                       "bad_syntax": "dis", "queued": "partial",
-                       "candidate": "", "unknown": "partial"}
-            label = {"domain_accepts_mail": "domain ok", "no_mail_server": "dead domain",
-                     "bad_syntax": "malformed", "queued": "queued",
-                     "candidate": "guess", "unknown": "unchecked"}
-            erows = "<div style='margin-top:10px'>" + "".join(
-                f'<div style="display:flex;gap:8px;align-items:center;padding:3px 0;'
-                f'font-size:12.5px"><span class="chip {chipfor.get(e["status"], "")}">'
-                f'{esc(label.get(e["status"], e["status"]))}</span> '
-                f'<a href="mailto:{esc(e["email"])}">{esc(e["email"])}</a>'
-                f'<span class="meta">{esc(e["name"] or "")}'
-                f'{" &middot; " + esc(e["title"]) if e["title"] else ""}</span></div>'
-                for e in emails) + "</div>"
-        people_html = (
-            f'<table><tbody>{crows}</tbody></table>{erows}'
-            f'<form method="post" action="/firm/{esc(crd)}/emails" style="margin-top:10px;'
-            f'display:flex;gap:8px">'
-            f'<button type="submit" title="Builds one best-guess email per officer '
-            f'and rep and checks the domain with a local DNS lookup">'
-            f'Guess and check emails</button></form>'
-            f'<p class="meta" style="margin-top:6px">One best-guess address per '
-            f'person, using the pattern the firm uses for its own people, against '
-            f'its own mail domain. <b>domain ok</b> means the domain can receive '
-            f'mail, not that this exact mailbox exists; treat a bounce as the real '
-            f'test. <b>dead domain</b> means the address cannot work.</p>')
+    # ---- profile
+    x = d["extra"] or {}
+    mail = d["mail"] or {}
+    plats = products.platform_evidence(d)
+    mkt = [lab for key, lab in (("ad_performance", "performance results"),
+                                ("ad_testimonials", "testimonials"),
+                                ("ad_endorsements", "endorsements"),
+                                ("ad_ratings", "third-party ratings"),
+                                ("ad_hypothetical", "hypothetical performance"),
+                                ("ad_predecessor", "predecessor performance")) if x.get(key)]
+    socials = json.loads(x.get("social_hosts") or "[]") if x else []
+    svc = [lab for key, lab in (("svc_financial_planning", "financial planning"),
+                                ("svc_portfolio_individuals", "portfolio management for individuals"),
+                                ("svc_portfolio_institutions", "institutional portfolios"),
+                                ("svc_pooled_vehicles", "pooled vehicles"),
+                                ("svc_selects_advisers", "selects other advisers")) if x.get(key)]
+    cust = d["cust"] or {}
+    schwab = "-"
+    if cust.get("schwab_share_reported") is not None:
+        schwab = (caveat("schwab_share_reported",
+                         f'{cust["schwab_share_reported"] * 100:.0f}% of reported')
+                  + f' <span class="meta">as of {esc(cust.get("as_of_filing_date"))}</span>')
+    mail_s = {"m365": "Microsoft 365", "google": "Google Workspace", "other": "Other provider",
+              "none": "No mail server", "no_domain": "No domain on file",
+              "unknown": "Not identifiable"}.get(mail.get("platform"), "Not checked yet")
+    est = money((f["raum"] or 0) / f["clients_total"]) if f["clients_total"] else "-"
+    profile = f"""<dl class="kv">
+<dt>High net worth</dt><dd>{f['hnw_clients'] or 0} clients &middot; {money(f['hnw_aum'])} &middot; <b>{hs:.0f}%</b> of assets</dd>
+<dt>Other individuals</dt><dd>{f['retail_clients'] or 0} clients &middot; {money(f['retail_aum'])}</dd>
+<dt>Average client</dt><dd>{caveat('est_avg_client_size', est)} across {f['clients_total'] or 0} clients</dd>
+<dt>Services</dt><dd>{esc(", ".join(svc)) or "-"}</dd>
+<dt>Custodian</dt><dd>{esc(cust.get('primary_canonical') or '-')}{f", {cust.get('reported_custodians')} reported" if cust.get('reported_custodians') else ""}</dd>
+<dt>Schwab share</dt><dd>{schwab}</dd>
+<dt>Email platform</dt><dd>{esc(mail_s)}{f' <span class="meta">{esc(mail.get("evidence"))}</span>' if mail.get("evidence") else ""}</dd>
+<dt>Reporting platform</dt><dd>{esc(", ".join(plats)) or "Not found"}</dd>
+<dt>Advertising (Item 5.L)</dt><dd>{esc(", ".join(mkt)) or ("None reported" if x else "-")}</dd>
+<dt>Social media</dt><dd>{esc(", ".join(socials)) or "None listed"}</dd>
+<dt>Files 13F</dt><dd>{"Yes" + (f' <span class="meta">CIK {esc(match["cik"])}, link confidence {match["confidence"]:.2f}</span>' if match else "") if d["files_13f"] else "No"}</dd>
+<dt>Registration</dt><dd>{esc(f['firm_type'] or '')}, since {esc(f['registered_date'] or '-')}; last filed {esc(f['filing_date'] or '-')}</dd>
+<dt>Disclosures</dt><dd>{"<span class='bad'>Discloses a disciplinary event (Item 11)</span>" if f["disciplinary"] == "Y" else "None reported"}</dd>
+</dl>"""
+
+    # ---- funds and real estate
+    if funds:
+        frows = "".join(
+            f'<tr><td>{esc(z["fund_type"])}</td><td>{esc(z["fund_name"])}</td>'
+            f'<td class="num">{money(z["gross_asset_value"])}</td><td class="num">{z["owners"] or 0}</td>'
+            f'<td class="num">{money(z["minimum_investment"])}</td>'
+            f'<td class="meta">{esc(z["d"])}</td></tr>' for z in funds)
+        funds_html = ('<table><thead><tr><th>Type</th><th>Fund</th><th class="num">Assets</th>'
+                      '<th class="num">Investors</th><th class="num">Minimum</th>'
+                      f'<th>As of</th></tr></thead><tbody>{frows}</tbody></table>')
     else:
-        people_html = ('<p class="whyempty">Nobody on file yet: no Schedule A '
-                       'roster in the archive (state-registered firms are not in '
-                       'the SEC archive) and no reps in the individual feed. The '
-                       'web enrichment job reads the firm&rsquo;s own site for '
-                       'its team as coverage grows.</p>')
+        funds_html = ('<p class="muted">No private funds on Schedule D. That is typical: '
+                      'most advisers this size run none.</p>')
+    seg = d["seg"]
+    seg_html = ""
+    if seg:
+        seg_html = (
+            '<div class="inputs">'
+            f'<div><div class="n">{money(seg["total_gav"])}</div><div class="l">Real estate fund assets</div></div>'
+            f'<div><div class="n">{(seg["raum_ratio"] or 0) * 100:.1f}%</div><div class="l">Share of firm assets</div></div>'
+            f'<div><div class="n">{seg["total_owners"] or 0}</div><div class="l">Investors</div></div>'
+            f'<div><div class="n">{money(seg["min_investment"])}</div><div class="l">Minimum</div></div></div>'
+            f'<p class="why"><b>{esc(seg["segment"].capitalize())}</b>: {esc(seg["rationale"])} '
+            f'{caveat("archive_as_of", "archive")} as of {esc(seg["as_of_filing_date"])}</p>')
 
-    star = ("&#9733; Watching" if watched else "&#9734; Watch")
-    watch_html = (f'<form method="post" action="/watch/{esc(crd)}" style="display:inline">'
-                  f'<input type="hidden" name="back" value="/firm/{esc(crd)}">'
-                  f'<button type="submit" class="{"primary" if watched else ""}">'
-                  f'{star}</button></form>')
+    # ---- rail
+    cur_status = fs["status"] if fs else ""
+    status_opts = "".join(
+        f'<option value="{esc(s)}"{" selected" if s == cur_status else ""}>'
+        f'{esc(s.capitalize() if s else "Not set")}</option>' for s in [""] + STATUSES)
+    lists_chips = " ".join(f'<a class="chip" href="/firms?list={l["id"]}">{esc(l["name"])}</a>'
+                           for l in in_lists)
+    listopts = "".join(f'<option value="{l["id"]}">{esc(l["name"])}</option>'
+                       for l in all_lists if l["id"] not in {x["id"] for x in in_lists})
+    prep = call_prep(f, results, trigs, [tp for tp in points if tp["kind"] == "brochure"],
+                     reach_lines, officers)
+    star = "&#9733; Watching" if watched else "&#9734; Watch"
+    website = (f'<a href="{esc(f["website"] if f["website"].lower().startswith("http") else "https://" + f["website"])}" '
+               f'target="_blank" rel="noopener">{esc(f["website"].lower().replace("https://", "").replace("http://", "").rstrip("/"))}</a>') if f["website"] else ""
+    crumb = (f'<a href="/lists/{focus}">{esc(products.product(focus)["name"])}</a>'
+             if focus else '<a href="/firms">Firms</a>')
+    saved_note = ('<div class="note plain" style="margin:0 0 14px">Saved. The scores below '
+                  'already reflect it.</div>' if saved else "")
+    scored_n = sum(1 for r in results.values() if r.status == "scored")
 
-    prep = call_prep(f, seg, prof, trigs, funds)
-    reach_lines = []
-    if f["phone"]:
-        reach_lines.append(f"  {f['phone']} (main office, as filed on Form ADV)")
-    for r in filed_info:
-        src = "from the firm's brochure"
-        reach_lines.append(f"  {r['value']} ({r['kind']}, {src})")
-    for w in web_people:
-        bits = " / ".join(x for x in (w["email"], w["phone"]) if x)
-        if bits:
-            reach_lines.append(f"  {bits} ({w['person']}, from the firm's website)")
-    if reach_lines:
-        prep += "\n\nHow to reach them (filed by the firm itself):\n" + \
-                "\n".join(reach_lines)
-    if officers:
-        prep += ("\n\nWho runs it (Schedule A, as of "
-                 f"{officers[0]['as_of'] or 'archive'}):\n") + "\n".join(
-            f"  {_pretty_name(o['name'])}: {o['title'] or ''}"
-            + (" (control person)" if o["control_person"] == "Y" else "")
-            for o in officers[:6])
-    if contacts:
-        prep += "\n\nPeople (from the SEC individual adviser feed):\n" + "\n".join(
-            f"  {p['name']}: {p['title']}" for p in contacts[:5])
-    if holdings:
-        prep += "\n\n13F target holdings (latest quarter, via matched CIK"
-        if match:
-            prep += f", link confidence {match['confidence']:.2f}"
-        prep += "):\n" + "\n".join(
-            f"  {tk}: " + ", ".join(f"{x['quarter']} {money(x['v'])}"
-                                    for x in sorted(seq, key=lambda x: x['quarter']))
-            for tk, seq in sorted(by_ticker.items()))
-    if tags:
-        prep += "\n\nBrochure language (their own words):\n" + "\n".join(
-            f"  {t['tag']}{' (they state they do NOT)' if not t['present'] else ''}: "
-            f"\"{t['best_snippet']}\"" for t in tags[:6])
+    body = f"""<div class="pg">
+<div class="crumb"><a href="/">Home</a> / {crumb}</div>
+<div class="head"><div><h1>{escn(f['legal_name'])}</h1>
+<div class="sub-line">{escn(f['business_name']) + " &middot; " if f['business_name'] and f['business_name'] != f['legal_name'] else ""}
+{esc(" ".join(z for z in (nice_name(f['city']), f['state']) if z))} &middot; {money(f['raum'])} AUM &middot;
+CRD {esc(crd)}{" &middot; " + website if website else ""}{" &middot; " + esc(f["phone"]) if f["phone"] else ""}</div></div>
+<div class="acts">
+<form method="post" action="/watch/{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}">
+<button type="submit" class="{"primary" if watched else ""}">{star}</button></form>
+<button type="button" class="primary" onclick="copyPrep()">Copy call prep</button>
+<span id="copied" class="ok small"></span></div></div>
+{saved_note}
+<div class="doc"><div>
+<section class="s" id="fit"><div class="s-head"><h2>Fit</h2>
+<span class="more">On {scored_n} of {len(results)} product lists. Open a product for the full reasoning.</span></div>
+{_fit_section(crd, results, ranks, focus)}</section>
+<section class="s" id="now"><div class="s-head"><h2>Why now</h2></div>{trig_html}</section>
+<section class="s" id="words"><div class="s-head"><h2>In their own words</h2>
+<span class="more">Brochure language and holdings to open with</span></div>{tp_html}</section>
+<section class="s" id="people"><div class="s-head"><h2>People and how to reach them</h2></div>
+{reach_html}<div style="margin-top:14px">{people_html}</div></section>
+<section class="s" id="profile"><div class="s-head"><h2>Profile</h2></div>{profile}</section>
+<section class="s" id="aum"><div class="s-head"><h2>Assets over time</h2></div>{aum_chart(history)}</section>
+<section class="s" id="funds"><div class="s-head"><h2>Private funds</h2></div>{funds_html}{seg_html}</section>
+</div>
+<aside class="rail">
+<div class="panel"><div class="facts">
+<div><div class="n">{money(f['raum'])}</div><div class="l">Assets</div></div>
+<div><div class="n">{hs:.0f}%</div><div class="l">High net worth</div></div>
+<div><div class="n">{f['iar_count'] or 0}</div><div class="l">Advisors</div></div>
+<div><div class="n">{f['hnw_clients'] or 0}</div><div class="l">HNW clients</div></div>
+</div></div>
+<div class="panel"><h3>Status and owner</h3>
+<form method="post" action="/firm/{esc(crd)}/status">
+<label>Status<select name="status">{status_opts}</select></label>
+<label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}" placeholder="Leave blank to claim it yourself"></label>
+<button class="primary sm" type="submit">Save</button></form>
+<p class="meta">Meetings and customers raise the relationship points on every list.</p></div>
+<div class="panel"><h3>Notes</h3>
+<form method="post" action="/firm/{esc(crd)}/note">
+<textarea name="note" placeholder="Call notes, context, next step">{esc(note[0]['note'] if note else '')}</textarea>
+<button class="sm" type="submit" style="margin-top:8px">Save note</button></form></div>
+<div class="panel"><h3>Saved lists</h3>{lists_chips or '<span class="muted small">Not on any list</span>'}
+<form method="post" action="/firms/addtolist" style="margin-top:10px">
+<input type="hidden" name="crd" value="{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}">
+<input type="hidden" name="new_name" value="">
+<select name="list_id" onchange="addToList(this)"><option value="">Add to a list</option>{listopts}
+<option value="__new">New list...</option></select></form></div>
+<div class="panel"><h3>Call prep</h3><pre class="prep" id="prep">{esc(prep)}</pre></div>
+</aside></div></div>"""
+    return page(nice_name(f["legal_name"]) or crd, f"list:{focus}" if focus else "firms", body,
+                FIRM_CSS, js=COPY_JS)
 
-    return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
-<title>{esc(f['legal_name'])}</title><style>{DETAIL_CSS}</style>
-{nav("firms")}
-<header><h1>{esc(f['legal_name'])}</h1>
-<div class="sub">CRD {esc(crd)} &middot; {esc(f['city'] or '')} {esc(f['state'] or '')}
-&middot; {esc(f['firm_type'])} &middot; last filed {esc(f['filing_date'])} {disc}
-&nbsp; {watch_html}</div></header>
-<div class="wrap">
-<p class="back"><a href="/">&larr; Trigger inbox</a> &middot;
-<a href="/firms">Firm list</a></p>
-<div class="grid">
-  <div class="card"><h2>Identity and scale</h2><dl class="kv">
-    <dt>Legal name</dt><dd>{esc(f['legal_name'])}</dd>
-    <dt>Doing business as</dt><dd>{esc(f['business_name'] or '-')}</dd>
-    <dt>Website</dt><dd>{website}</dd>
-    <dt>Phone</dt><dd>{esc(f['phone'] or '-')}</dd>
-    <dt>SEC number</dt><dd>{esc(f['sec_number'] or '-')}</dd>
-    <dt>Registered</dt><dd>{esc(f['registered_date'] or '-')}</dd>
-    <dt>RAUM</dt><dd>{money(f['raum'])} ({money(f['raum_disc'])} discretionary)</dd>
-    <dt>Adviser reps</dt><dd>{f['iar_count'] or 0}</dd>
-    <dt>Employees</dt><dd>{f['total_employees'] or 0}</dd>
-  </dl></div>
-  <div class="card"><h2>Client mix</h2><dl class="kv">
-    <dt>High net worth</dt><dd><b>{f['hnw_clients'] or 0}</b> clients &middot;
-      {money(f['hnw_aum'])} &middot; <b>{hs:.0f}%</b> of RAUM</dd>
-    <dt>Other individuals</dt><dd>{f['retail_clients'] or 0} clients &middot;
-      {money(f['retail_aum'])}</dd>
-    <dt>Total clients</dt><dd>{f['clients_total'] or 0}
-      <span class="asof">summed from Item 5.D</span></dd>
-    <dt>Est. client size</dt><dd>{caveat('est_avg_client_size', est)}</dd>
-    <dt>Custodian</dt><dd>{esc(prof['primary_canonical']) if prof else '-'}</dd>
-    <dt>Schwab share</dt><dd>{schwab}</dd>
-    <dt>Item 5.K(3) / 7.B</dt><dd>{esc(f['q5k3'] or '-')} / {esc(f['q7b'] or '-')}</dd>
-  </dl></div>
-</div>
-<div class="grid">
-  <div class="card"><h2>How to reach them</h2>{reach_html}</div>
-  <div class="card"><h2>People</h2>{people_html}</div>
-</div>
-<div class="card" style="margin-top:14px"><h2>AUM trajectory</h2>{spark_html}</div>
-<div class="card" style="margin-top:14px"><h2>Real estate classification, with the inputs it was made from</h2>
-{seg_html}</div>
-<div class="card" style="margin-top:14px"><h2>Private funds advised</h2>
-{funds_html}</div>
-<div class="card" style="margin-top:14px">
-<h2>13F target holdings, with the link that produced them</h2>
-{holdings_html}</div>
-<div class="card" style="margin-top:14px">
-<h2>Brochure tags, each with the firm's own sentence</h2>
-{tags_html}</div>
-<div class="card" style="margin-top:14px"><h2>Trigger history</h2>
-<table><thead><tr><th style="width:100px">Date</th><th style="width:180px">Type</th>
-<th>What happened</th><th style="width:80px">Priority</th>
-<th style="width:90px">State</th></tr></thead><tbody>{trows}</tbody></table></div>
-<div class="grid" style="margin-top:14px;grid-template-columns:1fr 1fr 1.4fr">
-  <div class="card"><h2>Ownership and status</h2>
-    <form method="post" action="/firm/{esc(crd)}/status" class="filters" style="border:0;padding:0;margin:0">
-      <label>Status<select name="status">{status_opts}</select></label>
-      <label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}"
-        placeholder="who works this firm"></label>
-      <button class="primary" type="submit">Save</button>
-    </form>
-    <p class="meta" style="margin-top:8px">Status and owner live only in this tool;
-    the CSV export carries them for manual import into Twenty.</p>
-  </div>
-  <div class="card"><h2>Notes</h2>
-    <form method="post" action="/firm/{esc(crd)}/note">
-      <textarea name="note" placeholder="Call notes, context, next step">{esc(note['note'] if note else '')}</textarea>
-      <div style="margin-top:8px"><button class="primary" type="submit">Save note</button></div>
-    </form></div>
-  <div class="card"><h2>Call prep summary</h2>
-    <button class="primary" onclick="copyPrep()">Copy to clipboard</button>
-    <span id="copied" style="margin-left:9px;color:var(--ok);font-size:13px"></span>
-    <pre class="prep" id="prep">{esc(prep)}</pre></div>
-</div>
-</div>
-<script>{COPY_JS}</script>""")
+
+@router.post("/firm/{crd}/level")
+def set_level(crd: str, product: str = Form(...), criterion: str = Form(...),
+              points: str = Form(""), note: str = Form("")):
+    c = conn()
+    try:
+        products.set_override(c, crd, product, criterion,
+                              float(points) if points.strip() else None,
+                              note.strip()[:200], current_owner())
+    except ValueError:
+        pass
+    c.close()
+    return RedirectResponse(f"/firm/{crd}?p={product}&saved=1#fit-{product}",
+                            status_code=303)
 
 
 @router.post("/firm/{crd}/note")
@@ -680,13 +679,13 @@ def save_note(crd: str, note: str = Form("")):
               " updated_at=excluded.updated_at",
               (crd, note, datetime.now(timezone.utc).isoformat(timespec="seconds")))
     c.commit()
-    return RedirectResponse(f"/firm/{crd}", status_code=303)
+    c.close()
+    return RedirectResponse(f"/firm/{crd}?saved=1", status_code=303)
 
 
 @router.post("/firm/{crd}/status")
 def save_status(crd: str, status: str = Form(""), owner: str = Form("")):
-    # Claiming a firm without naming an owner means you: three people sharing a
-    # queue need to see who took what, and the signed-in name is the truth.
+    # Claiming a firm without naming an owner means you.
     if status and not owner.strip():
         owner = current_owner()
     c = conn()
@@ -696,60 +695,31 @@ def save_status(crd: str, status: str = Form(""), owner: str = Form("")):
               (crd, status or None, owner or None,
                datetime.now(timezone.utc).isoformat(timespec="seconds")))
     c.commit()
-    return RedirectResponse(f"/firm/{crd}", status_code=303)
+    # Status feeds the relationship criteria, so the lists move with it.
+    products.rescore_firm(c, crd)
+    c.close()
+    return RedirectResponse(f"/firm/{crd}?saved=1", status_code=303)
 
 
-from prospect.mailcheck import BAD_EMAIL_DOMAINS  # noqa: E402  single source
-
-
-def email_domain_for(c, crd: str) -> tuple[str | None, str]:
-    """The firm's real mail domain and where it came from.
-
-    Priority: the domain of an email address the firm itself printed in its
-    brochure (ground truth), then the filed website (good since the social
-    address fix), then nothing. Never a social or freemail domain."""
-    import re as _re
-    row = c.execute("""SELECT value FROM firm_contact_info
-        WHERE crd=? AND kind='email' ORDER BY id LIMIT 1""", (crd,)).fetchone()
-    if row:
-        dom = row["value"].rsplit("@", 1)[-1].lower()
-        if not any(b in dom for b in BAD_EMAIL_DOMAINS):
-            return dom, "an email address in the firm's own brochure"
-    f = c.execute("SELECT website FROM firm_current WHERE crd=?", (crd,)).fetchone()
-    if f and f["website"]:
-        m = _re.search(r"(?:https?://)?(?:www\.)?([a-z0-9.-]+\.[a-z]{2,})",
-                       f["website"].lower())
-        if m and not any(b in m.group(1) for b in BAD_EMAIL_DOMAINS):
-            return m.group(1), "the firm's filed website"
-    return None, ("no usable domain: the firm filed no website, or only a "
-                  "social media page")
+from prospect.mailcheck import BAD_EMAIL_DOMAINS  # noqa: E402,F401  single source
 
 
 @router.post("/firm/{crd}/emails")
-def gen_emails(crd: str, queue: str = Form("")):
-    """One best-guess email per decision maker and rep, checked on the spot.
-
-    One address per person, using the pattern the firm actually uses (see
-    prospect.emailguess), not three patterns that mostly bounce. The check is a
-    local DNS lookup taking milliseconds, so the verdict is on the page when it
-    reloads.
-    """
+def gen_emails(crd: str):
+    """One best-guess email per decision maker and rep, checked on the spot
+    with a local DNS lookup, so the verdict is on the page when it reloads."""
     from prospect import emailguess, mailcheck
     c = conn()
     firm_pat, fallback = emailguess.observed(c)
     domain = emailguess.domain_for(c, crd)
-    # Regenerate cleanly: drop this firm's prior guesses so re-clicking never
-    # stacks duplicates or leaves stale three-pattern rows behind.
     c.execute("DELETE FROM contact_email WHERE crd=? AND pattern IS NOT NULL"
               " AND pattern != 'filed'", (crd,))
-
-    people = []           # (display name, title) officers first, then reps
+    people = []
     for r in c.execute("""SELECT name, title FROM schedule_a
                           WHERE crd=? AND is_individual=1 LIMIT 12""", (crd,)):
         people.append((emailguess.pretty(r["name"]), r["title"]))
     for r in c.execute("SELECT name, title FROM contact WHERE crd=? LIMIT 8", (crd,)):
         people.append((r["name"], r["title"]))
-
     mx = mailcheck.has_mx(domain) if domain else False
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     seen = set()
@@ -775,4 +745,4 @@ def gen_emails(crd: str, queue: str = Form("")):
                   " VALUES (?,?,?,?,?,?,?)", (crd, full, title, addr, label, status, now))
     c.commit()
     c.close()
-    return RedirectResponse(f"/firm/{crd}", status_code=303)
+    return RedirectResponse(f"/firm/{crd}#people", status_code=303)

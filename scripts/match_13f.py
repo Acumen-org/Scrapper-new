@@ -108,19 +108,15 @@ def main() -> int:
     ua = cfg.http["user_agent"]
 
     # Candidate advisers
-    if args.scope == "tier_a":
-        where = "t.crd IN (SELECT crd FROM tier_a_rank)"
-    elif args.scope == "tier_c":
-        where = "t.crd IN (SELECT crd FROM tier_c_score WHERE total_score>=70)"
-    else:
-        where = ("t.crd IN (SELECT crd FROM tier_a_rank) OR "
-                 "t.crd IN (SELECT crd FROM tier_c_score WHERE total_score>=70)")
+    # Candidates are firms on a product list. The old tier_a / tier_c scopes
+    # map onto the PHH and AcuBooth lists; the default is every list.
+    by_scope = {"tier_a": "AND t.product LIKE 'phh%'",
+                "tier_c": "AND t.product = 'acubooth'"}
+    extra = by_scope.get(args.scope, "")
     advisers = conn.execute(f"""
-        SELECT f.crd, f.legal_name, f.business_name, f.state
-        FROM firm_current f JOIN (SELECT crd FROM tier_a_rank
-                          UNION SELECT crd FROM tier_c_score WHERE total_score>=70) t
-          ON t.crd=f.crd
-        WHERE {where}""").fetchall()
+        SELECT DISTINCT f.crd, f.legal_name, f.business_name, f.state
+        FROM firm_current f
+        JOIN product_score t ON t.crd=f.crd AND t.status='scored' {extra}""").fetchall()
     print(f"candidate advisers in scope: {len(advisers):,}")
 
     # Index EDGAR filers by both normalisations

@@ -211,7 +211,7 @@ def base_rates(conn) -> None:
 def live_now(conn) -> None:
     """What these triggers would surface today, restricted to scoreable firms."""
     print("\n" + "=" * 72)
-    print("LIVE QUEUE, in-band registered firms only (ERAs excluded)")
+    print("LIVE QUEUE, registered firms only (ERAs excluded)")
     print("=" * 72)
     for t, window in (("custodian_change_to_platform", "2022-01-01"),
                       ("custodian_change_from_platform", "2022-01-01"),
@@ -222,7 +222,7 @@ def live_now(conn) -> None:
             SELECT COUNT(DISTINCT t.crd) c FROM trigger_event t
             JOIN firm_current f ON f.crd = t.crd
             WHERE t.trigger_type=? AND t.suppressed=0 AND t.detected_date>=?
-              AND f.is_era=0 AND f.raum>=25e6 AND f.raum<500e6""",
+              AND f.is_era=0""",
             (t, window)).fetchone()
         print(f"  {t:<24} since {window}:  {r['c']:>5,} firms")
 

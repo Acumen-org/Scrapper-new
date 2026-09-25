@@ -13,7 +13,7 @@
 #   image   publishes to GHCR as a rollback artifact. Not the deploy path.
 #
 # The gate deliberately runs scripts.qa_pg, not scripts.qa_smoke: qa_smoke needs
-# a populated database (it looks up a real tier A firm to open), which CI does
+# a populated database (it opens the top firm on a product list), which CI does
 # not have. qa_smoke stays the pre-merge check you run against a real instance.
 
 name: ci

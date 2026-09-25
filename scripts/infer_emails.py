@@ -48,18 +48,17 @@ pretty = emailguess.pretty
 
 
 def targets(conn, limit: int, all_band: bool):
-    """Decision makers lacking any known email, scored firms first."""
+    """Decision makers lacking any known email, best-scored firms first.
+
+    By default only firms in tier A or B of some product list, which is who
+    gets called; --all-band widens it to every firm on any list."""
     scope = "" if all_band else """
-          AND (f.crd IN (SELECT crd FROM tier_a_rank)
-               OR f.crd IN (SELECT crd FROM tier_c_score WHERE rank<=1000)
-               OR f.crd IN (SELECT crd FROM firm_overlay WHERE phh_13f=1))"""
+          AND sc.best_tier IN ('A','B')"""
     return conn.execute(f"""
         SELECT s.crd, s.name, s.title FROM schedule_a s
-        JOIN firm_current f ON f.crd = s.crd
-        WHERE s.is_individual = 1
-          AND f.is_era = 0 AND f.raum >= 25e6 AND f.raum < 500e6{scope}
-        ORDER BY (SELECT MIN(rank) FROM tier_a_rank t WHERE t.crd=s.crd) IS NULL,
-                 (SELECT MIN(rank) FROM tier_a_rank t WHERE t.crd=s.crd)
+        JOIN firm_scope sc ON sc.crd = s.crd
+        WHERE s.is_individual = 1{scope}
+        ORDER BY sc.priority DESC
         LIMIT {int(limit)}""").fetchall()
 
 

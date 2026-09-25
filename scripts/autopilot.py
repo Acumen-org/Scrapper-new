@@ -4,7 +4,10 @@ Jobs run in small slices and re-read their desired state between slices, so
 Pause in the UI takes effect within seconds and nothing has to be killed. One
 worker process at a time (pid file); starting any job from the UI launches it.
 
-  brochures     continue Part 2A coverage across the band
+  brochures     continue Part 2A coverage, best-scored firms first
+  brochure_retag   re-tag held brochures when the vocabulary grows, from the
+                   saved text, no refetch
+  mail_platform    Microsoft 365 or Google, from public DNS mail records
   firm_refresh  fetch current ADV Part 1 PDFs for the flagged firms (Q5K3 or
                 Q7B yes) and extract current custodian names, refreshing data
                 whose bulk source ends 2024-12-31
@@ -68,10 +71,11 @@ def desired(conn, kind) -> str:
 # ------------------------------------------------------------------ jobs
 
 def job_brochures(conn, cfg) -> bool:
-    """One slice of band brochure coverage. Returns True when work remains."""
-    band = conn.execute("SELECT COUNT(*) n FROM firm_current WHERE is_era=0"
-                        " AND raum>=25e6 AND raum<500e6").fetchone()["n"]
-    done = conn.execute("SELECT COUNT(*) n FROM brochure").fetchone()["n"]
+    """One slice of brochure coverage over the product lists. Returns True
+    when work remains."""
+    band = conn.execute("SELECT COUNT(*) n FROM firm_scope").fetchone()["n"]
+    done = conn.execute("SELECT COUNT(*) n FROM brochure b JOIN firm_scope s"
+                        " ON s.crd=b.crd").fetchone()["n"]
     set_task(conn, "brochures", progress=done, total=band,
              message=f"{done:,} of {band:,} brochures processed")
     if done >= band:
@@ -79,7 +83,7 @@ def job_brochures(conn, cfg) -> bool:
                  message=f"complete: {done:,} of {band:,}")
         return False
     r = subprocess.run([sys.executable, "-m", "scripts.brochures",
-                        "--scope", "band", "--limit", "25"],
+                        "--scope", "scored", "--limit", "25"],
                        cwd=config.ROOT, capture_output=True, text=True)
     if r.returncode != 0:
         set_task(conn, "brochures", message=f"slice failed: {r.stdout[-160:]}")
@@ -97,14 +101,14 @@ def job_firm_refresh(conn, cfg, fetch) -> bool:
     """
     conn.executescript(REFRESH_SCHEMA)
     todo = conn.execute("""
-        SELECT crd FROM firm_current
-        WHERE is_era=0 AND raum>=25e6 AND raum<500e6
-          AND (q5k3='Y' OR q7b='Y')
-          AND crd NOT IN (SELECT crd FROM firm_refresh)
+        SELECT f.crd FROM firm_current f JOIN firm_scope s ON s.crd=f.crd
+        WHERE (f.q5k3='Y' OR f.q7b='Y')
+          AND f.crd NOT IN (SELECT crd FROM firm_refresh)
+        ORDER BY s.priority DESC
         LIMIT 12""").fetchall()
-    total = conn.execute("""SELECT COUNT(*) n FROM firm_current
-        WHERE is_era=0 AND raum>=25e6 AND raum<500e6
-          AND (q5k3='Y' OR q7b='Y')""").fetchone()["n"]
+    total = conn.execute("""SELECT COUNT(*) n FROM firm_current f
+        JOIN firm_scope s ON s.crd=f.crd
+        WHERE (f.q5k3='Y' OR f.q7b='Y')""").fetchone()["n"]
     done = conn.execute("SELECT COUNT(*) n FROM firm_refresh").fetchone()["n"]
     set_task(conn, "firm_refresh", progress=done, total=total,
              message=f"{done:,} of {total:,} flagged firms refreshed")
@@ -176,9 +180,9 @@ def job_web_enrich(conn, cfg) -> bool:
     """One slice of website contact enrichment: people, titles, emails, and
     phones from each firm's own site. Slices are small because each firm can
     take several polite seconds."""
-    total = conn.execute("""SELECT COUNT(*) n FROM firm_current
-        WHERE is_era=0 AND raum>=25e6 AND raum<500e6
-          AND website IS NOT NULL AND website != ''""").fetchone()["n"]
+    total = conn.execute("""SELECT COUNT(*) n FROM firm_current f
+        JOIN firm_scope s ON s.crd=f.crd
+        WHERE f.website IS NOT NULL AND f.website != ''""").fetchone()["n"]
     try:
         done = conn.execute("SELECT COUNT(*) n FROM web_enrich_state").fetchone()["n"]
     except Exception:
@@ -207,12 +211,8 @@ def job_infer_emails(conn, cfg) -> bool:
     them against the mail domain, and stops when every officer on the scored
     lists has an address. Cheap: one subprocess slice, all local."""
     total = conn.execute("""SELECT COUNT(*) n FROM schedule_a s
-        JOIN firm_current f ON f.crd=s.crd
-        WHERE s.is_individual=1 AND f.is_era=0 AND f.raum>=25e6 AND f.raum<500e6
-          AND (s.crd IN (SELECT crd FROM tier_a_rank)
-               OR s.crd IN (SELECT crd FROM tier_c_score WHERE rank<=1000)
-               OR s.crd IN (SELECT crd FROM firm_overlay WHERE phh_13f=1))
-        """).fetchone()["n"]
+        JOIN firm_scope sc ON sc.crd=s.crd
+        WHERE s.is_individual=1 AND sc.best_tier IN ('A','B')""").fetchone()["n"]
     done = conn.execute("SELECT COUNT(*) n FROM contact_email").fetchone()["n"]
     set_task(conn, "infer_emails", progress=min(done, total), total=total,
              message=f"{done:,} decision-maker addresses inferred")
@@ -310,7 +310,61 @@ def job_cusip_verify(conn, cfg) -> bool:
     return False
 
 
-JOBS = {"brochures": job_brochures, "firm_refresh": None,  # bound below
+def job_brochure_retag(conn, cfg) -> bool:
+    """Re-tag held brochures to the current vocabulary, from saved text."""
+    import yaml
+    ver = int(yaml.safe_load((config.CONFIG_DIR / "brochure_tags.yml").read_text(
+        encoding="utf-8"))["config_version"])
+    total = conn.execute("SELECT COUNT(*) n FROM brochure WHERE status='ok'"
+                         ).fetchone()["n"]
+    try:
+        left = conn.execute("SELECT COUNT(*) n FROM brochure WHERE status='ok'"
+                            " AND COALESCE(tag_version,1) < ?", (ver,)).fetchone()["n"]
+    except Exception:
+        conn.rollback()
+        left = total
+    set_task(conn, "brochure_retag", progress=total - left, total=total,
+             message=f"{total - left:,} of {total:,} on vocabulary v{ver}")
+    if left == 0:
+        set_task(conn, "brochure_retag", desired_state="paused",
+                 message=f"complete: all {total:,} on vocabulary v{ver}")
+        subprocess.run([sys.executable, "-m", "scripts.score_products"],
+                       cwd=config.ROOT, capture_output=True)
+        return False
+    r = subprocess.run([sys.executable, "-m", "scripts.brochures", "--retag",
+                        "--limit", "200", "--workers", "2"], cwd=config.ROOT,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        set_task(conn, "brochure_retag", message=f"slice failed: {r.stdout[-160:]}")
+    return True
+
+
+def job_mail_platform(conn, cfg) -> bool:
+    """One slice of email platform lookups, best-scored firms first."""
+    total = conn.execute("SELECT COUNT(*) n FROM firm_scope").fetchone()["n"]
+    try:
+        done = conn.execute("SELECT COUNT(*) n FROM firm_mail_platform m"
+                            " JOIN firm_scope s ON s.crd=m.crd").fetchone()["n"]
+    except Exception:
+        conn.rollback()
+        done = 0
+    set_task(conn, "mail_platform", progress=done, total=total,
+             message=f"{done:,} of {total:,} firms checked")
+    if done >= total:
+        set_task(conn, "mail_platform", desired_state="paused",
+                 message=f"complete: {done:,} of {total:,}; re-checked every 90 days")
+        return False
+    r = subprocess.run([sys.executable, "-m", "scripts.mail_platform",
+                        "--limit", "400"], cwd=config.ROOT,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        set_task(conn, "mail_platform", message=f"slice failed: {r.stdout[-160:]}")
+        return True
+    return "0 firms to check" not in (r.stdout or "")
+
+
+JOBS = {"brochures": job_brochures, "brochure_retag": job_brochure_retag,
+        "mail_platform": job_mail_platform, "firm_refresh": None,  # bound below
         "contact_extract": job_contact_extract,
         "web_enrich": job_web_enrich,
         "infer_emails": job_infer_emails,

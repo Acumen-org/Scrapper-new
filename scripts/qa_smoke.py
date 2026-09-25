@@ -117,39 +117,46 @@ def post(base: str, path: str, data: dict, timeout: float = 30.0) -> int:
 
 
 ROUTES: list[tuple[str, str]] = [
-    ("/", "Trigger inbox"),
-    ("/?state=", "Trigger inbox"),
-    ("/?type=first_real_estate_fund", "First real estate fund"),
-    ("/?type=custodian_change_from_platform", "Left Schwab"),
-    ("/?product=PHH", "Trigger inbox"),
-    ("/?product=ACUBOOTH", "Trigger inbox"),
-    ("/?q=CAPITAL", "Trigger inbox"),
-    ("/?page=2", "Trigger inbox"),
+    ("/", "Product lists"),
+    ("/", "Call first"),
+    ("/lists/phh_fund", "PHH Fund I"),
+    ("/lists/phh_fund?tier=B", "Why it scores"),
+    ("/lists/phh_fund?view=rules", "Scored criteria"),
+    ("/lists/phh_fund?view=disqualified", "Disqualified"),
+    ("/lists/phh_1031", "PHH 1031"),
+    ("/lists/phh_jv", "PHH JV"),
+    ("/lists/acubooth", "AcuBooth"),
+    ("/lists/acubooth?sort=signal", "AcuBooth"),
+    ("/lists/acubooth?sig=1&reach=email", "AcuBooth"),
+    ("/lists/glynac", "Glynac"),
+    ("/lists/glynac?q=capital&owner=none", "Glynac"),
+    ("/lists/glynac/export.csv", "rank"),
+    ("/lists/acubooth/export.xlsx?tier=A", "PK"),
+    ("/signals", "Signals"),
+    ("/signals?state=", "Signals"),
+    ("/signals?type=first_real_estate_fund", "First real estate fund"),
+    ("/signals?type=custodian_change_from_platform", "Left Schwab"),
+    ("/signals?product=acubooth&window=365", "Signals"),
+    ("/signals?page=2", "Signals"),
     ("/firms", "Firms"),
-    ("/firms?preset=phh_a", "PHH - Tier A"),
-    ("/firms?preset=phh_x", "PHH - Intersection"),
-    ("/firms?preset=acu", "AcuBooth - Tier C"),
-    ("/firms?preset=comp", "Competitors"),
-    ("/firms?band=100-250", "Firms"),
-    ("/firms?seg=prospect", "Firms"),
+    ("/firms?on=phh_fund&tier=B", "Firms"),
+    ("/firms?size=1-5b&reg=SEC", "Firms"),
+    ("/firms?on=none", "Firms"),
     ("/firms?trig=open", "Firms"),
     ("/firms?q=WEALTH", "Firms"),
     ("/firms?stat=working", "Firms"),
     ("/firms?view=contacts", "Contacts"),
-    ("/firms?view=contacts&preset=phh_a", "Contacts"),
-    ("/firms/export.csv?preset=phh_a", "crd"),
-    ("/firms/export.xlsx?preset=phh_a", "PK"),
-    ("/lists", "Lists"),
+    ("/firms?view=contacts&on=acubooth&tier=A", "Contacts"),
+    ("/firms/export.csv?on=phh_fund", "crd"),
+    ("/firms/export.xlsx?on=phh_fund", "PK"),
+    ("/saved", "Saved lists"),
     ("/review", "Review queue"),
     ("/review?kind=match_13f", "Review queue"),
     ("/review?kind=brochure_negation", "Review queue"),
     ("/review?kind=brochure_negation&page=2", "Review queue"),
-    ("/health", "Pipeline health"),
+    ("/health", "Background jobs"),
+    ("/health", "Coverage of the product lists"),
     ("/health.json", "snapshots"),
-    ("/guide", "How to use"),
-    ("/guide", "On this page"),
-    ("/guide", "Finding firms"),
-    ("/guide", "Your lists"),
     ("/api/search?q=capital", "crd"),
     # The confirmation page only. POST /admin/quit is never exercised here for
     # the obvious reason that it would stop the server the tests are hitting.
@@ -176,14 +183,16 @@ def pass_auth(base: str) -> None:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.headers.get("Location")
 
-    for path in ("/", "/firms", "/lists", "/review", "/health", "/guide",
-                 "/firms/export.csv", "/api/search?q=x", "/health.json"):
+    for path in ("/", "/firms", "/lists/acubooth", "/signals", "/saved", "/review",
+                 "/health", "/firms/export.csv", "/lists/glynac/export.csv",
+                 "/api/search?q=x", "/health.json"):
         code, loc = raw(path)
         (ok if code == 303 and (loc or "").startswith("/login")
          else fail)(f"GET {path} blocked without a session (got {code})")
 
-    for path in ("/admin/quit", "/admin/run-weekly",
-                 "/admin/task/brochures/start", "/action", "/views/save"):
+    for path in ("/admin/quit", "/admin/run-weekly", "/admin/rescore",
+                 "/admin/task/brochures/start", "/signals/action", "/views/save",
+                 "/firm/1/level"):
         code, _ = raw(path, "POST")
         (ok if code == 303 else fail)(
             f"POST {path} refused without a session (got {code})")
@@ -224,9 +233,10 @@ def pass_auth(base: str) -> None:
 
 def pass_routes(base: str, detail_crd: str) -> None:
     print("\n[1] route matrix")
-    routes = ROUTES + [(f"/firm/{detail_crd}", "Ownership and status"),
-                       (f"/firm/{detail_crd}", "People"),
-                       (f"/firm/{detail_crd}", "AUM trajectory")]
+    routes = ROUTES + [(f"/firm/{detail_crd}", "Status and owner"),
+                       (f"/firm/{detail_crd}", "People and how to reach them"),
+                       (f"/firm/{detail_crd}", "Assets over time"),
+                       (f"/firm/{detail_crd}?p=phh_fund", "Gates passed")]
     for path, marker in routes:
         try:
             st, body, dt = get(base, path)
@@ -267,22 +277,55 @@ def pass_markup(base: str) -> None:
         ok(f"{len(qa_html.PAGES) + 1} pages: markup, CSS and templates clean")
 
 
-def pass_writes(base: str, db_path: str) -> None:
+def pass_writes(base: str) -> None:
     print("\n[2] write round-trips (disposable rows)")
-    c = sqlite3.connect(db_path, timeout=30)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA busy_timeout=20000")
+    from prospect import db
+    c = db.connect()
 
-    crd = c.execute("SELECT crd FROM tier_a_rank WHERE rank=2").fetchone()["crd"]
+    crd = c.execute("SELECT crd FROM product_score WHERE product='phh_fund'"
+                    " AND status='scored' ORDER BY rank LIMIT 1 OFFSET 1").fetchone()["crd"]
+    prior = c.execute("SELECT status, owner FROM firm_status WHERE crd=?", (crd,)).fetchone()
     post(base, f"/firm/{crd}/status", {"status": "working", "owner": "QA"})
+    c.commit()
     row = c.execute("SELECT status,owner FROM firm_status WHERE crd=?", (crd,)).fetchone()
     (ok if row and row["status"] == "working" and row["owner"] == "QA"
      else fail)("firm status round-trip")
-    post(base, f"/firm/{crd}/status", {"status": "", "owner": ""})
+    post(base, f"/firm/{crd}/status", {"status": (prior or {}).get("status") or "",
+                                       "owner": (prior or {}).get("owner") or ""})
+    if not prior:
+        c.execute("DELETE FROM firm_status WHERE crd=?", (crd,))
+        c.commit()
 
+    # A manual level: set it, see the score move and carry the attribution,
+    # then clear it and see the score come back.
+    before = c.execute("SELECT score FROM product_score WHERE crd=? AND"
+                       " product='phh_fund'", (crd,)).fetchone()["score"]
+    post(base, f"/firm/{crd}/level", {"product": "phh_fund", "criterion": "relationship",
+                                      "points": "100", "note": "qa"})
+    c.commit()
+    ov = c.execute("SELECT points FROM score_override WHERE crd=? AND product='phh_fund'"
+                   " AND criterion='relationship'", (crd,)).fetchone()
+    after = c.execute("SELECT score FROM product_score WHERE crd=? AND"
+                      " product='phh_fund'", (crd,)).fetchone()["score"]
+    (ok if ov and after >= before else fail)(
+        f"manual level round-trip ({before:.1f} -> {after:.1f})")
+    post(base, f"/firm/{crd}/level", {"product": "phh_fund", "criterion": "relationship",
+                                      "points": ""})
+    c.commit()
+    back = c.execute("SELECT score FROM product_score WHERE crd=? AND"
+                     " product='phh_fund'", (crd,)).fetchone()["score"]
+    (ok if abs(back - before) < 0.05 else fail)(f"manual level cleared ({back:.1f})")
+
+    prior_note = c.execute("SELECT note FROM firm_note WHERE crd=?", (crd,)).fetchone()
     post(base, f"/firm/{crd}/note", {"note": "qa note"})
+    c.commit()
     row = c.execute("SELECT note FROM firm_note WHERE crd=?", (crd,)).fetchone()
     (ok if row and row["note"] == "qa note" else fail)("firm note round-trip")
+    if prior_note:
+        post(base, f"/firm/{crd}/note", {"note": prior_note["note"] or ""})
+    else:
+        c.execute("DELETE FROM firm_note WHERE crd=?", (crd,))
+    c.commit()
 
     c.execute("INSERT OR REPLACE INTO adv_13f_match VALUES"
               " ('QA_CRD','QA_CIK',0.7,'NY','NY','q','q','qa','review',NULL,NULL,'qa')")
@@ -292,6 +335,7 @@ def pass_writes(base: str, db_path: str) -> None:
     nid = c.execute("SELECT id FROM brochure_negation WHERE crd='QA_CRD'").fetchone()["id"]
     post(base, "/review/match", {"crd": "QA_CRD", "cik": "QA_CIK", "decision": "confirmed"})
     post(base, "/review/negation", {"nid": nid, "decision": "negation_confirmed"})
+    c.commit()
     m = c.execute("SELECT status FROM adv_13f_match WHERE crd='QA_CRD'").fetchone()["status"]
     n = c.execute("SELECT status FROM brochure_negation WHERE id=?", (nid,)).fetchone()["status"]
     (ok if m == "confirmed" else fail)("match decision round-trip")
@@ -302,23 +346,28 @@ def pass_writes(base: str, db_path: str) -> None:
 
     # watch toggle round-trip (twice returns to the original state)
     post(base, f"/watch/{crd}", {"back": "/"})
+    c.commit()
     w1 = c.execute("SELECT COUNT(*) n FROM firm_watch WHERE crd=?", (crd,)).fetchone()["n"]
     post(base, f"/watch/{crd}", {"back": "/"})
+    c.commit()
     w2 = c.execute("SELECT COUNT(*) n FROM firm_watch WHERE crd=?", (crd,)).fetchone()["n"]
     (ok if w1 != w2 else fail)("watch toggle round-trip")
 
     # saved view create + delete
-    post(base, "/views/save", {"page": "firms", "qs": "seg=prospect", "name": "QA view"})
+    post(base, "/views/save", {"page": "list:acubooth", "qs": "tier=A", "name": "QA view"})
+    c.commit()
     v = c.execute("SELECT id FROM saved_view WHERE name='QA view'").fetchone()
     (ok if v else fail)("saved view created")
     if v:
         post(base, "/views/delete", {"vid": v["id"]})
+        c.commit()
         gone = c.execute("SELECT COUNT(*) n FROM saved_view WHERE name='QA view'"
                          ).fetchone()["n"] == 0
         (ok if gone else fail)("saved view deleted")
 
     # autopilot control writes desired_state (job stays paused)
     post(base, "/admin/task/cusip_verify/pause", {})
+    c.commit()
     stt = c.execute("SELECT desired_state FROM auto_task WHERE kind='cusip_verify'"
                     ).fetchone()
     (ok if stt and stt["desired_state"] == "paused" else fail)("autopilot control")
@@ -327,10 +376,12 @@ def pass_writes(base: str, db_path: str) -> None:
         ON a.trigger_id=t.id WHERE a.state IS NULL AND t.suppressed=0
         ORDER BY t.id DESC LIMIT 1""").fetchone()
     if t:
-        post(base, "/action", {"tid": t["id"], "state": "snoozed", "back": "/"})
+        post(base, "/signals/action", {"tid": t["id"], "state": "snoozed",
+                                       "back": "/signals"})
+        c.commit()
         st = c.execute("SELECT state FROM trigger_action WHERE trigger_id=?",
                        (t["id"],)).fetchone()["state"]
-        (ok if st == "snoozed" else fail)("inbox action round-trip")
+        (ok if st == "snoozed" else fail)("signal action round-trip")
         c.execute("DELETE FROM trigger_action WHERE trigger_id=?", (t["id"],))
         c.commit()
     c.close()
@@ -341,8 +392,8 @@ def pass_latency(base: str, detail_crd: str) -> None:
     worst: list[tuple[float, str]] = []
     for path, _ in ROUTES[:0] or []:
         pass
-    sample = ["/", "/firms", "/lists", "/firms?preset=acu", "/review", "/health",
-              "/guide", f"/firm/{detail_crd}"]
+    sample = ["/", "/lists/phh_fund", "/lists/acubooth", "/lists/glynac", "/signals",
+              "/firms", "/review", "/health", f"/firm/{detail_crd}"]
     for path in sample:
         times = []
         for _ in range(3):
@@ -362,8 +413,8 @@ def pass_latency(base: str, detail_crd: str) -> None:
 
 def pass_concurrency(base: str, detail_crd: str) -> None:
     print("\n[4] concurrency: 8 clients x 25 requests while ingest writes")
-    paths = ["/", "/firms", "/lists", "/firms?preset=phh_x", "/review",
-             "/health", "/guide", f"/firm/{detail_crd}", "/firms?seg=prospect"]
+    paths = ["/", "/lists/phh_fund", "/lists/acubooth?tier=A", "/signals", "/firms",
+             "/review", "/health", f"/firm/{detail_crd}", "/firms?on=glynac"]
     errors: list[str] = []
     times: list[float] = []
     lock = threading.Lock()
@@ -406,9 +457,10 @@ def main() -> int:
     ap.add_argument("--base", default="http://127.0.0.1:8787")
     args = ap.parse_args()
 
-    c = sqlite3.connect("prospect.db")
-    c.row_factory = sqlite3.Row
-    detail_crd = c.execute("SELECT crd FROM tier_a_rank WHERE rank=1").fetchone()["crd"]
+    from prospect import db
+    c = db.connect()
+    detail_crd = c.execute("SELECT crd FROM product_score WHERE product='phh_fund'"
+                           " AND status='scored' ORDER BY rank LIMIT 1").fetchone()["crd"]
     c.close()
 
     pass_auth(args.base)
@@ -416,7 +468,7 @@ def main() -> int:
     try:
         pass_routes(args.base, detail_crd)
         pass_markup(args.base)
-        pass_writes(args.base, "prospect.db")
+        pass_writes(args.base)
         pass_latency(args.base, detail_crd)
         pass_concurrency(args.base, detail_crd)
     finally:

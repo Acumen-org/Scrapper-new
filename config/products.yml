@@ -1,0 +1,525 @@
+# Product scoring: every product list Bellwether produces is defined here.
+#
+# One format for every product, agreed with the team in September 2026:
+#
+#   gates         must all pass, or the firm is not on the list
+#   disqualifiers remove a firm that passed the gates
+#   criteria      each earns 0-100 points, multiplied by its weight; weights add to 100
+#   penalties     points taken off the final score
+#   signals       never scored; shown as talking points or flags
+#   tiers         what a score means for the SDR, highest first
+#
+# The logic that decides which level a firm reaches for each criterion lives in
+# prospect/products.py, one function per criterion key. The weights, the points
+# for each level and the thresholds live here, so changing a number never needs
+# a code change. Every stored score carries products.v<config_version>, so a
+# past score can always be traced to the rules that produced it.
+#
+# Criteria an SDR can answer better than a filing (a warm introduction, an
+# active manager search) accept a manual level on the firm page. The manual
+# level replaces the computed one for that firm only, carries who set it and
+# when, and is shown as such everywhere the score appears.
+#
+# Sources: Product scores/AcuBooth.docx, Product scores/02_PHH_GTM_Plan
+# (RIA Fit, 1031 Partner and JV Mandate Fit scores, plan points rescaled to
+# 100), and Glynac/02_GLYNAC_GTM_Plan_v2.1.
+
+config_version: 1
+
+# The order products appear in the sidebar and on the home page.
+order: [phh_fund, phh_1031, phh_jv, acubooth, glynac]
+
+# Custodians PHH treats as able to hold private investments and K-1 reporting.
+major_custodians: [Charles Schwab, Fidelity, Pershing, BNY Mellon, TD Ameritrade]
+
+# PHH's geographic focus for the overlap criteria. Empty means "not set", which
+# scores the middle level for everyone until someone fills it in.
+phh_focus_states: []
+
+products:
+
+  # ------------------------------------------------------------------ PHH
+  phh_fund:
+    name: PHH Fund I
+    family: PHH
+    short: Fund I
+    audience: Independent RIAs placing HNW clients into the evergreen fund
+    pitch: Private net-lease income, built for advisor portfolios.
+    gates:
+      - key: sec_registered
+        label: SEC-registered independent adviser, not exempt
+      - key: raum_range
+        label: $250M to $5B in assets
+        min: 250000000
+        max: 5000000000
+      - key: individual_share
+        label: Individual and HNW clients are at least half of assets (ADV Item 5.D)
+        min: 0.50
+    disqualifiers:
+      - key: bans_illiquid
+        label: Brochure bans private placements, K-1 investments or illiquid investments
+      - key: re_competitor
+        label: Runs its own real estate fund worth half or more of its assets
+    criteria:
+      - key: hnw_fit
+        label: HNW client fit
+        weight: 20
+        levels:
+          - [100, "HNW is 60%+ of assets with $2M+ per HNW client"]
+          - [75, "HNW is 40%+ of assets"]
+          - [50, "HNW is 20 to 39% of assets"]
+          - [25, "HNW is under 20% of assets"]
+      - key: alts_use
+        label: Use of alternatives
+        weight: 15
+        levels:
+          - [100, "Advises 2+ private funds, or runs a private-markets program"]
+          - [75, "Advises 1 private fund, or brochure names private credit, private equity or private real estate"]
+          - [45, "Alternatives are part of portfolio construction"]
+          - [20, "Passing mention of alternatives"]
+          - [0, "No alternatives found"]
+      - key: central_process
+        label: Central investment decisions
+        weight: 15
+        manual: true
+        levels:
+          - [100, "Central model portfolios"]
+          - [80, "Investment committee keeps an approved list"]
+          - [55, "Committee approves managers, advisors choose"]
+          - [25, "Central guidance only, or not evident in filings"]
+          - [0, "Each advisor decides"]
+      - key: portfolio_need
+        label: Portfolio need PHH fills
+        weight: 15
+        manual: true
+        levels:
+          - [100, "Active manager search or stated client need"]
+          - [80, "Named gap in income real estate, hard assets or tax-aware alternatives"]
+          - [55, "Stated need for income, real assets or diversification"]
+          - [25, "General diversification only, or not evident in filings"]
+          - [0, "No role for private real estate"]
+      - key: re_familiarity
+        label: Private real estate familiarity
+        weight: 10
+        levels:
+          - [100, "Advises a small real estate fund, or brochure describes private real estate"]
+          - [60, "13F shows 3+ net-lease REITs, or $500k+ in one"]
+          - [30, "One small REIT holding, or a passing mention"]
+          - [0, "No real estate found, or rejects it"]
+      - key: ops_fit
+        label: Operational fit (custody, K-1s, reporting)
+        weight: 10
+        manual: true
+        levels:
+          - [100, "Already holds private investments at a major custodian"]
+          - [60, "Major custodian, no known blocker"]
+          - [30, "Unknown"]
+          - [0, "Known blocker"]
+      - key: relationship
+        label: Relationship and triggers
+        weight: 10
+        manual: true
+        levels:
+          - [100, "Warm introduction, existing relationship or champion"]
+          - [70, "Earlier conversation or event contact"]
+          - [50, "2+ recent triggers, or mutual connections"]
+          - [20, "One recent trigger"]
+          - [0, "Cold"]
+      - key: repeat_potential
+        label: Repeat potential
+        weight: 5
+        levels:
+          - [100, "10+ advisors or 200+ HNW clients"]
+          - [40, "3 to 9 advisors or 50+ HNW clients"]
+          - [0, "Smaller"]
+    signals:
+      - key: phh_talking_points
+        label: Brochure language on alternatives or real estate; 13F holds O, NNN, WPC, ADC, EPRT, STAG
+      - key: phh_1031_flag
+        label: Serves business owners or real estate owners, so also a 1031 partner
+    tiers:
+      - [75, A, Pursue now]
+      - [60, B, Pursue on a trigger or strong reason]
+      - [45, C, Keep warm]
+      - [0, "-", Skip]
+
+  phh_1031:
+    name: PHH 1031
+    family: PHH
+    short: "1031"
+    audience: Referral partners who see property sales; RIAs whose clients own real estate
+    pitch: Complete the exchange without compromising the investment.
+    gates:
+      - key: partner_type
+        label: An RIA whose clients own businesses or investment real estate
+      - key: investment_property
+        label: Works with investment property, not mainly homes
+    criteria:
+      - key: exchange_frequency
+        label: How often they see relevant property sales
+        weight: 25
+        manual: true
+        levels:
+          - [100, "High-volume specialist with recurring deals"]
+          - [80, "Frequent HNW or commercial exchanges"]
+          - [60, "Regular exchanges"]
+          - [28, "Occasional"]
+          - [0, "Rarely"]
+      - key: owner_client_fit
+        label: Client fit
+        weight: 20
+        levels:
+          - [100, "UHNW clients: $5M+ per HNW client"]
+          - [75, "Meaningful HNW base: 40%+ of assets"]
+          - [50, "Regular HNW clients: 20%+ of assets"]
+          - [25, "Mixed"]
+          - [0, "Mainly small accounts"]
+      - key: intro_timing
+        label: How early they can introduce PHH
+        weight: 15
+        manual: true
+        levels:
+          - [100, "Sees the seller while planning or listing"]
+          - [67, "At or before closing (offers financial planning)"]
+          - [33, "Only after the sale closes"]
+          - [0, "After the 45-day identification window"]
+      - key: specialization
+        label: Credibility and specialization
+        weight: 15
+        manual: true
+        levels:
+          - [100, "Designation, visible leadership or an institutional practice"]
+          - [67, "Established real estate or exchange specialist"]
+          - [33, "Generalist"]
+          - [0, "Unverified"]
+      - key: relationship_strength
+        label: Relationship strength
+        weight: 10
+        manual: true
+        levels:
+          - [100, "Trusted introduction or proven relationship"]
+          - [60, "In dialogue"]
+          - [30, "Public connection"]
+          - [0, "Cold"]
+      - key: referral_potential
+        label: Repeat referral potential
+        weight: 10
+        levels:
+          - [100, "Clearly recurring client flow"]
+          - [50, "Plausible"]
+          - [0, "One-off"]
+      - key: overlap_1031
+        label: Geography and property-type overlap with PHH
+        weight: 5
+        manual: true
+        levels:
+          - [100, "Strong"]
+          - [60, "Some, or PHH focus states not set"]
+          - [0, "Little"]
+    rules:
+      - Never ask an exchange intermediary to recommend PHH. They facilitate the exchange; the investor and their advisers decide suitability.
+    note: >
+      Exchange intermediaries, CPAs, brokers and attorneys are not in adviser
+      filings. Bellwether scores the RIA partners it can see; the others are
+      scored by hand.
+    tiers:
+      - [75, A, Develop as a partner now]
+      - [60, B, Develop on a trigger]
+      - [45, C, Educate and keep warm]
+      - [0, "-", Low priority]
+
+  phh_jv:
+    name: PHH JV
+    family: PHH
+    short: JV
+    audience: Family offices and institutions writing $5M+ checks
+    pitch: Build your real estate portfolio without building another real estate team.
+    gates:
+      - key: family_office
+        label: Multi-family office pattern (average client $10M+)
+        min_avg_client: 10000000
+      - key: check_capacity
+        label: Can commit $5M+ per deal (assets of $250M+)
+        min: 250000000
+    criteria:
+      - key: check_size
+        label: Check size fits PHH
+        weight: 20
+        levels:
+          - [100, "Can repeat in PHH's $5M to $25M range: $2B+ in assets or $50M+ per client"]
+          - [75, "Naturally $5M+: $500M+ in assets"]
+          - [40, "Possible"]
+          - [0, "Mismatch"]
+      - key: direct_re
+        label: Appetite for direct real estate
+        weight: 15
+        manual: true
+        levels:
+          - [100, "Active direct investor: advises a real estate fund"]
+          - [67, "Direct but occasional: brochure describes direct real estate"]
+          - [33, "Indirect only: REITs or general alternatives"]
+          - [0, "None found"]
+      - key: property_type
+        label: Property-type fit
+        weight: 15
+        manual: true
+        levels:
+          - [100, "Industrial, necessity retail or net lease"]
+          - [67, "Close to PHH's types"]
+          - [33, "General commercial real estate"]
+          - [0, "Mismatch or none found"]
+      - key: capability_gap
+        label: Gap PHH fills
+        weight: 15
+        manual: true
+        levels:
+          - [100, "Clear gap in geography, sector, sourcing or team"]
+          - [67, "Plausible"]
+          - [33, "Unclear"]
+          - [0, "No gap"]
+      - key: geography_fit
+        label: Geography fit
+        weight: 10
+        manual: true
+        levels:
+          - [100, "Broad or strong overlap"]
+          - [50, "Some, or PHH focus states not set"]
+          - [0, "Restricted outside PHH's areas"]
+      - key: governance_fit
+        label: Governance fit
+        weight: 10
+        manual: true
+        levels:
+          - [100, "Workable partnership model"]
+          - [50, "Negotiable, or not yet known"]
+          - [0, "Incompatible"]
+      - key: decision_speed
+        label: Decision speed
+        weight: 10
+        manual: true
+        levels:
+          - [100, "Proven on live deals: already runs private funds"]
+          - [50, "Uncertain"]
+          - [0, "Too slow"]
+      - key: jv_relationship
+        label: Relationship and repeat potential
+        weight: 5
+        manual: true
+        levels:
+          - [100, "Trusted or repeat path"]
+          - [40, "Plausible"]
+          - [0, "One-off or cold"]
+    rules:
+      - Record the full mandate before sending any deal (check range, property types, geography, return hurdles, leverage, governance).
+    note: >
+      Single-family offices do not file with the SEC. Bellwether finds the
+      multi-family offices that do; the rest come from outside sources.
+    tiers:
+      - [75, A, Active mandate relationship]
+      - [60, B, Develop when a relevant deal exists]
+      - [0, "-", Send no live deals until the mandate changes]
+
+  # ------------------------------------------------------------- AcuBooth
+  acubooth:
+    name: AcuBooth
+    family: AcuBooth
+    short: AcuBooth
+    audience: Advisers with HNW books suited to covered calls on Schwab
+    pitch: A covered call overlay on concentrated equity positions.
+    gates:
+      - key: min_raum
+        # $100M, confirmed 2026-09-25 (the AcuBooth document said $100K).
+        label: $100M+ in assets
+        min: 100000000
+      - key: no_private_funds
+        label: Advises no private funds
+    disqualifiers:
+      - key: left_schwab
+        label: Moved away from Schwab
+    criteria:
+      - key: hnw_assets
+        label: HNW assets
+        weight: 30
+        bands:
+          - [400000000, 100]
+          - [250000000, 88]
+          - [150000000, 72]
+          - [75000000, 55]
+          - [25000000, 35]
+          - [0, 15]
+        levels:
+          - [100, "$400M+"]
+          - [88, "$250M+"]
+          - [72, "$150M+"]
+          - [55, "$75M+"]
+          - [35, "$25M+"]
+          - [15, "Less"]
+      - key: hnw_clients
+        label: Number of HNW clients
+        weight: 25
+        bands:
+          - [200, 100]
+          - [100, 85]
+          - [50, 70]
+          - [25, 55]
+          - [10, 38]
+          - [1, 20]
+          - [0, 0]
+        levels:
+          - [100, "200+"]
+          - [85, "100+"]
+          - [70, "50+"]
+          - [55, "25+"]
+          - [38, "10+"]
+          - [20, "1+"]
+          - [0, "No HNW clients"]
+      - key: schwab_share
+        label: Share of reported custody at Schwab
+        weight: 18
+        levels:
+          - [100, "All reported custody at Schwab (points equal the share)"]
+          - [0, "None at Schwab, or not reported"]
+      - key: clients_per_advisor
+        label: Clients per advisor
+        weight: 15
+        bands:
+          - [80, 100]
+          - [55, 88]
+          - [40, 74]
+          - [25, 58]
+          - [12, 40]
+          - [0, 20]
+        damping:
+          - [2000000, 1.00]
+          - [1000000, 0.90]
+          - [500000, 0.72]
+          - [250000, 0.50]
+          - [0, 0.25]
+        levels:
+          - [100, "80+, scaled down when average client assets are under $2M"]
+          - [20, "Fewer than 12"]
+      - key: advisors
+        label: Number of advisors
+        weight: 12
+        bands:
+          - [10, 100]
+          - [5, 80]
+          - [3, 60]
+          - [1, 40]
+          - [0, 10]
+        levels:
+          - [100, "10+"]
+          - [80, "5+"]
+          - [60, "3+"]
+          - [40, "1+"]
+          - [10, "0"]
+    signals:
+      - key: acu_triggers
+        label: Moved to Schwab, added 2+ advisors, new registration, assets jump
+      - key: acu_talking_points
+        label: Brochure mentions covered calls, options or concentrated stock; 13F shows JEPI, JEPQ, XYLD, QYLD, RYLD, DIVO, SPYI, QQQI
+    rules:
+      - Each position must hold at least 100 shares. One option contract covers 100 shares, so this is checked per holding inside a qualified firm's book.
+    # Not in the AcuBooth table; the same cut points as PHH so the lists read
+    # alike. Change here if AcuBooth wants different ones.
+    tiers:
+      - [75, A, Pursue now]
+      - [60, B, Pursue on a trigger]
+      - [45, C, Keep warm]
+      - [0, "-", Skip]
+
+  # --------------------------------------------------------------- Glynac
+  glynac:
+    name: Glynac
+    family: Glynac
+    short: Glynac
+    audience: Independent RIAs whose compliance, portfolio or vendor work Glynac can take on today
+    pitch: Continuous cross-system intelligence for RIAs.
+    gates:
+      - key: sec_registered
+        label: SEC-registered, not an exempt adviser
+      - key: independent
+        label: Independent (no bank, insurer or wirehouse parent)
+      - key: min_raum
+        label: $100M+ in assets
+        min: 100000000
+      - key: supported_system
+        label: Some system Glynac works with
+    criteria:
+      - key: m365
+        label: Email runs on Microsoft 365
+        weight: 15
+        levels:
+          - [100, "Confirmed"]
+          - [33, "Unknown"]
+          - [0, "Google"]
+      - key: black_diamond
+        label: Portfolio platform is Black Diamond
+        weight: 15
+        levels:
+          - [100, "Confirmed"]
+          - [33, "Unknown"]
+          - [0, "Orion, Tamarac, Addepar or Advyzon"]
+      - key: best_trigger
+        label: Best recent trigger
+        weight: 15
+        levels:
+          - [100, "New compliance officer or merger"]
+          - [80, "Assets up 20%+"]
+          - [65, "2+ new advisors, or a platform or custodian change"]
+          - [55, "Newly registered"]
+          - [0, "No recent trigger"]
+      - key: advisor_count
+        label: Number of advisors
+        weight: 10
+        levels:
+          - [100, "25+"]
+          - [70, "10 to 24"]
+          - [40, "5 to 9"]
+          - [10, "Under 5"]
+      - key: marketing
+        label: Marketing activity
+        weight: 10
+        levels:
+          - [100, "All five: testimonials or endorsements, performance ads, third-party ratings, blog or newsletter, social media"]
+          - [0, "None (20 points for each one found)"]
+      - key: portfolio_complexity
+        label: Portfolio complexity
+        weight: 10
+        levels:
+          - [100, "Files 13F (40) + 3+ strategies (30) + ADV amended 2+ times a year (30)"]
+          - [0, "None of these"]
+      - key: compliance_owner
+        label: Who handles compliance
+        weight: 10
+        manual: true
+        levels:
+          - [100, "Compliance officer also holds another job, with 10+ advisors"]
+          - [60, "Full-time compliance officer"]
+          - [40, "Outsourced"]
+          - [0, "None named"]
+      - key: assets_band
+        label: Assets
+        weight: 10
+        levels:
+          - [100, "$1B+"]
+          - [80, "$500M+"]
+          - [60, "$250M+"]
+          - [40, "$100M+"]
+      - key: providers
+        label: Outside providers
+        weight: 5
+        levels:
+          - [100, "5+"]
+          - [60, "3 to 4"]
+          - [20, "1 to 2"]
+          - [0, "None reported"]
+    penalties:
+      - key: glynac_competitor
+        label: Already uses Hadrius or COMPLY
+        points: 10
+    tiers:
+      - [80, A, Pursue now]
+      - [55, B, Pursue when a trigger fires]
+      - [30, C, Keep warm]
+      - [0, "-", Skip]

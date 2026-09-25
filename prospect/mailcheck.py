@@ -122,6 +122,129 @@ def has_mx(domain: str, timeout: float = TIMEOUT) -> bool | None:
     return None                   # every resolver unreachable
 
 
+QTYPE_TXT = 16
+
+
+def _read_name(buf: bytes, i: int, depth: int = 0) -> tuple[str, int]:
+    """A DNS name at offset i, following compression pointers, and the offset
+    just past it in the original position."""
+    labels: list[str] = []
+    end = None
+    while i < len(buf) and depth < 20:
+        n = buf[i]
+        if n == 0:
+            i += 1
+            break
+        if n & 0xC0 == 0xC0:
+            if i + 1 >= len(buf):
+                break
+            ptr = ((n & 0x3F) << 8) | buf[i + 1]
+            if end is None:
+                end = i + 2
+            i = ptr
+            depth += 1
+            continue
+        labels.append(buf[i + 1:i + 1 + n].decode("ascii", "replace"))
+        i += 1 + n
+    return ".".join(labels).lower(), (end if end is not None else i)
+
+
+def records(domain: str, qtype: int, timeout: float = TIMEOUT) -> list[str] | None:
+    """MX host names or TXT strings for a domain. [] when the domain answers
+    with none, None when no resolver could be reached."""
+    domain = (domain or "").strip().lower().rstrip(".")
+    if not domain:
+        return []
+    query = (struct.pack(">HHHHHH", random.randint(0, 0xFFFF), 0x0100, 1, 0, 0, 0)
+             + _encode_name(domain) + struct.pack(">HH", qtype, 1))
+    for resolver in RESOLVERS:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(timeout)
+                s.sendto(query, (resolver, 53))
+                data, _ = s.recvfrom(8192)
+        except OSError:
+            continue
+        if len(data) < 12:
+            continue
+        _, flags, qd, an, _, _ = struct.unpack(">HHHHHH", data[:12])
+        rcode = flags & 0x000F
+        if rcode == 3:
+            return []
+        if rcode != 0:
+            continue
+        i = 12
+        for _ in range(qd):
+            i = _skip_name(data, i) + 4
+        out: list[str] = []
+        for _ in range(an):
+            i = _skip_name(data, i)
+            if i + 10 > len(data):
+                break
+            rtype, _, _, rdlen = struct.unpack(">HHIH", data[i:i + 10])
+            i += 10
+            rdata_at = i
+            i += rdlen
+            if rtype == QTYPE_MX and qtype == QTYPE_MX:
+                host, _ = _read_name(data, rdata_at + 2)
+                out.append(host)
+            elif rtype == QTYPE_TXT and qtype == QTYPE_TXT:
+                j, parts = rdata_at, []
+                while j < rdata_at + rdlen:
+                    ln = data[j]
+                    parts.append(data[j + 1:j + 1 + ln].decode("utf-8", "replace"))
+                    j += 1 + ln
+                out.append("".join(parts))
+        return out
+    return None
+
+
+# Hosted mail providers that are known not to be Microsoft 365 or Google.
+OTHER_PROVIDERS = ("secureserver.net", "emailsrvr.com", "zoho.", "yahoodns.",
+                   "icloud.com", "protonmail.", "intermedia.net", "exch",
+                   "mailstore1.secureserver")
+
+
+def mail_platform(domain: str) -> tuple[str, str]:
+    """Which platform a domain's mail runs on, from public DNS alone.
+
+    Returns (platform, evidence) with platform one of:
+      m365     Microsoft 365: MX at *.mail.protection.outlook.com, or an SPF
+               record that authorises Microsoft behind a filtering gateway
+      google   Google Workspace: MX at Google, or SPF authorising only Google
+      other    a named hosted provider that is neither
+      unknown  a gateway or self-hosted server with no clue to what is behind
+               it, or DNS unreachable
+      none     the domain publishes no mail server at all
+    A free lookup any mail client performs; no account and no third party."""
+    mx = records(domain, QTYPE_MX)
+    if mx is None:
+        return "unknown", "DNS unreachable"
+    if not mx:
+        return "none", f"{domain} publishes no mail server"
+    hosts = " ".join(mx)
+    # Microsoft publishes two MX shapes: the long-standing
+    # *.mail.protection.outlook.com and the DNSSEC-signed *.mx.microsoft.
+    if ("mail.protection.outlook.com" in hosts or ".mx.microsoft" in hosts
+            or hosts.endswith("outlook.com")):
+        return "m365", f"mail server {mx[0]}"
+    if "google.com" in hosts or "googlemail.com" in hosts:
+        return "google", f"mail server {mx[0]}"
+    txt = records(domain, QTYPE_TXT) or []
+    spf = " ".join(t.lower() for t in txt if t.lower().startswith("v=spf1"))
+    ms = "spf.protection.outlook.com" in spf
+    goog = "_spf.google.com" in spf
+    if ms and not goog:
+        return "m365", f"mail filtered by {mx[0]}; SPF authorises Microsoft 365"
+    if goog and not ms:
+        return "google", f"mail filtered by {mx[0]}; SPF authorises Google"
+    if any(t.startswith("MS=ms") for t in txt) and not goog:
+        return "m365", f"mail filtered by {mx[0]}; domain verified with Microsoft"
+    if any(p in hosts for p in OTHER_PROVIDERS):
+        return "other", f"mail hosted at {mx[0]}"
+    return "unknown", f"mail server {mx[0]}; provider behind it not visible"
+
+
 def check(email: str) -> tuple[str, str]:
     """(status, human readable reason) for one address.
 

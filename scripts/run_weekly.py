@@ -6,8 +6,10 @@ Order matters and every step is idempotent:
                 is lost permanently upstream, so this always runs first)
   2. firms      parse the newest snapshot into the firm table
   3. diff       forward-looking triggers between the two newest firm snapshots
-  4. rescore    tiers A and C from current data
-  5. brochures  continue band coverage, a bounded slice per run
+  4. rescore    every product list from current data (config/products.yml)
+  5. brochures  continue coverage of the product lists, a bounded slice per run,
+                then the website slice, then a final rescore so what those
+                read this week is already in the lists
   6. cusip      re-verify the target CUSIP map when the last verification is
                 more than 90 days old. Issuers rename and share classes change
                 CUSIPs, and a ticker silently dropping to zero holders looks
@@ -70,6 +72,8 @@ def main() -> int:
     if "firms" not in skip:
         run("scripts.ingest_firms")
         run("scripts.ingest_firms", "--source", "adv_state_feed")
+        # Marketing, services and related-person answers the scores read.
+        run("scripts.ingest_adv_extra")
     # The static bulk archives and everything derived from them. All of
     # these are no-ops once held: the archives never change, the crosswalk
     # loads once, and enrich skips what it has already backfilled. They are
@@ -91,24 +95,34 @@ def main() -> int:
     if "triggers" not in skip:
         run("scripts.triggers")
 
-    # The ADV-to-13F intersection, which the working lists and the review
-    # queue both read.
+    # The ADV-to-13F match reads the product lists to choose its candidates,
+    # so a first score comes before it (seconds; a fresh install needs it).
     if "overlay" not in skip:
+        run("scripts.score_products")
         run("scripts.ingest_13f_index")
         run("scripts.match_13f")
         run("scripts.build_overlay")
 
     if "rescore" not in skip:
-        run("scripts.rank_tiers")
         run("scripts.segment_real_estate")
+        # Email platform for firms not yet checked or checked 90+ days ago.
+        # A DNS question per domain; bounded so a cold start stays quick.
+        run("scripts.mail_platform", "--limit", "3000")
+        run("scripts.score_products")
     if "brochures" not in skip:
-        run("scripts.brochures", "--scope", "band",
+        run("scripts.brochures", "--scope", "scored",
             "--limit", str(args.brochure_slice))
+        # Brochures tagged under an older vocabulary, a bounded slice a week.
+        # From saved text this takes milliseconds each; the Brochure re-tag
+        # job on System does the whole backlog at once when wanted.
+        run("scripts.brochures", "--retag", "--limit", "2000", "--workers", "2")
     # Third-party websites, not SEC endpoints: slower, and a site being
     # down is normal rather than a failure. Sliced like the brochures so
     # the cycle keeps a predictable length.
     if "web" not in skip:
         run("scripts.web_enrich", "--limit", str(args.web_slice))
+    if "rescore" not in skip:
+        run("scripts.score_products")
 
     if "cusip" not in skip:
         conn = db.connect()

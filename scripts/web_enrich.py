@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prospect import config, db, runlog  # noqa: E402
+from prospect import config, db, runlog, websignals  # noqa: E402
 
 CACHE_DIR = config.DATA_DIR / "web_cache"
 
@@ -256,16 +256,13 @@ def extract(conn, crd: str, url: str, html: str, names: list[str], now: str) -> 
 
 
 def todo(conn, limit: int):
-    # Scored lists first, then in-band by size; only firms with a real website.
+    # Firms on a product list, best score first; only firms with a real website.
     return conn.execute(f"""
         SELECT f.crd, f.website FROM firm_current f
-        LEFT JOIN tier_a_rank ta ON ta.crd = f.crd
-        LEFT JOIN (SELECT crd, MIN(rank) rk FROM tier_c_score GROUP BY crd) tc
-               ON tc.crd = f.crd
-        WHERE f.is_era = 0 AND f.raum >= 25e6 AND f.raum < 500e6
-          AND f.website IS NOT NULL AND f.website != ''
+        JOIN firm_scope s ON s.crd = f.crd
+        WHERE f.website IS NOT NULL AND f.website != ''
           AND f.crd NOT IN (SELECT crd FROM web_enrich_state)
-        ORDER BY (ta.crd IS NULL), ta.rank, (tc.rk IS NULL), tc.rk, f.raum DESC
+        ORDER BY s.priority DESC, f.raum DESC
         LIMIT {int(limit)}""").fetchall()
 
 
@@ -289,6 +286,7 @@ def enrich_one(conn, crd: str, website: str, ua: str, now: str) -> tuple[str, in
     if status >= 400 or not html:
         return "unreachable", 1, 0, 0
     pages = 1
+    websignals.record(conn, crd, url, html, now)
     names = known_names(conn, crd)
     p, e = extract(conn, crd, url, html, names, now)
     conn.commit()
@@ -309,6 +307,7 @@ def enrich_one(conn, crd: str, website: str, ua: str, now: str) -> tuple[str, in
                 except OSError:
                     continue
                 pages += 1
+                websignals.record(conn, crd, link, h2, now)
                 p2, e2 = extract(conn, crd, link, h2, names, now)
                 conn.commit()
                 people += p2
@@ -323,6 +322,7 @@ def enrich_one(conn, crd: str, website: str, ua: str, now: str) -> tuple[str, in
         cache_page(conn, crd, link, st2, h2, now)
         pages += 1
         if st2 < 400 and h2:
+            websignals.record(conn, crd, link, h2, now)
             p2, e2 = extract(conn, crd, link, h2, names, now)
             people += p2
             emails += e2
@@ -362,6 +362,8 @@ def main() -> int:
     ua = cfg.http["user_agent"]
     conn = db.connect()
     conn.executescript(SCHEMA)
+    conn.executescript(websignals.SCHEMA)
+    conn.commit()
 
     with runlog.Run(conn, "web_enrich", "scrape", cfg.stamp) as run:
         rows = todo(conn, args.limit)

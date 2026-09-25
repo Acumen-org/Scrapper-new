@@ -1,14 +1,14 @@
 # Bellwether
 
 A bellwether is a leading indicator. That is what every row in this tool is: a
-change in a public SEC filing that says a registered investment adviser is worth
+filing, a firm's own words or a change that says an investment adviser is worth
 calling before anyone else has noticed.
 
-Bellwether reads the adviser universe from SEC sources, scores it against two
-products, and produces a queue that three people work each morning. It is not a
-report. One Python process, one SQLite file (`prospect.db`), no third-party
-enrichment service, and no data leaving the machine except requests to the SEC
-and to advisers' own public websites.
+Bellwether reads the adviser universe from SEC sources, scores it against five
+product lists across PHH, AcuBooth and Glynac, and gives the team who to call,
+why, and what to say. One Python app on PostgreSQL, no paid or third-party
+enrichment service, and no data leaving the machine except requests to the
+SEC, to advisers' own public websites and to public DNS.
 
 ## Signing in
 
@@ -42,75 +42,93 @@ running when you sit down.
 There is deliberately no stop script. A second batch file for shutting something
 down is a thing to remember, and it does not belong in a tool people use daily.
 
-## The views (sidebar, left)
+## What it does
 
-- **Trigger inbox**: the 9am screen. Everything that changed, highest priority
-  first, one actionable line per row. Done / Snooze / Dismiss on each. Negative
-  priority in dark red is a disqualifier (firm left Schwab), not a lead.
-- **Firm list**: all 13,720 in-band advisers, SEC and state registered. Filter
-  by state, AUM band, real
-  estate segment, open triggers, status, owner. Export the filtered view as CSV
-  (shaped for manual Twenty import; carries phone, filed email, status, owner).
-- **Working lists**: the ranked outputs. Tier A top 100 (PHH), the intersection
-  (both gates cleared, Alisa's list), tier C top 100 (AcuBooth), and competitor
-  sponsors with Form D raise progress.
-- **Review queue**: uncertain 13F links (Same firm / Different firm) and
-  brochure negations (Real negation / Tag stands). Ranked by impact; the tail
-  can sit unreviewed forever without blocking anything.
-- **Pipeline health**: last run of every stage, snapshot inventory, row deltas,
-  parse failure rates, coverage, CUSIP map age. The **Run weekly cycle now**
-  button runs the whole pull-diff-rescore chain in the background, and the
-  **Autopilot** panel runs long jobs (brochure coverage, contact extraction,
-  website enrichment, flagged-firm refresh, email verification, CUSIP re-verify),
-  each with why it exists, Start and Pause, and a live progress bar.
-- **Outreach**: one row per decision maker with their best email and phone,
-  real addresses and pattern-inferred guesses both labelled, exportable as Excel
-  for a mail merge.
-- **How to use**: the operating manual as one continuous read, top to bottom,
-  with a contents list on the right that tracks where you are. Every screen it
-  mentions is a live link.
+Bellwether is the data and intelligence layer for go-to-market across three
+businesses: Prairie Hill (PHH), AcuBooth and Glynac. It reads every adviser in
+the SEC and state feeds, adds what each firm says about itself (its Part 2A
+brochure, its website, its public mail records) and turns that into:
 
-## Power features
+- **Product lists**: one ranked list per product, each firm with a tier, a score
+  out of 100 and the reasons it earned it, in the firm's own words.
+- **Signals**: what changed this week at a firm on any list.
+- **Firm pages**: everything needed to decide whether to call and what to say.
 
-- **Ctrl+K** jumps to any firm by name or CRD from anywhere.
-- Inbox keyboard: **j/k** select, **d** done, **s** snooze, **x** dismiss,
-  **Enter** opens the firm.
-- **Watch** any firm (star on its page); open events on watched firms pin to
-  the top of the inbox.
-- **Saved views**: save any inbox filter combination; it appears in the sidebar.
-- **Geography** (Working lists tab): state, then city, then a dinner-ready list
-  of qualified firms with CSV export.
-- Every firm page shows its **AUM trajectory** back to 2011 with real axes, and
-  **People**: owners and executive officers with their filed titles from
-  Schedule A, then registered reps from the individual feed, then anyone found
-  on the firm's own website.
+## The screens
 
-## Managing firms
+- **Home**: how every list stands (tier counts that open the list already
+  filtered), the best unclaimed firms to call first on each list with the reason
+  and the newest signal, your own firms, and firms you watch.
+- **Product lists** (sidebar): PHH Fund I, PHH 1031, PHH JV, AcuBooth and Glynac.
+  Each has three views: *Ranked* (filter by tier, state, owner, status, new
+  signal, reachability; sort; save the view; export the list or its contacts),
+  *Disqualified* (removed, with why) and *How it is scored* (the product's
+  scoring table, rendered from the config, so the rules on screen are the rules
+  in force).
+- **Signals**: every trigger at a firm on a list, newest first, with the firm's
+  best tier beside it. Done, Snooze, Dismiss; keyboard j/k, d, s, x, Enter.
+- **Firms**: every adviser, searchable by name, city or CRD and filterable by
+  size, registration, list and tier, with a Contacts view for mail merges.
+- **Saved lists**: firm lists you build by hand, and saved views.
+- **System**: data freshness, coverage of the lists by each enrichment,
+  background jobs with Start and Pause, run history and the review queue.
 
-Open any firm (click its name anywhere). You can:
+**Ctrl K** (or **/**) finds any firm or page from anywhere. Clicking any row
+opens the firm.
 
-- set **status** (new, working, meeting set, qualified, disqualified, customer)
-  and **owner**; both become filters on the firm list and columns in the CSV
-- write **notes** that persist
-- click **Copy to clipboard** for a paste-ready call prep summary with every
-  caveat carried inline
+## How firms are scored
+
+Every product is defined in `config/products.yml` in one format: gates a firm
+must pass, disqualifiers that remove it, criteria that each earn 0 to 100 points
+and count for a weight (weights add to 100), penalties, and tiers that say what
+a score means. The logic that decides each criterion's level is one small
+function per criterion in `prospect/products.py`, and every level it sets comes
+with the evidence that set it. The same breakdown appears on every firm page.
+
+Criteria that a person can judge better than a filing (a warm introduction, an
+active manager search, governance fit) accept a manual level on the firm page.
+It replaces the computed level for that firm only, shows who set it and when,
+and keeps what the filings alone would have said. Status matters too: a
+meeting or a customer raises the relationship points on every list.
+
+The sources behind the scores:
+
+| Source | What it gives |
+| --- | --- |
+| SEC and state adviser feeds, weekly | size, client mix, advisors, custody, private funds, marketing answers (Item 5.L), services (5.G), related persons (7.A), social media listed (1.I) |
+| Schedule D archive and Schedule A | fund details, custodians, officers and their titles |
+| Part 2A brochures | the firm's own language: covered calls, alternatives, real estate, 1031, model portfolios, investment committee, reporting platform |
+| The firm's website | people and contacts, the client login that names its reporting platform, whether it publishes |
+| Public DNS mail records | Microsoft 365 or Google |
+| 13F filings | target holdings for talking points |
+
+`python -m scripts.score_products` rescores everything in seconds; the weekly
+cycle runs it, and so does **Recompute scores** on System.
+
+## Working a firm
+
+On any firm page: set a **status** and **owner** (blank claims it for you), write
+**notes**, **watch** it (its signals then lead Home and Signals), add it to a
+saved list, and **Copy call prep** for a paste-ready summary carrying the tier,
+the reasons, what changed, the firm's own words and how to reach them.
 
 ## Weekly rhythm
 
 The weekly pull runs itself. A scheduler inside the app checks every half hour
-whether a new SEC feed file is due (the feed publishes weekly and keeps no
-archive) and runs the full cycle when it is: capture, forward triggers, rescore,
-brochure slice, CUSIP re-verify when due. It catches up the moment the PC comes
-back on after a missed week. Pipeline health shows its heartbeat and the last
-automatic pull; the manual **Run weekly cycle now** button remains for the rare
-day a pull is wanted immediately.
+whether a new SEC feed file is due and runs the full cycle when it is: capture,
+ADV answers, triggers, 13F match, email platforms, scoring, a slice of brochures
+and websites, and a final rescore so what they read is already in the lists. It
+catches up the moment the machine comes back after a missed week. Longer work
+(brochure coverage, re-tagging, email platforms, websites, contacts) runs as
+background jobs on System, best-priority firms first: tier A on any list, then
+tier B, and so on.
 
 ## Contact data, and what is real
 
-Every in-band firm has its **main office phone** as filed on Form ADV. The
+Every firm has its **main office phone** as filed on Form ADV. The
 contact extraction job reads the first pages of each firm's own brochure for the
-**emails and phone numbers the firm itself printed there**; on the PHH working
-list roughly six firms in ten have a filed email. Everything from a filing is
+**emails and phone numbers the firm itself printed there**; on the product lists
+roughly six firms in ten with a brochure have a filed email. Everything from a filing is
 marked **filed**. Pattern-guessed emails still exist as a labelled fallback,
 generated only against the firm's own mail domain (from its brochure when
 possible), never against social or freemail domains, and a guess on an
@@ -135,9 +153,10 @@ client size is a client-level figure, biased high as an account proxy.
 | `Bellwether.bat` | The launcher. `/silent` starts it without opening a browser. |
 | `scripts/launch.vbs` | Runs the launcher with no window at all, even briefly. |
 | `assets/bellwether.ico` | App icon, regenerate with `python -m scripts.make_icon`. |
-| `prospect.db` | Everything. Back this up. |
+| PostgreSQL (`BELLWETHER_DSN`) | Everything. Back this up. |
 | `data/snapshots/` | Immutable raw SEC captures, content addressed. |
-| `config/*.yml` | Every tunable: weights, thresholds, bands, tickers, phrases. |
+| `config/products.yml` | Every product list: gates, weights, levels, tiers. |
+| `config/*.yml` | The other tunables: triggers, tickers, brochure phrases. |
 
 The Python package is still named `prospect/` and the database `prospect.db`.
 Renaming those would be a data migration for no user-visible gain, so they stay.

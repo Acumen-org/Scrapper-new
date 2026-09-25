@@ -43,20 +43,26 @@ OPTIONAL_CLOSE = {"p", "li", "tr", "td", "th", "thead", "tbody", "option",
                   "dt", "dd", "html", "head", "body"}
 
 PAGES = [
-    "/", "/?product=PHH", "/firms", "/firms?preset=phh_a", "/firms?preset=acu",
-    "/firms?preset=phh_x", "/firms?preset=comp", "/firms?view=contacts",
-    "/firms?view=contacts&preset=phh_a", "/firms?q=WEALTH", "/lists",
-    "/health", "/review", "/review?kind=match_13f", "/guide", "/quit",
+    "/", "/lists/phh_fund", "/lists/phh_fund?view=rules",
+    "/lists/phh_fund?view=disqualified", "/lists/phh_1031", "/lists/phh_jv",
+    "/lists/acubooth", "/lists/acubooth?tier=A&sig=1", "/lists/glynac",
+    "/signals", "/signals?product=glynac", "/firms", "/firms?view=contacts",
+    "/firms?on=acubooth&tier=A", "/firms?q=WEALTH", "/saved",
+    "/health", "/review", "/review?kind=match_13f", "/quit",
 ]
 
 # Filled in at run time: the firm detail page needs a real CRD.
 def detail_pages() -> list[str]:
-    import sqlite3
-    from prospect import config
-    c = sqlite3.connect(config.DB_PATH)
+    from prospect import db
+    c = db.connect()
     try:
-        r = c.execute("SELECT crd FROM tier_a_rank ORDER BY rank LIMIT 1").fetchone()
-        return [f"/firm/{r[0]}"] if r else []
+        out = []
+        for key in ("phh_fund", "acubooth", "glynac"):
+            r = c.execute("SELECT crd FROM product_score WHERE product=?"
+                          " AND status='scored' ORDER BY rank LIMIT 1", (key,)).fetchone()
+            if r:
+                out.append(f"/firm/{r['crd']}?p={key}")
+        return out
     finally:
         c.close()
 

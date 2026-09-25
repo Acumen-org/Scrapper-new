@@ -85,20 +85,20 @@ def main() -> int:
         run.rows_out = len(out)
         print(f"profiled {len(out):,} firms")
 
-    print("\nin-band registered firms, Schwab share of reported custodian assets")
+    print("\nregistered firms, Schwab share of reported custodian assets")
     print("  (upper bound: denominator counts only custodians at 10%+ of SMA assets)")
     for lo, hi, lab in ((0.999, 1.01, "100%, Schwab only"), (0.75, 0.999, "75 to 99%"),
                         (0.50, 0.75, "50 to 75%"), (0.25, 0.50, "25 to 50%"),
                         (0.0001, 0.25, "under 25%")):
         r = conn.execute("""
             SELECT COUNT(*) c FROM firm_custodian_profile p JOIN firm_current f ON f.crd=p.crd
-            WHERE f.is_era=0 AND f.raum>=25e6 AND f.raum<500e6
+            WHERE f.is_era=0
               AND p.schwab_share_reported>=? AND p.schwab_share_reported<?""",
             (lo, hi)).fetchone()
         print(f"    {lab:<20} {r['c']:>5,}")
     r = conn.execute("""
         SELECT COUNT(*) c FROM firm_custodian_profile p JOIN firm_current f ON f.crd=p.crd
-        WHERE f.is_era=0 AND f.raum>=25e6 AND f.raum<500e6
+        WHERE f.is_era=0
           AND COALESCE(p.schwab_share_reported,0)=0""").fetchone()
     print(f"    {'no Schwab':<20} {r['c']:>5,}")
     stale = conn.execute("""

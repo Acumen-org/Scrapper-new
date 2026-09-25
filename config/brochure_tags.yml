@@ -13,8 +13,14 @@
 # The verbatim supporting sentence is stored with every tag, capped at 25 words:
 # an SDR opening with the firm's own brochure language is the whole point.
 
-config_version: 1
+# v2 (2026-09) added the vocabulary the product scores read: private markets,
+# how investment decisions are made, real assets, 1031 and owner clients,
+# reporting platforms and compliance vendors. Brochures tagged under v1 are
+# re-tagged from their cached text by `python -m scripts.brochures --retag`.
+config_version: 2
 
+# Which product a tag is a talking point for. Tags marked `signal` feed a score
+# (a platform, a process) but are not sales language.
 products:
   covered_calls: acubooth
   options_general: acubooth
@@ -22,6 +28,47 @@ products:
   tax_management: acubooth
   alternatives: phh
   real_estate_direct: phh
+  private_markets: phh
+  private_real_estate: phh
+  real_assets_income: phh
+  net_lease_types: phh
+  exchange_1031: phh
+  owner_clients: phh
+  model_portfolios: signal
+  investment_committee: signal
+  approved_managers: signal
+  strategies: signal
+  platform_black_diamond: glynac
+  platform_orion: signal
+  platform_tamarac: signal
+  platform_addepar: signal
+  platform_advyzon: signal
+  compliance_vendor: signal
+
+# Human names for the tags, as the UI shows them.
+labels:
+  covered_calls: Covered calls
+  options_general: Options
+  concentrated_equity: Concentrated stock
+  tax_management: Tax management
+  alternatives: Alternatives
+  real_estate_direct: Real estate
+  private_markets: Private markets
+  private_real_estate: Private real estate
+  real_assets_income: Income and real assets
+  net_lease_types: Net lease and industrial
+  exchange_1031: 1031 exchanges
+  owner_clients: Business and property owners
+  model_portfolios: Model portfolios
+  investment_committee: Investment committee
+  approved_managers: Approved manager list
+  strategies: Investment strategies
+  platform_black_diamond: Black Diamond
+  platform_orion: Orion
+  platform_tamarac: Tamarac
+  platform_addepar: Addepar
+  platform_advyzon: Advyzon
+  compliance_vendor: Compliance software
 
 tags:
   covered_calls:
@@ -89,6 +136,142 @@ tags:
       - "tax managed"
       - "tax-managed"
       - "tax efficient investing"
+
+  private_markets:
+    phrases:
+      - "private credit"
+      - "private debt"
+      - "private equity"
+      - "private real estate"
+      - "private placement"
+      - "private placements"
+      - "private fund"
+      - "private funds"
+      - "interval fund"
+      - "interval funds"
+      - "evergreen fund"
+      - "tender offer fund"
+      - "non-traded REIT"
+      - "non traded REIT"
+      - "business development company"
+  private_real_estate:
+    phrases:
+      - "private real estate"
+      - "real estate fund"
+      - "real estate funds"
+      - "direct real estate"
+      - "real estate partnership"
+      - "real estate partnerships"
+      - "real estate syndication"
+      - "real estate limited partnership"
+  real_assets_income:
+    phrases:
+      - "real assets"
+      - "hard assets"
+      - "income-producing"
+      - "income producing"
+      - "income-oriented"
+      - "inflation hedge"
+      - "inflation protection"
+      - "real estate income"
+  net_lease_types:
+    phrases:
+      - "net lease"
+      - "net-lease"
+      - "triple net"
+      - "industrial real estate"
+      - "industrial properties"
+      - "necessity retail"
+      - "logistics properties"
+  exchange_1031:
+    phrases:
+      - "1031 exchange"
+      - "1031 exchanges"
+      - "section 1031"
+      - "like-kind exchange"
+      - "like kind exchange"
+      - "Delaware statutory trust"
+      - "DST"
+  owner_clients:
+    phrases:
+      - "business owners"
+      - "business owner"
+      - "sale of a business"
+      - "sale of their business"
+      - "liquidity event"
+      - "liquidity events"
+      - "real estate investors"
+      - "property owners"
+      - "real estate owners"
+      - "closely held business"
+  model_portfolios:
+    phrases:
+      - "model portfolio"
+      - "model portfolios"
+      - "model-based"
+      - "investment models"
+      - "asset allocation models"
+  investment_committee:
+    phrases:
+      - "investment committee"
+      - "investment policy committee"
+      - "chief investment officer"
+      - "research committee"
+  approved_managers:
+    phrases:
+      - "approved list"
+      - "recommended list"
+      - "approved managers"
+      - "manager research"
+      - "manager due diligence"
+      - "manager selection"
+      - "due diligence on managers"
+  # Counted by distinct phrase: three or more different strategies found is
+  # what the Glynac portfolio complexity criterion reads.
+  strategies:
+    phrases:
+      - "fixed income"
+      - "municipal bond"
+      - "equity income"
+      - "growth equity"
+      - "value investing"
+      - "small cap"
+      - "international equity"
+      - "emerging markets"
+      - "ESG"
+      - "sustainable investing"
+      - "tactical"
+      - "quantitative"
+      - "dividend"
+      - "options strategies"
+      - "alternative investments"
+      - "private equity"
+      - "structured notes"
+      - "separately managed accounts"
+  platform_black_diamond:
+    phrases:
+      - "Black Diamond"
+  platform_orion:
+    phrases:
+      - "Orion Advisor"
+      - "Orion Portfolio"
+      - "Orion Connect"
+      - "Orion platform"
+      - "Orion reporting"
+  platform_tamarac:
+    phrases:
+      - "Tamarac"
+  platform_addepar:
+    phrases:
+      - "Addepar"
+  platform_advyzon:
+    phrases:
+      - "Advyzon"
+  compliance_vendor:
+    phrases:
+      - "Hadrius"
+      - "ComplySci"
+      - "RIA in a Box"
 
 # Terms that, in the same sentence as a hit, make it negation-ambiguous. Those
 # sentences route to the review queue; the tag stays present at damped

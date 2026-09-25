@@ -127,7 +127,7 @@ def main() -> int:
             JOIN first_seen fs ON fs.crd=s.crd
             JOIN firm_current f ON f.crd=s.crd
             WHERE s.fund_type='Real Estate Fund'
-              AND f.is_era=0 AND f.raum>=25e6 AND f.raum<500e6
+              AND f.is_era=0
             GROUP BY s.crd, l.d, fs.f, f.raum, f.legal_name,
                      f.hnw_clients, f.hnw_aum""").fetchall()
 
@@ -144,7 +144,7 @@ def main() -> int:
         conn.commit()
         run.rows_out = len(out)
 
-    print(f"segmented {len(out)} in-band real estate fund advisers\n")
+    print(f"segmented {len(out)} real estate fund advisers\n")
     prev = {"prospect": 66, "competitor": 83, "ambiguous": 35, "unraised": 6, "sponsor": 0}
     print(f"  {'segment':<12} {'now':>5} {'was':>5}  {'delta':>6}")
     for s in ("prospect", "competitor", "ambiguous", "unraised", "sponsor"):

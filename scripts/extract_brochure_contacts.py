@@ -70,16 +70,14 @@ def extract(pdf_path: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]
 
 
 def todo_query(limit: int) -> str:
-    # Scored firms first: tier A rank order, then intersection, then tier C
-    # score, then everything else with a cached brochure.
+    # Firms on a product list first, best score first, then everything else
+    # with a cached brochure.
     return f"""
         SELECT b.crd, b.pdf_path FROM brochure b
-        LEFT JOIN tier_a_rank ta ON ta.crd = b.crd
-        LEFT JOIN (SELECT crd, MAX(total_score) sc FROM tier_c_score GROUP BY crd) tc
-               ON tc.crd = b.crd
+        LEFT JOIN firm_scope s ON s.crd = b.crd
         WHERE b.status='ok'
           AND b.crd NOT IN (SELECT crd FROM contact_scan)
-        ORDER BY (ta.crd IS NULL), ta.rank, (tc.crd IS NULL), tc.sc DESC
+        ORDER BY (s.crd IS NULL), s.priority DESC
         LIMIT {int(limit)}"""
 
 

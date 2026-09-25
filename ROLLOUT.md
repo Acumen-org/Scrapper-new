@@ -227,7 +227,7 @@ Revisit when the queue holds review decisions somebody would not want to redo.
 
 `python -m scripts.qa_smoke` checks the login wall, every route, every write
 path, latency, and behaviour under concurrent load while the ingester writes. It
-needs a populated database (it opens a real tier A firm), so it stays the check
+needs a populated database (it opens the top firm on a product list), so it stays the check
 you run against a real instance before merging.
 
 CI now exists: `.github/workflows/ci.yml`. On every push and pull request it
