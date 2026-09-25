@@ -2,12 +2,10 @@
 # CI for Bellwether (Acumen-org/Scrapper-new).
 #
 #   build   — self-hosted: Harbor is not routable from GitHub's runners.
-#             Runs on push to main only.
-#   deploy  — self-hosted. Deploys the newest date-tagged image in Harbor
-#             (YYYY-MM-DD-<label>), whoever pushed it: after a build that is the
-#             image just built; from "Run workflow" it redeploys without building.
-#             `nomad job run` waits on the deployment and exits non-zero if it
-#             fails; the jobspec's auto_revert rolls it back.
+#             Builds and pushes bellwether/app:YYYY-MM-DD-<sha7>.
+#   deploy  — self-hosted. Hands that exact tag to Nomad, which pulls it from
+#             Harbor. `nomad job run` waits on the deployment and exits
+#             non-zero if it fails; the jobspec's auto_revert rolls it back.
 # ---------------------------------------------------------------------------
 
 name: CI
@@ -34,7 +32,9 @@ jobs:
   build:
     name: build + push image
     runs-on: self-hosted
-    if: github.event_name == 'push'
+
+    outputs:
+      IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
 
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
       # in place of the label.
       - name: Generate image tag
         id: tag
-        run: echo "IMAGE=${DOCKER_IMAGE}:$(date -u +%Y-%m-%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: echo "IMAGE_TAG=$(date -u +%Y-%m-%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Login to Harbor
         uses: docker/login-action@v3
@@ -61,37 +61,16 @@ jobs:
           file: ./Dockerfile
           push: true
           platforms: linux/amd64
-          tags: ${{ steps.tag.outputs.IMAGE }}
+          tags: ${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.IMAGE_TAG }}
 
   # ------------------------------------------------------------------- deploy
   deploy:
     name: deploy to Nomad
     runs-on: self-hosted
     needs: build
-    # Run after a successful build, or on its own when build was skipped.
-    if: ${{ !failure() && !cancelled() }}
 
     steps:
       - uses: actions/checkout@v4
-
-      # Newest tag by push time among YYYY-MM-DD-* tags; anything else
-      # (latest, buildcache, untagged) is ignored.
-      - name: Resolve newest image in Harbor
-        id: latest
-        env:
-          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
-          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-        run: |
-          TAG=$(curl -fsS -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
-            "https://${REGISTRY}/api/v2.0/projects/bellwether/repositories/app/artifacts?with_tag=true&sort=-push_time&page_size=100" \
-            | jq -r '[.[].tags[]? | select(.name | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}-"))]
-                     | sort_by(.push_time) | last | .name // empty')
-          if [ -z "$TAG" ]; then
-            echo "::error::No YYYY-MM-DD-* tag found in bellwether/app"
-            exit 1
-          fi
-          echo "Deploying ${DOCKER_IMAGE}:${TAG}"
-          echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
 
       - uses: hashicorp/setup-nomad@main
         with:
@@ -102,7 +81,7 @@ jobs:
         env:
           NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
           NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
-          NOMAD_VAR_image_tag: ${{ steps.latest.outputs.TAG }}
+          NOMAD_VAR_image_tag: ${{ needs.build.outputs.IMAGE_TAG }}
           NOMAD_VAR_harbor_username: ${{ secrets.HARBOR_USERNAME }}
           NOMAD_VAR_harbor_password: ${{ secrets.HARBOR_PASSWORD }}
         run: nomad job run bellwether.nomad.hcl
