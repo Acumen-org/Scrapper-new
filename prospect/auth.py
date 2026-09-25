@@ -45,7 +45,7 @@ COOKIE = "bellwether_session"
 SESSION_DAYS = 30
 
 # Paths reachable without signing in. Everything else requires a session.
-PUBLIC_PATHS = {"/login", "/favicon.ico", "/healthz"}
+PUBLIC_PATHS = {"/login", "/favicon.ico", "/healthz", "/robots.txt"}
 
 PBKDF2_ROUNDS = 240_000
 

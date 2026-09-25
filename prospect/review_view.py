@@ -48,6 +48,10 @@ CALLED = """(SELECT crd FROM product_score
 @router.get("/review", response_class=HTMLResponse)
 def review_queue(kind: str = Query(""), page_n: int = Query(1, ge=1, alias="page"),
                  per: int = Query(40, ge=10, le=200), scope: str = Query("called")):
+    # Both values land in links on the page: anything outside the known set
+    # is dropped, never echoed.
+    if kind not in ("", "match_13f", "brochure_negation"):
+        kind = ""
     c = conn()
     if scope not in ("called", "all"):
         scope = "called"

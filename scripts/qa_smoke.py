@@ -230,6 +230,30 @@ def pass_auth(base: str) -> None:
     (ok if got == 401 and "bellwether_session" not in str(hdrs.get("Set-Cookie", ""))
      else fail)(f"wrong password issues no session (got {got})")
 
+    # Response hardening: set by the app, so it holds behind any gateway.
+    bare = urllib.request.build_opener(_NoRedirect)
+    try:
+        rr = bare.open(base + "/login", timeout=20)
+        h = rr.headers
+    except urllib.error.HTTPError as exc:
+        h = exc.headers
+    for name in ("Content-Security-Policy", "X-Frame-Options",
+                 "X-Content-Type-Options", "X-Robots-Tag", "Referrer-Policy"):
+        (ok if h.get(name) else fail)(f"header {name} present")
+    try:
+        robots = bare.open(base + "/robots.txt", timeout=20).read().decode()
+    except Exception as exc:
+        robots = f"{exc}"
+    (ok if "Disallow: /" in robots else fail)("robots.txt is public and disallows all")
+    # The sign-in form must never carry an off-site destination forward.
+    try:
+        page_html = bare.open(base + "/login?next=//evil.example", timeout=20
+                              ).read().decode()
+    except urllib.error.HTTPError as exc:
+        page_html = exc.read().decode()
+    (ok if 'value="//evil.example"' not in page_html else fail)(
+        "login next rejects an off-site target")
+
 
 def pass_routes(base: str, detail_crd: str) -> None:
     print("\n[1] route matrix")

@@ -15,7 +15,7 @@ from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import products, ui
-from .webapp import (escn, PRODUCTS, TYPE_LABEL, caveat, conn, current_owner, esc, money,
+from .webapp import (safe_back, escn, PRODUCTS, TYPE_LABEL, caveat, conn, current_owner, esc, money,
                      page, qs_join, tier_chip)
 
 router = APIRouter()
@@ -202,8 +202,7 @@ def act(tid: int = Form(...), state: str = Form(...), back: str = Form("/signals
         reason: str = Form("")):
     if state not in ("actioned", "snoozed", "dismissed"):
         return RedirectResponse("/signals", status_code=303)
-    if not back.startswith("/"):
-        back = "/signals"
+    back = safe_back(back, "/signals")
     c = conn()
     c.execute(
         "INSERT INTO trigger_action (trigger_id,state,reason,actioned_by,actioned_at)"

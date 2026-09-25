@@ -29,6 +29,10 @@ from .webapp import (escn, nice_name, STATUSES, TYPE_LABEL, caveat, conn, curren
 
 router = APIRouter()
 
+# CRDs are digits. Checked before a CRD goes into a redirect or a write, so a
+# crafted path can never become part of a Location header or a stored row.
+CRD_RE = re.compile(r"^[0-9]{1,12}$")
+
 FIRM_CSS = """
 .doc{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:44px;align-items:start}
 @media (max-width:1180px){.doc{grid-template-columns:minmax(0,1fr)}}
@@ -659,12 +663,14 @@ CRD {esc(crd)}{" &middot; " + website if website else ""}{" &middot; " + esc(f["
 @router.post("/firm/{crd}/level")
 def set_level(crd: str, product: str = Form(...), criterion: str = Form(...),
               points: str = Form(""), note: str = Form("")):
+    if product not in products.product_keys() or not CRD_RE.match(crd):
+        return RedirectResponse("/", status_code=303)
     c = conn()
     try:
         products.set_override(c, crd, product, criterion,
                               float(points) if points.strip() else None,
                               note.strip()[:200], current_owner())
-    except ValueError:
+    except (ValueError, KeyError):
         pass
     c.close()
     return RedirectResponse(f"/firm/{crd}?p={product}&saved=1#fit-{product}",
@@ -673,6 +679,8 @@ def set_level(crd: str, product: str = Form(...), criterion: str = Form(...),
 
 @router.post("/firm/{crd}/note")
 def save_note(crd: str, note: str = Form("")):
+    if not CRD_RE.match(crd):
+        return RedirectResponse("/", status_code=303)
     c = conn()
     c.execute("INSERT INTO firm_note (crd,note,updated_at) VALUES (?,?,?)"
               " ON CONFLICT(crd) DO UPDATE SET note=excluded.note,"
@@ -685,6 +693,8 @@ def save_note(crd: str, note: str = Form("")):
 
 @router.post("/firm/{crd}/status")
 def save_status(crd: str, status: str = Form(""), owner: str = Form("")):
+    if not CRD_RE.match(crd):
+        return RedirectResponse("/", status_code=303)
     # Claiming a firm without naming an owner means you.
     if status and not owner.strip():
         owner = current_owner()
@@ -708,6 +718,8 @@ from prospect.mailcheck import BAD_EMAIL_DOMAINS  # noqa: E402,F401  single sour
 def gen_emails(crd: str):
     """One best-guess email per decision maker and rep, checked on the spot
     with a local DNS lookup, so the verdict is on the page when it reloads."""
+    if not CRD_RE.match(crd):
+        return RedirectResponse("/", status_code=303)
     from prospect import emailguess, mailcheck
     c = conn()
     firm_pat, fallback = emailguess.observed(c)

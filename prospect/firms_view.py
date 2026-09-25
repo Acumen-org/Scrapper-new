@@ -16,7 +16,7 @@ from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 from . import products, ui, xlsx
-from .webapp import (escn, conn, current_owner, esc, money, page, qs_join, saved_view_href,
+from .webapp import (safe_back, escn, conn, current_owner, esc, money, page, qs_join, saved_view_href,
                      signal_cutoff, tier_chip)
 
 router = APIRouter()
@@ -452,8 +452,7 @@ def list_delete(list_id: int = Form(...)):
 @router.post("/firms/removefromlist")
 def remove_from_list(crd: str = Form(...), list_id: int = Form(...),
                      back: str = Form("/saved")):
-    if not back.startswith("/"):
-        back = "/saved"
+    back = safe_back(back, "/saved")
     c = conn()
     c.execute("DELETE FROM user_list_item WHERE list_id=? AND crd=?", (list_id, crd))
     c.commit()
@@ -464,8 +463,7 @@ def remove_from_list(crd: str = Form(...), list_id: int = Form(...),
 @router.post("/firms/addtolist")
 def add_to_list(crd: str = Form(...), list_id: str = Form(...),
                 back: str = Form("/firms"), new_name: str = Form("")):
-    if not back.startswith("/"):
-        back = "/firms"
+    back = safe_back(back, "/firms")
     c = conn()
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if list_id == "__new":

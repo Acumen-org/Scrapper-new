@@ -395,6 +395,19 @@ def signal_cutoff(days: int = SIGNAL_WINDOW_DAYS) -> str:
     return (date.today() - timedelta(days=days)).isoformat()
 
 
+def safe_back(target: str | None, default: str = "/") -> str:
+    """A redirect target that can only stay inside this app.
+
+    "/firms" is fine; "//evil.example", "/\evil.example" and "https://..." are
+    not: browsers read the first two as a jump to another host, which made
+    every `back` field an open redirect."""
+    t = (target or "").strip()
+    if (not t.startswith("/") or t.startswith("//") or t.startswith("/\\")
+            or "\r" in t or "\n" in t):
+        return default
+    return t
+
+
 def qs_join(**kw) -> str:
     """A query string from keyword args, skipping empty values."""
     return urllib.parse.urlencode({k: v for k, v in kw.items() if v not in ("", None)})
@@ -877,7 +890,83 @@ async def require_login(request: Request, call_next):
         CURRENT_USER.reset(token)
 
 
-def login_page(error: str = "", nxt: str = "/") -> HTMLResponse:
+# --- sign-in throttling ----------------------------------------------------
+# Failed sign-ins are counted per address and per username. Passing the limit
+# on either locks sign-in for that key for the window, which stops password
+# guessing without a table or a dependency. Kept in memory per worker: a
+# restart forgets it, which only ever errs towards letting a person back in.
+LOGIN_WINDOW_S = 15 * 60
+LOGIN_MAX_FAILS = 8
+_FAILS: dict[str, list[float]] = {}
+_FAILS_LOCK = threading.Lock()
+
+
+def client_ip(request: Request) -> str:
+    """The caller's address. Behind the gateway the socket peer is the proxy,
+    so the first X-Forwarded-For hop is the real client."""
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _keys(ip: str, who: str) -> list[str]:
+    return [f"ip:{ip}"] + ([f"user:{who}"] if who else [])
+
+
+def _throttled(ip: str, who: str) -> int:
+    """Minutes until sign-in is allowed again, or 0 if it is allowed now."""
+    import time as _t
+    now = _t.time()
+    worst = 0.0
+    with _FAILS_LOCK:
+        for k in _keys(ip, who):
+            recent = [t for t in _FAILS.get(k, []) if now - t < LOGIN_WINDOW_S]
+            _FAILS[k] = recent
+            if len(recent) >= LOGIN_MAX_FAILS:
+                worst = max(worst, LOGIN_WINDOW_S - (now - recent[0]))
+    return int(worst // 60) + 1 if worst else 0
+
+
+def _record_failure(ip: str, who: str) -> None:
+    import time as _t
+    with _FAILS_LOCK:
+        if len(_FAILS) > 10000:          # never grow without bound
+            _FAILS.clear()
+        for k in _keys(ip, who):
+            _FAILS.setdefault(k, []).append(_t.time())
+
+
+def _clear_failures(ip: str, who: str) -> None:
+    with _FAILS_LOCK:
+        for k in _keys(ip, who):
+            _FAILS.pop(k, None)
+
+
+# --- response hardening -----------------------------------------------------
+# Set by the app itself, so they hold behind any gateway: the Caddyfile adds
+# them, but the live deployment sits behind APISIX and none reached the
+# browser. The CSP allows the inline style and script every page carries and
+# nothing from any other origin.
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+       "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+       "connect-src 'self'; font-src 'self'; object-src 'none'; "
+       "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+SECURITY_HEADERS = {
+    "Content-Security-Policy": CSP,
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    # An internal tool: nothing here is for search engines, and a crawler
+    # judging a bare sign-in form out of context is how a private login page
+    # ends up flagged as deceptive.
+    "X-Robots-Tag": "noindex, nofollow, noarchive",
+}
+
+
+def login_page(error: str = "", nxt: str = "/", status: int | None = None) -> HTMLResponse:
     no_accounts = not auth.load_users()
     err = f'<div class="err">{esc(error)}</div>' if error else ""
     if no_accounts:
@@ -903,24 +992,56 @@ def login_page(error: str = "", nxt: str = "/") -> HTMLResponse:
 </form>
 <p class="hint">Your name is what marks the firms you own and the reviews you
 clear, so a shared queue stays honest about who did what.</p>
-</div>""", status_code=200 if not error else 401)
+</div>""", status_code=status or (200 if not error else 401))
+
+
+@app.middleware("http")
+async def harden(request: Request, call_next):
+    """Outermost layer: upgrade plain HTTP, then stamp every response."""
+    if SECURE_COOKIES and request.headers.get("x-forwarded-proto", "").lower() == "http":
+        return RedirectResponse(str(request.url.replace(scheme="https")),
+                                status_code=308)
+    resp = await call_next(request)
+    for k, v in SECURITY_HEADERS.items():
+        resp.headers.setdefault(k, v)
+    if SECURE_COOKIES:
+        resp.headers.setdefault("Strict-Transport-Security",
+                                "max-age=31536000; includeSubDomains")
+    # Pages carry client names, contacts and notes: never keep them in a
+    # shared or browser cache.
+    if request.url.path not in ("/healthz", "/favicon.ico", "/robots.txt"):
+        resp.headers.setdefault("Cache-Control", "no-store")
+    return resp
+
+
+@app.get("/robots.txt")
+def robots():
+    return Response("User-agent: *\nDisallow: /\n", media_type="text/plain")
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_form(next: str = Query("/")):
-    return login_page(nxt=next or "/")
+    return login_page(nxt=safe_back(next))
 
 
 @app.post("/login", response_class=HTMLResponse)
-def login_submit(username: str = Form(""), password: str = Form(""),
-                 next: str = Form("/")):
+def login_submit(request: Request, username: str = Form(""),
+                 password: str = Form(""), next: str = Form("/")):
+    who = (username or "").strip().lower()
+    ip = client_ip(request)
+    wait = _throttled(ip, who)
+    if wait:
+        unit = "minute" if wait == 1 else "minutes"
+        return login_page(f"Too many failed sign-ins. Try again in {wait} {unit}.",
+                          nxt=safe_back(next), status=429)
     rec = auth.check_login(username, password)
     if not rec:
+        _record_failure(ip, who)
         return login_page("That username and password combination is not "
-                          "recognised.", nxt=next or "/")
+                          "recognised.", nxt=safe_back(next))
+    _clear_failures(ip, who)
     # Only ever redirect somewhere inside the app.
-    dest = next if (next or "").startswith("/") and not next.startswith("//") else "/"
-    resp = RedirectResponse(dest, status_code=303)
+    resp = RedirectResponse(safe_back(next), status_code=303)
     resp.set_cookie(auth.COOKIE, auth.make_session(username.strip().lower()),
                     max_age=auth.SESSION_DAYS * 86400, httponly=True,
                     samesite="strict", secure=SECURE_COOKIES, path="/")
@@ -980,8 +1101,7 @@ def api_search(q: str = Query("", min_length=0)):
 
 @app.post("/watch/{crd}")
 def watch_toggle(crd: str, back: str = Form("/")):
-    if not back.startswith("/"):
-        back = "/"
+    back = safe_back(back)
     c = conn()
     if c.execute("SELECT 1 FROM firm_watch WHERE crd=?", (crd,)).fetchone():
         c.execute("DELETE FROM firm_watch WHERE crd=?", (crd,))
