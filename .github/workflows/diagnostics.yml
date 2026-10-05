@@ -1,0 +1,21 @@
+﻿name: Deployment diagnostics
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: bellwether-diagnostics
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-nomad@main
+        with:
+          version: latest
+      - name: Inspect Bellwether allocation health
+        env:
+          NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
+          NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
+        run: python3 scripts/deployment_diagnostics.py
