@@ -2,6 +2,8 @@
 import json
 import re
 import subprocess
+import os
+import urllib.request
 
 
 def command(*args):
@@ -26,8 +28,12 @@ for row in sorted(allocations, key=lambda x:x.get('CreateIndex',0), reverse=True
         print('Task:', task, state.get('State'), 'failed:', state.get('Failed'))
         for event in state.get('Events', [])[-4:]:
             print('Event:', task, event.get('Type'), safe(event.get('DisplayMessage') or event.get('Message')))
-for ev in (command('job', 'evals', '-json', 'bellwether') or [])[-4:]:
-    full = command('eval', 'status', '-json', ev['ID']) or {}
+request = urllib.request.Request(os.environ['NOMAD_ADDR'].rstrip('/') + '/v1/job/bellwether/evaluations',
+                                 headers={'X-Nomad-Token':os.environ['NOMAD_TOKEN']})
+with urllib.request.urlopen(request, timeout=20) as response:
+    evaluations = json.load(response)
+for full in sorted(evaluations, key=lambda x:x.get('CreateIndex',0), reverse=True)[:4]:
+    print('Evaluation:', full['ID'], full.get('Status'), safe(full.get('StatusDescription')))
     for group, failures in (full.get('FailedTGAllocs') or {}).items():
         print('Placement:', group, {key:failures.get(key) for key in
               ('NodesEvaluated','NodesFiltered','NodesExhausted','DimensionExhausted','ConstraintFiltered')})
