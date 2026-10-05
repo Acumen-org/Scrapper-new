@@ -235,6 +235,16 @@ class SeatsChecks(unittest.TestCase):
 
 
 class AITransportChecks(unittest.TestCase):
+    def test_empty_provider_response_is_an_explicit_error(self):
+        with patch.object(ai, 'configured', return_value=True), \
+                patch.object(ai, 'budget_left', return_value=100), \
+                patch.object(ai, 'provider', return_value='openai'), \
+                patch.object(ai, 'model', return_value='test'), \
+                patch.object(ai, '_call_openai_compatible', return_value=('', 10, 20)), \
+                patch.object(ai, '_log'), patch.object(ai.settings, 'get', return_value='https://qa.invalid'):
+            with self.assertRaisesRegex(ai.AIError, 'empty answer'):
+                ai.complete('System', [], feature='ask')
+
     def test_eden_uses_gateway_and_returns_provider_response(self):
         response=Mock(status_code=200)
         response.json.return_value={'choices':[{'message':{'content':'Grounded answer'}}],

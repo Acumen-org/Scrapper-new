@@ -292,6 +292,8 @@ def complete(system: str, messages: list[dict], *, feature: str, tier: str = "sm
                 settings.get("ai.base_url") or "https://api.openai.com/v1")
         else:
             raise AIError("Unknown AI provider.")
+        if not text.strip():
+            raise AIError('The AI provider returned an empty answer. Try again with a shorter question; an admin can review the model in Settings, AI.')
         out = _parse_json(text) if schema is not None else text.strip()
     except AIError as e:
         _log(feature, mdl, False, None, None, int((time.monotonic() - t0) * 1000), who, str(e))

@@ -8,6 +8,7 @@ RELEASE = 'workspace-2026-10-glynac-v3-audit'
 
 
 def main():
+    issues = []
     c = db.connect()
     jobs.init(c)
     c.execute('CREATE TABLE IF NOT EXISTS app_release (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
@@ -40,23 +41,39 @@ def main():
     admin = users.effective({'login':'rahul.gopan@acumen-strategy.com', 'role':'user'})
     print('Designated Microsoft account receives admin:', users.is_admin(admin))
     print('AI provider configured:', ai.configured(), 'ask enabled:', ai.enabled('ask'))
+    print('AI provider and model:', ai.provider(), ai.model('smart'))
     print('Reacher service configured:', bool(settings.get('verify.reacher_url')))
     print('Verification mode:', settings.get('verify.engine'))
     from prospect import verify
     verification = verify.engine_status(refresh=True)
     print('Verification connectivity:', {k: verification[k] for k in
           ('resolved', 'reacher_ok', 'port25_ok')}, flush=True)
+    if settings.get('verify.reacher_url'):
+        import requests
+        response = requests.post(settings.get('verify.reacher_url').rstrip('/') + '/v0/check_email',
+                                 headers=verify._reacher_headers(),
+                                 json={'to_email':'connectivity-check@example.invalid'}, timeout=30)
+        working = response.status_code == 200 and bool(response.json().get('syntax'))
+        print('Reacher API response received:', working, flush=True)
+        if not working:
+            issues.append('Reacher API')
     if ai.enabled('ask'):
         try:
             response = ai.complete('This is an application connectivity check. Reply with Ready.',
                                    [{'role':'user', 'content':'Check connection.'}],
-                                   feature='ask', max_tokens=20)
+                                   feature='ask', max_tokens=1000)
             print('AI provider response received:', bool(response), flush=True)
         except Exception as exc:
             print('AI provider check failed:', type(exc).__name__, flush=True)
+            issues.append('AI provider')
     print('Scheduled jobs:', len(jobs.JOBS), 'paused:', sum(s.get('desired_state')=='paused' for k,s in jobs.states(c).items() if k in jobs.BY_KIND))
     print('Jobs requiring a retry:', [k for k,s in jobs.states(c).items()
           if k in jobs.BY_KIND and s.get('last_status') in ('failed', 'timeout')])
+    for k,s in jobs.states(c).items():
+        if k in jobs.BY_KIND and s.get('last_status') in ('failed', 'timeout'):
+            import re
+            reason = re.sub(r'https?://\S+', '[source URL]', s.get('message') or '')
+            print('Job retry reason:', k, reason[:220])
     from prospect import config, procs
     print('Automatic enrichment worker alive:', bool(procs.alive_pid(config.DATA_DIR / 'autopilot.pid')))
     c.close()
@@ -66,6 +83,11 @@ def main():
     started = time.monotonic()
     people_page(q='', st='', on='', officers='', reach='ready', joined='', cfp='', disc='', sort='name', page_n=1, per=25)
     print('People page first render seconds:', round(time.monotonic()-started, 3))
+    started = time.monotonic()
+    people_page(q='', st='', on='', officers='', reach='ready', joined='', cfp='', disc='', sort='name', page_n=1, per=25)
+    print('People page warm render seconds:', round(time.monotonic()-started, 3))
+    if issues:
+        raise SystemExit('Production checks requiring attention: ' + ', '.join(issues))
 
 
 if __name__ == '__main__':

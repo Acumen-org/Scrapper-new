@@ -57,17 +57,12 @@ def _where(q, st, on, officers, reach, joined, cfp, disc):
         where.append("sc.crd IS NOT NULL")
     if officers:
         where.append("sa.title IS NOT NULL")
-    if reach == 'ready':
-        where.append("EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=e.org_pk AND c.person_key='i:'||p.indvl_pk)")
-    if reach in ("email", "verified", "none"):
+    if reach == "none":
         cond = ("EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=e.org_pk"
                 " AND c.person_key='i:'||p.indvl_pk AND c.kind='email'"
                 " AND c.verify_status NOT IN ('invalid','no_mail_server')"
                 + (" AND c.verify_status='valid'" if reach == "verified" else "") + ")")
-        where.append(f"NOT {cond}" if reach == "none" else cond)
-    elif reach == "phone":
-        where.append("EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=e.org_pk"
-                     " AND c.person_key='i:'||p.indvl_pk AND c.kind='phone')")
+        where.append(f"NOT {cond}")
     if joined in JOINED and joined:
         where.append("e.start_date >= ?")
         args.append((date.today() - timedelta(days=int(joined))).isoformat())
@@ -94,16 +89,30 @@ BASE = """FROM person_employment e
     {sa}
     WHERE {where}"""
 
+
+def _base(where, sa, reach):
+    base = BASE.format(where=where, sa=sa)
+    if reach in ('ready', 'email', 'verified', 'phone'):
+        kind = " AND kind='phone'" if reach == 'phone' else (
+            " AND kind='email'" if reach in ('email', 'verified') else '')
+        # Begin with the much smaller contact set. The old correlated test
+        # checked every registered person before it could return the first page.
+        ready = ("JOIN (SELECT DISTINCT crd, SUBSTRING(person_key FROM 3) person_id"
+                 " FROM usable_contact_point WHERE person_key LIKE 'i:%'" + kind +
+                 ") reachable ON reachable.crd=e.org_pk AND reachable.person_id=e.indvl_pk\n")
+        base = base.replace('JOIN person p', ready + 'JOIN person p')
+    return base
+
 ORDER = {"": "sc.priority DESC NULLS LAST, f.raum DESC NULLS LAST, p.name",
          "joined": "e.start_date DESC NULLS LAST",
          "name": "p.last_name, p.first_name", "firm": "f.legal_name, p.last_name"}
 
 
 @lru_cache(maxsize=128)
-def _count_people(where, args, officers, minute):
+def _count_people(where, args, officers, reach, minute):
     c = conn()
     try:
-        return c.execute(f"SELECT COUNT(*) n {BASE.format(where=where, sa=SA_JOIN if officers else '')}", args).fetchone()['n']
+        return c.execute(f"SELECT COUNT(*) n {_base(where, SA_JOIN if officers else '', reach)}", args).fetchone()['n']
     finally:
         c.close()
 
@@ -122,8 +131,8 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
 individual feed. It runs by itself; this page fills in as soon as it has.</p></div>""")
     sort = sort if sort in ORDER else ""
     where, args = _where(q, st, on, officers, reach, joined, cfp, disc)
-    filt = BASE.format(where=where, sa=SA_JOIN if officers else "")
-    total = _count_people(where, tuple(args), bool(officers), int(time.monotonic() // 60))
+    filt = _base(where, SA_JOIN if officers else "", reach)
+    total = _count_people(where, tuple(args), bool(officers), reach, int(time.monotonic() // 60))
     rows = c.execute(f"""
         WITH pg AS (SELECT p.indvl_pk, e.org_pk, e.start_date, e.city, e.state,
                            sc.priority, f.raum, f.legal_name, p.last_name, p.first_name, p.name
@@ -257,7 +266,7 @@ def people_export(q: str = "", st: str = "", on: str = "", officers: str = "",
                   AND x.person_key='i:'||p.indvl_pk AND x.kind='phone'
                   ORDER BY x.confidence DESC LIMIT 1) AS direct_phone,
                p.iapd_link
-        {BASE.format(where=where, sa=SA_JOIN)} ORDER BY {ORDER[sort]} LIMIT 25000""", args).fetchall()
+        {_base(where, SA_JOIN, reach)} ORDER BY {ORDER[sort]} LIMIT 25000""", args).fetchall()
     c.close()
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")

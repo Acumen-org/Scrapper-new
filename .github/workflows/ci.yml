@@ -84,7 +84,10 @@ jobs:
           NOMAD_VAR_image_tag: ${{ needs.build.outputs.IMAGE_TAG }}
           NOMAD_VAR_harbor_username: ${{ secrets.HARBOR_USERNAME }}
           NOMAD_VAR_harbor_password: ${{ secrets.HARBOR_PASSWORD }}
-        run: nomad job run nomad/bellwether.nomad.hcl
+          NOMAD_VAR_reacher_secret: ${{ secrets.BELLWETHER_REACHER_SECRET }}
+        run: |
+          nomad job validate nomad/bellwether.nomad.hcl
+          nomad job run nomad/bellwether.nomad.hcl
 
       - name: Configure Microsoft sign-in
         env:

@@ -12,6 +12,10 @@ variable "harbor_password" {
   type = string
 }
 
+variable "reacher_secret" {
+  type = string
+}
+
 locals {
   registry = "h4rb0r.pmx.acumen-strategy.com"
   image    = "${local.registry}/bellwether/app:${var.image_tag}"
@@ -44,6 +48,10 @@ job "bellwether" {
     count = 1
 
     network {
+      port "reacher" {
+        to = 8080
+        host_network = "default"
+      }
       port "app" {
         static       = 8787
         to           = 8787
@@ -93,6 +101,8 @@ job "bellwether" {
         BELLWETHER_HTTPS   = "1"
         BELLWETHER_USERS   = "/data/users.yml"
         BELLWETHER_MANAGED = "1"
+        BELLWETHER_REACHER_URL = "http://${NOMAD_ADDR_reacher}"
+        BELLWETHER_REACHER_SECRET = var.reacher_secret
       }
 
       template {
@@ -135,6 +145,38 @@ job "bellwether" {
             grace           = "45s"
             ignore_warnings = false
           }
+        }
+      }
+    }
+
+    # Authenticated internal service; it has no public ingress route.
+    task "reacher" {
+      driver = "docker"
+      consul {}
+      config {
+        image = "reacherhq/backend:v0.11.7"
+        ports = ["reacher"]
+        dns_servers = ["172.17.0.1", "8.8.8.8"]
+      }
+      env {
+        RCH__HEADER_SECRET = var.reacher_secret
+        RCH__HELLO_NAME = "acumen-strategy.com"
+        RCH__FROM_EMAIL = "verify@acumen-strategy.com"
+        RCH__SMTP_TIMEOUT = "45"
+        RCH__WORKER__ENABLE = "false"
+      }
+      resources {
+        cpu = 200
+        memory = 256
+        memory_max = 768
+      }
+      service {
+        name = "bellwether-reacher"
+        port = "reacher"
+        check {
+          type = "tcp"
+          interval = "20s"
+          timeout = "5s"
         }
       }
     }
