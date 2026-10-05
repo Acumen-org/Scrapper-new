@@ -76,6 +76,54 @@ def main():
             print('Job retry reason:', k, reason[:220])
     from prospect import config, procs
     print('Automatic enrichment worker alive:', bool(procs.alive_pid(config.DATA_DIR / 'autopilot.pid')))
+    # Why AI calls fail and how far contact discovery has got, in aggregate
+    # only: no addresses, names or keys are printed.
+    import re as _re
+
+    def _scrub(text):
+        text = _re.sub(r'[A-Za-z0-9_~+/.=-]{32,}', '[long value omitted]', str(text or ''))
+        return _re.sub(r'[\w.+-]+@[\w-]+(\.[\w-]+)+', '[address]', text)[:300]
+    try:
+        for r in c.execute('SELECT at, feature, provider, model, error FROM ai_call'
+                           ' WHERE ok=0 ORDER BY id DESC LIMIT 3').fetchall():
+            print('AI failure:', r['at'], r['feature'], r['provider'], r['model'], _scrub(r['error']))
+        r = c.execute("SELECT COUNT(*) n, SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END) good FROM ai_call"
+                      " WHERE at >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD')").fetchone()
+        print('AI calls in the last day:', r['n'], 'succeeded:', r['good'] or 0)
+    except Exception as exc:
+        c.rollback()
+        print('AI call log unavailable:', type(exc).__name__)
+    try:
+        rows = c.execute("SELECT verify_status s, COUNT(*) n FROM contact_point WHERE kind='email'"
+                         " GROUP BY 1 ORDER BY 2 DESC").fetchall()
+        print('Email statuses:', {r['s']: r['n'] for r in rows})
+        r = c.execute("SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND verified_at"
+                      " >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD')").fetchone()
+        print('Emails checked in the last day:', r['n'])
+        import json as _json
+        from collections import Counter
+        reasons = Counter()
+        for r in c.execute("SELECT verify_detail d FROM contact_point WHERE kind='email'"
+                           " AND verify_status IN ('unknown','risky','catch_all')"
+                           " AND verify_detail IS NOT NULL ORDER BY verified_at DESC LIMIT 3000"):
+            try:
+                reason = _json.loads(r['d']).get('reason') or ''
+            except Exception:
+                reason = r['d'] or ''
+            # One bucket per kind of answer, not per domain.
+            reason = _re.sub(r'\b[\w-]+(\.[\w-]+)+\b', '[domain]', _scrub(reason))
+            reasons[_re.sub(r'\d{3,}', 'N', reason)[:120]] += 1
+        for reason, n in reasons.most_common(6):
+            print('Unresolved reason:', n, reason)
+        rows = c.execute("SELECT platform p, COUNT(*) n FROM firm_mail_platform GROUP BY 1"
+                         " ORDER BY 2 DESC LIMIT 8").fetchall()
+        print('Mail platforms:', {r['p']: r['n'] for r in rows})
+        r = c.execute("SELECT COUNT(DISTINCT person_key) n FROM contact_point WHERE person_key != ''"
+                      " AND kind='email' AND verify_status='valid'").fetchone()
+        print('People with a verified email:', r['n'])
+    except Exception as exc:
+        c.rollback()
+        print('Contact statistics unavailable:', type(exc).__name__)
     c.close()
     # Render the costly read path with the deployed database without creating an account.
     from prospect import webapp  # initialize routers before importing an individual view

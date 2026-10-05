@@ -122,8 +122,12 @@ job "bellwether" {
       # JavaScript-only page in a headless browser (one at a time, about 250MB
       # while it runs) beside the app and its background jobs. The reservation
       # is unchanged, so placement on worker-5 is unaffected.
+      # cpu went from 1000 to 800 when the reacher task joined the group with
+      # 200: worker-5 has no CPU headroom (placement failed with cpu exhausted),
+      # so the group keeps the 1000 it has always reserved. Docker CPU shares
+      # are relative, not a ceiling: the app still uses idle CPU freely.
       resources {
-        cpu        = 1000
+        cpu        = 800
         memory     = 512
         memory_max = 1536
       }
