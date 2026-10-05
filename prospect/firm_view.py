@@ -625,22 +625,22 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     src_line = ", ".join(f"{n} from {SOURCE_LABEL.get(k, k)}" for k, n in sorted(srcs.items(), key=lambda kv: -kv[1]))
     contacts_html = f"""<div class="row" style="margin-bottom:12px">
 <button class="sm" data-post="/api/firm/{esc(crd)}/verify" data-busy="Starting">Verify all emails</button>
-<button class="sm" data-post="/api/firm/{esc(crd)}/crawl" data-busy="Starting">Re-read their website</button>
+<button class="sm" data-post="/api/firm/{esc(crd)}/crawl" data-busy="Starting">Refresh website</button>
 <form method="post" action="/firm/{esc(crd)}/emails" style="display:inline"><button class="sm ghost" type="submit"
- title="Build an address for each person from the pattern the firm uses">Fill in addresses from the firm&rsquo;s pattern</button></form>
+ title="Build candidate addresses from the firm's known email pattern">Find email candidates</button></form>
 </div>
 {fl_rows or '<p class="muted">No firm-level phone or inbox on file.</p>'}
-<p class="meta" style="margin-top:10px">{n_em} email address{"es" if n_em != 1 else ""} in all. {esc(src_line)}.
-Verified means the firm&rsquo;s mail server accepted that exact mailbox and turned away a made-up one.</p>
-<details class="adj" style="margin-top:10px"><summary>Add a contact you know</summary>
-<form class="row" style="margin-top:8px" onsubmit="event.preventDefault();var b=this.querySelector('button');b.dataset.post='/api/firm/{esc(crd)}/contact';b.dataset.body=new URLSearchParams(new FormData(this)).toString();b.click();">
-<input type="text" name="name" placeholder="Name"><input type="text" name="title" placeholder="Title">
-<input type="email" name="email" placeholder="Email"><input type="text" name="phone" placeholder="Phone">
-<button type="button" class="sm" data-busy="Saving">Save</button></form></details>
+<details class="source-help"><summary>{n_em} email address{"es" if n_em != 1 else ""} &middot; Sources and verification</summary>
+<p>{esc(src_line)}. Verified addresses passed a mailbox check; catch-all domains remain unconfirmed.</p></details>
+<details class="adj" style="margin-top:10px"><summary>Add a contact</summary>
+<form class="row" style="margin-top:8px" data-api-form action="/api/firm/{esc(crd)}/contact" method="post">
+<label>Name<input type="text" name="name"></label><label>Title<input type="text" name="title"></label>
+<label>Email<input type="email" name="email"></label><label>Phone<input type="text" name="phone"></label>
+<button type="submit" class="sm" data-busy="Saving">Save contact</button></form></details>
 <details class="adj" style="margin-top:6px"><summary>Website is wrong or missing</summary>
-<form class="row" style="margin-top:8px" onsubmit="event.preventDefault();var b=this.querySelector('button');b.dataset.post='/api/firm/{esc(crd)}/crawl';b.dataset.body=new URLSearchParams(new FormData(this)).toString();b.click();">
-<input type="url" name="url" placeholder="https://their-site.com" style="min-width:260px">
-<button type="button" class="sm" data-busy="Starting">Read this site</button></form></details>"""
+<form class="row" style="margin-top:8px" data-api-form action="/api/firm/{esc(crd)}/crawl" method="post">
+<label>Website<input type="url" name="url" placeholder="https://their-site.com" required></label>
+<button type="submit" class="sm" data-busy="Starting">Read website</button></form></details>"""
 
     people_html = _people_section(c, crd, roster, cps_by_person, web_people,
                                   unmatched, stats)
@@ -699,7 +699,9 @@ Verified means the firm&rsquo;s mail server accepted that exact mailbox and turn
                             f"CRD {esc(crd)}", website, esc(f["phone"]) if f["phone"] else "") if x]
     tags = [f'<span class="chip line">{esc(f["regulator"] or "")}-registered</span>' if f["regulator"] else ""]
     for r in scored[:3]:
-        tags.append(f'<a class="chip" href="#fit-{r.product}">{esc(products.product(r.product)["name"])} {r.score:.0f}</a>')
+        tags.append(f'<a class="chip{" warn" if r.coverage < 100 else ""}" href="#fit-{r.product}">'
+                    f'{esc(products.product(r.product)["name"])} {r.score:.0f}'
+                    f' &middot; {r.coverage:.0f}% known</a>')
     if fs and fs["status"]:
         tags.append(f'<span class="chip warn">{esc(fs["status"])}{" . " + esc(fs["owner"]) if fs["owner"] else ""}</span>')
     if mail.get("platform") in ("m365", "google"):
@@ -728,12 +730,12 @@ Verified means the firm&rsquo;s mail server accepted that exact mailbox and turn
 
     ai_rail = f"""<div class="panel aipanel" data-scope="firm:{esc(crd)}">
 <div class="aihead"><canvas data-orb="breathing" data-size="32" data-px="30" data-tint="#d9d4ca" aria-label="Bellwether AI"></canvas>
-<div><div class="t">Ask about this firm</div><div class="s">Answers from everything on this page</div></div></div>
+<div><div class="t">Bellwether AI</div></div></div>
 <div class="aisugs"><button type="button">Who should I contact first, and how?</button>
 <button type="button">Which product fits best and why?</button>
 <button type="button">What changed here recently?</button></div>
 <div class="aimsgs"></div>
-<form class="aiform"><input type="text" placeholder="Ask anything" autocomplete="off"><button class="sm primary" type="submit">Ask</button></form>
+<form class="aiform"><input type="text" aria-label="Ask about this firm" placeholder="Ask about this firm" autocomplete="off"><button class="sm primary" type="submit">Ask</button></form>
 </div>"""
 
     body = f"""<div class="pg wide">
@@ -743,18 +745,17 @@ Verified means the firm&rsquo;s mail server accepted that exact mailbox and turn
 <div class="acts">
 <form method="post" action="/watch/{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}">
 <button type="submit" class="{"primary" if watched else ""}">{star}</button></form>
-<a class="btn" href="/ask?q={esc("Tell me about " + nice_name(f['legal_name']))}">Ask Bellwether</a></div></div>
+</div></div>
 <div class="tags">{"".join(t for t in tags if t)}</div></div>
 {saved_note}
 <div class="kpis" style="margin:8px 0 0">{kpis}</div>
 <nav class="secnav">{secnav}</nav>
 <div class="dossier"><div>
-<section class="s anchor" id="overview">{overview_html}</section>
+<section class="s anchor" id="overview"><h2>Overview</h2>{overview_html}</section>
 <section class="s anchor" id="fit"><div class="s-head"><h2>Fit</h2>
-<span class="more">On {len(scored)} of {len(results)} lists. Hatched bars are data still missing.</span></div>
+<span class="more">{len(scored)} of {len(results)} lists &middot; Amber marks missing data</span></div>
 {_fit_section(crd, results, ranks, focus)}</section>
-<section class="s anchor" id="people"><div class="s-head"><h2>People</h2>
-<span class="more">SEC individual records, Schedule A, their website and directories</span></div>{people_html}</section>
+<section class="s anchor" id="people"><div class="s-head"><h2>People</h2></div>{people_html}</section>
 <section class="s anchor" id="hiring"><div class="s-head"><h2>Hiring and departures</h2></div>{hiring_html}</section>
 <section class="s anchor" id="contacts"><div class="s-head"><h2>Contacts and sources</h2></div>{contacts_html}</section>
 <section class="s anchor" id="signals"><div class="s-head"><h2>Signals</h2></div>{trig_html}</section>
@@ -767,9 +768,9 @@ Verified means the firm&rsquo;s mail server accepted that exact mailbox and turn
 <div class="panel"><h3>Status and owner</h3>
 <form method="post" action="/firm/{esc(crd)}/status">
 <label>Status<select name="status">{status_opts}</select></label>
-<label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}" placeholder="Leave blank to claim it yourself"></label>
+<label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}" placeholder="Blank assigns to you"></label>
 <button class="primary sm" type="submit">Save</button></form>
-<p class="meta">Meetings and customers raise the relationship points on every list.</p></div>
+<details class="source-help"><summary>Scoring impact</summary><p>Meetings and customers raise relationship points.</p></details></div>
 {ai_rail}
 <div class="panel"><h3>Notes</h3>
 <form method="post" action="/firm/{esc(crd)}/note">

@@ -160,7 +160,7 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
                             per, qs)
     c.close()
 
-    note = (f'<div class="note plain">{esc(p["note"].strip())}</div>'
+    note = (f'<details class="source-help"><summary>About this list</summary><p>{esc(p["note"].strip())}</p></details>'
             if p.get("note") and view == "ranked" else "")
     exp = ""
     if view == "ranked":
@@ -170,7 +170,7 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
     body = f"""<div class="pg wide">
 <div class="crumb"><a href="/">Home</a> / Product lists</div>
 <div class="head"><div><h1>{esc(p["name"])}</h1>
-<div class="lede">{esc(p["audience"])}. <span class="muted">&ldquo;{esc(p.get("pitch", ""))}&rdquo;</span></div></div>
+<div class="lede">{esc(p["audience"])}</div></div>
 <div class="acts">{exp}</div></div>
 {strip}
 <div style="margin:18px 0 4px" class="seg">{tab("ranked", "Ranked")}{tab("disqualified", "Disqualified", dq_n)}{tab("scoring", scoring_tab)}</div>
@@ -558,11 +558,12 @@ async def scoring_save(key: str, request: Request):
                 cr["yes"] = _clean(_float(form, f"c-{i}-yes", cr.get("yes", 100)))
                 cr["no"] = _clean(_float(form, f"c-{i}-no", cr.get("no", 0)))
             if cr.get("levels") and not cr.get("bands"):
-                cr["levels"] = sorted(
-                    ([_clean(_float(form, f"c-{i}-l-{j}-pts", pts)),
+                # Keep each condition's identity when points change order.
+                cr["level_inputs"] = products.level_inputs(key, cr)
+                cr["levels"] = [
+                    [_clean(_float(form, f"c-{i}-l-{j}-pts", pts)),
                       (form.get(f"c-{i}-l-{j}-label") or label).strip()[:120]]
-                     for j, (pts, label) in enumerate(cr["levels"])),
-                    key=lambda lv: -float(lv[0]))
+                     for j, (pts, label) in enumerate(cr["levels"])]
             for b in cr.get("bands", []):
                 if not 0 <= float(b[1]) <= 100:
                     raise ValueError(f"{cr['label']}: points must be between 0 and 100")

@@ -918,7 +918,14 @@ def _from_reacher(res: dict, data: dict, domain: str, hosts: list[str]) -> dict:
         return _done(res, "unknown", f"Reacher found no mail server for {domain} where our "
                                      f"lookup did, so this address is unchecked.")
     if reach == "safe":
-        return _done(res, "valid", _accepted_reason(domain, role))
+        if out["catch_all"] is True:
+            return _done(res, "catch_all", _catch_all_reason(domain, provider))
+        if (out["can_connect"] is True and out["deliverable"] is True
+                and out["catch_all"] is False and not out["disabled"]
+                and not out["full_inbox"] and not res["misc"]["disposable"]):
+            return _done(res, "valid", _accepted_reason(domain, role))
+        return _done(res, "unknown", "Reacher did not confirm both the mailbox and a "
+                                     "negative catch-all check. This address is unverified.")
     if reach == "invalid":
         if out["can_connect"] is False:
             # Reacher calls an unreachable server invalid; not reaching a server
@@ -942,7 +949,8 @@ def _from_reacher(res: dict, data: dict, domain: str, hosts: list[str]) -> dict:
         # Reacher marks every shared inbox risky before it looks at whether the
         # server accepted it. contact_point already flags role inboxes, so the
         # verdict here is the server's, the same one the native engine gives.
-        if role and out["can_connect"] and out["deliverable"] and not out["disabled"]:
+        if (role and out["can_connect"] is True and out["deliverable"] is True
+                and out["catch_all"] is False and not out["disabled"]):
             return _done(res, "valid", _accepted_reason(domain, role))
         if role and out["can_connect"] and out["deliverable"] is False:
             return _done(res, "invalid", f"The mail server for {domain} says this mailbox "

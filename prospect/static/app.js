@@ -20,11 +20,29 @@
   function flash(msg, kind) {
     var el = document.createElement("div");
     el.className = "flash " + (kind || "good");
+    el.setAttribute("role", kind === "bad" ? "alert" : "status");
     el.textContent = msg;
     document.body.appendChild(el);
     setTimeout(function () { el.remove(); }, 3800);
   }
   window.bwFlash = flash;
+
+  var navToggle = document.querySelector("[data-nav-toggle]");
+  if (navToggle) navToggle.addEventListener("click", function () {
+    var open = document.getElementById("main-nav").classList.toggle("open");
+    navToggle.setAttribute("aria-expanded", String(open));
+    navToggle.textContent = open ? "Close menu" : "Menu";
+  });
+  document.querySelectorAll("main table").forEach(function (table) {
+    if (table.closest(".table-scroll")) return;
+    var wrap = document.createElement("div");
+    wrap.className = "table-scroll";
+    wrap.tabIndex = 0;
+    wrap.setAttribute("role", "region");
+    wrap.setAttribute("aria-label", "Scrollable data table");
+    table.parentNode.insertBefore(wrap, table);
+    wrap.appendChild(table);
+  });
 
   /* ------------------------------------------------------------ finder */
   var PAGES = window.BW_PAGES || [];
@@ -95,37 +113,75 @@
 
   /* ------------------------------------------------------------ section bar */
   var secnav = document.querySelector(".secnav");
-  if (secnav && "IntersectionObserver" in window) {
-    var links = {};
-    secnav.querySelectorAll("a[href^='#']").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
-    var visible = {};
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (en) { visible[en.target.id] = en.isIntersecting ? en.boundingClientRect.top : null; });
-      var best = null, bestTop = Infinity;
-      Object.keys(visible).forEach(function (id) {
-        var t = visible[id];
-        if (t !== null && t < bestTop) { best = id; bestTop = t; }
+  if (secnav && document.querySelector(".dossier")) {
+    var tabs = Array.from(secnav.querySelectorAll("a[href^='#']"));
+    var sections = Array.from(document.querySelectorAll(".dossier .anchor"));
+    document.querySelector(".dossier").classList.add("dossier-tabs");
+    secnav.setAttribute("role", "tablist");
+    secnav.setAttribute("aria-label", "Firm information");
+    tabs.forEach(function (tab) {
+      var id = tab.hash.slice(1), section = document.getElementById(id);
+      tab.id = "tab-" + id;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", id);
+      section.setAttribute("role", "tabpanel");
+      section.setAttribute("aria-labelledby", tab.id);
+      section.tabIndex = 0;
+    });
+    function selectSection(hash) {
+      var target = document.getElementById((hash || "#overview").slice(1));
+      var section = target && target.closest(".anchor");
+      if (!section || sections.indexOf(section) < 0) section = sections[0];
+      sections.forEach(function (s) { s.hidden = s !== section; });
+      tabs.forEach(function (t) {
+        var active = t.hash === "#" + section.id;
+        t.classList.toggle("on", active);
+        t.setAttribute("aria-selected", String(active));
+        t.tabIndex = active ? 0 : -1;
       });
-      if (!best) return;
-      Object.keys(links).forEach(function (id) { links[id].classList.toggle("on", id === best); });
-    }, { rootMargin: "-70px 0px -55% 0px" });
-    Object.keys(links).forEach(function (id) { var s = document.getElementById(id); if (s) io.observe(s); });
+      if (target && target.matches("details")) target.open = true;
+    }
+    document.addEventListener("click", function (e) {
+      var link = e.target.closest("a[href^='#']");
+      if (!link || !link.hash || !document.getElementById(link.hash.slice(1))) return;
+      var target = document.getElementById(link.hash.slice(1));
+      if (!target.closest(".anchor")) return;
+      e.preventDefault();
+      history.pushState(null, "", link.hash);
+      selectSection(link.hash);
+      if (!secnav.contains(link)) target.scrollIntoView({ block: "nearest" });
+    });
+    secnav.addEventListener("keydown", function (e) {
+      var i = tabs.indexOf(document.activeElement);
+      if (i < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      e.preventDefault();
+      var next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 :
+        (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].click();
+      tabs[next].focus();
+    });
+    window.addEventListener("hashchange", function () { selectSection(location.hash); });
+    window.addEventListener("popstate", function () { selectSection(location.hash); });
+    selectSection(location.hash);
   }
 
   /* ------------------------------------------------------------ background actions */
-  document.addEventListener("click", function (e) {
-    var b = e.target.closest("[data-post]");
-    if (!b) return;
-    e.preventDefault();
+  function postAction(b, url, body) {
+    if (b.disabled) return;
     if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
     var label = b.innerHTML;
     b.disabled = true;
     b.innerHTML = b.dataset.busy || "Working";
-    var body = new URLSearchParams(b.dataset.body || "");
-    fetch(b.dataset.post, { method: "POST", body: body, headers: { "Accept": "application/json" } })
-      .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+    fetch(url, { method: "POST", body: body, headers: { "Accept": "application/json" } })
+      .then(async function (r) {
+        if (r.redirected && new URL(r.url).pathname === "/login")
+          return { ok: false, message: "Your session expired. Sign in again." };
+        var d = await r.json().catch(function () { return {}; });
+        if (!r.ok) { d.ok = false; d.message = d.message || "Request failed. Please try again."; }
+        return d;
+      })
       .then(function (d) {
-        flash(d.message || (d.ok ? "Done" : "That did not work"), d.ok === false ? "bad" : "good");
+        flash(d.message || (d.ok ? "Done" : "That did not work"), d.ok ? "good" : "bad");
         if (d.replace && b.dataset.target) {
           var t = document.querySelector(b.dataset.target);
           if (t) t.innerHTML = d.replace;
@@ -134,6 +190,18 @@
       })
       .catch(function () { flash("Could not reach Bellwether", "bad"); })
       .finally(function () { b.disabled = false; b.innerHTML = label; });
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-post]");
+    if (!b) return;
+    e.preventDefault();
+    postAction(b, b.dataset.post, new URLSearchParams(b.dataset.body || ""));
+  });
+  document.addEventListener("submit", function (e) {
+    var form = e.target.closest("form[data-api-form]");
+    if (!form) return;
+    e.preventDefault();
+    postAction(form.querySelector("button[type=submit]"), form.action, new URLSearchParams(new FormData(form)));
   });
 
   /* ------------------------------------------------------------ Bellwether AI */

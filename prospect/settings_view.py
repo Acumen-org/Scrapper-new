@@ -469,7 +469,7 @@ def jobs_page(msg: str = Query("")):
         rows = []
         for j in items:
             job = j["job"]
-            pct = (j["done"] / j["total"] * 100) if j.get("total") else None
+            pct = (j["done"] / j["total"] * 100) if j.get("total") and j.get("done") is not None else None
             prog = (f'<div class="meter"><i style="width:{pct:.1f}%"></i></div>'
                     f'<div class="meta">{j["done"]:,} of {j["total"]:,}'
                     f'{" . " + format(j["backlog"], ",") + " to go" if j.get("backlog") else ""}</div>'
@@ -486,7 +486,8 @@ def jobs_page(msg: str = Query("")):
             nxt = esc(ui.ago(j["next_run_at"])) if j["next_run_at"] and j["state"] == "scheduled" else ""
             pause = ("resume", "Resume") if j["state"] == "paused" else ("pause", "Pause")
             rows.append(
-                f'<tr><td style="width:30%"><b>{esc(job.label)}</b><div class="meta">{esc(job.blurb)}</div></td>'
+                f'<tr><td style="width:30%"><b>{esc(job.label)}</b>'
+                f'<details class="source-help"><summary>Details</summary><p>{esc(job.blurb)}</p></details></td>'
                 f'<td><span class="chip {chips.get(j["state"], "")}">{words.get(j["state"], j["state"])}</span>'
                 f'{"<div class=meta>next " + nxt + "</div>" if nxt else ""}</td>'
                 f'<td style="min-width:200px">{prog}</td><td style="width:22%">{last}</td>'
@@ -506,10 +507,8 @@ signals and scores. Runs by itself when a new feed is due.</div></td>
 <td class="small">Last started {wlast}</td>
 <td class="num"><form method="post" action="/settings/jobs/weekly_cycle/run"><button class="sm" type="submit">Run now</button></form></td>
 </tr></tbody></table></section>"""
-    inner = (f'<p class="lede">Every job runs by itself: it works through its backlog in short '
-             f'slices, best firms first, then checks back on its own schedule. Run now makes a job '
-             f'go immediately; Pause holds it until you resume it.</p>{weekly_html}{"".join(sections)}')
-    return _frame("Jobs", "jobs", "What Bellwether is doing in the background.", inner, msg)
+    inner = f'{weekly_html}{"".join(sections)}'
+    return _frame("Jobs", "jobs", "Jobs run automatically. Use Run now to force a run.", inner, msg)
 
 
 @router.post("/settings/jobs/{kind}/{action}")

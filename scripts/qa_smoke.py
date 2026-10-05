@@ -124,8 +124,8 @@ def post(base: str, path: str, data: dict, timeout: float = 30.0) -> int:
 
 ROUTES: list[tuple[str, str]] = [
     ("/", "Product lists"),
-    ("/", "What moved"),
-    ("/", "How complete the data is"),
+    ("/", "Recent activity"),
+    ("/", "Data coverage"),
     ("/ask", "Bellwether AI"),
     ("/lists/phh_fund", "PHH Fund I"),
     ("/lists/phh_fund?cov=full", "Why it scores"),
@@ -163,7 +163,7 @@ ROUTES: list[tuple[str, str]] = [
     ("/people?officers=1&reach=email", "People"),
     ("/people/export.csv?on=acubooth", "name"),
     ("/saved", "Saved lists"),
-    ("/enrichment", "What Bellwether already reads"),
+    ("/enrichment", "Built-in sources"),
     ("/enrichment/websites", "Firm websites"),
     ("/enrichment/verify", "Check addresses now"),
     ("/settings", "Settings"),
@@ -316,7 +316,7 @@ def pass_routes(base: str, detail_crd: str) -> None:
     routes = ROUTES + [(f"/firm/{detail_crd}", "Status and owner"),
                        (f"/firm/{detail_crd}", "Hiring and departures"),
                        (f"/firm/{detail_crd}", "Contacts and sources"),
-                       (f"/firm/{detail_crd}", "Ask about this firm"),
+                       (f"/firm/{detail_crd}", 'data-scope="firm:'),
                        (f"/firm/{detail_crd}?p=phh_fund", "Gates passed")]
     for path, marker in routes:
         try:

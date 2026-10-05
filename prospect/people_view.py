@@ -192,9 +192,7 @@ individual feed. It runs by itself; this page fills in as soon as it has.</p></d
            + "".join(ui.opt(k, on, products.product(k)["name"]) for k in products.product_keys()))
     body_html = f"""<div class="pg wide">
 <div class="head"><div><h1>People</h1>
-<div class="lede">Everyone registered at an adviser firm, from the SEC&rsquo;s individual records,
-with officers&rsquo; titles from Schedule A and every email and direct line Bellwether has found.
-Open a person to see their firm.</div></div>
+</div>
 <div class="acts"><a class="btn" href="/people/export.csv?{qs}" data-noprefetch>Export</a></div></div>
 <form class="filters" method="get" action="/people">
 <label>Search<input type="search" name="q" value="{esc(q)}" placeholder="Person or firm"></label>

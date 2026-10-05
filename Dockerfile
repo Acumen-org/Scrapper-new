@@ -39,6 +39,12 @@ COPY prospect/ ./prospect/
 COPY scripts/ ./scripts/
 COPY config/ ./config/
 
+# Refuse to publish an image with broken imports, scoring, seat boundaries or
+# verification semantics. These checks do not contact providers or a database.
+RUN python -m compileall -q prospect scripts \
+ && python -m scripts.qa_style \
+ && python -m scripts.qa_requirements
+
 # Runs unprivileged.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin bellwether
 

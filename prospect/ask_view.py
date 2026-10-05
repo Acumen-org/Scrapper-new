@@ -30,25 +30,20 @@ SUGGESTIONS = [
 def ask_page(q: str = Query("")):
     st = ai.status()
     if st["configured"]:
-        sub = (f"Connected to {esc(st['provider'])} ({esc(st['model'])}). "
-               f"{max(0, st['limit'] - st['used_today']):,} questions left today.")
+        sub = f"{max(0, st['limit'] - st['used_today']):,} AI calls remaining today"
     elif users.is_admin(current_account()):
-        sub = ('No AI provider connected yet, so this box finds firms by name. '
-               '<a href="/settings/ai">Connect one in Settings</a>.')
+        sub = 'Name search only. <a href="/settings/ai">Connect AI</a>.'
     else:
-        sub = "No AI provider connected yet, so this box finds firms by name. An admin can connect one."
+        sub = "Name search only. Ask an admin to connect AI."
     sugs = "".join(f"<button type='button'>{esc(s)}</button>" for s in SUGGESTIONS)
     body = f"""<div class="pg narrow">
 <div class="aipanel aiwide" data-scope="global" data-ask="{esc(q)}">
 <div class="aihead"><canvas data-orb="breathing" data-size="64" data-px="72" data-tint="#d9d4ca"
  aria-label="Bellwether AI"></canvas><div><h1>Bellwether AI</h1>
 <div class="s">{sub}</div></div></div>
-<p class="lede">Ask in plain English about firms, people, hiring, contacts or fit. Answers
-come from Bellwether's own data: the firms listed are the ones that matched, and anything
-the data does not hold is said plainly.</p>
 <div class="aisugs">{sugs}</div>
 <div class="aimsgs"></div>
-<form class="aiform"><input type="text" placeholder="Ask anything" autocomplete="off" autofocus>
+<form class="aiform"><input type="text" aria-label="Ask Bellwether" placeholder="Ask about firms, people or product fit" autocomplete="off" autofocus>
 <button class="primary" type="submit">Ask</button></form>
 </div></div>"""
     return page("Bellwether AI", "ask", body, orbs=True)

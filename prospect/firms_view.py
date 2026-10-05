@@ -236,13 +236,9 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
            if view == "contacts" else
            f'<a class="btn" href="/firms/export.csv?{qs}" data-noprefetch>Export firms</a>')
     title = f"Saved list: {esc(list_name)}" if list_name else "Firms"
-    lede = ("A list you built by hand. Everything below works on it: filter it, "
-            "open its contacts, export it." if list_name else
-            "Every adviser in the SEC and state feeds. Search any firm, "
-            "whether or not it made a product list.")
     user_list_opts = "".join(ui.opt(str(l["id"]), list_id, l["name"]) for l in lists)
     body = f"""<div class="pg wide">
-<div class="head"><div><h1>{title}</h1><div class="lede">{lede}</div></div>
+<div class="head"><div><h1>{title}</h1></div>
 <div class="acts">{exp}</div></div>
 <form class="filters" method="get" action="/firms">
 <input type="hidden" name="view" value="{esc(view if view != 'firms' else '')}">
@@ -459,7 +455,7 @@ def saved():
         for v in views)
     body = f"""<div class="pg narrow">
 <div class="head"><div><h1>Saved lists</h1>
-<div class="lede">Firm lists you build by hand, like playlists, and views you saved from
+<div class="lede">Firm lists and saved filters from
 any list or search. Add a firm to a list from any row with <b>+ list</b>.</div></div></div>
 <section class="s"><div class="s-head"><h2>Your lists</h2></div>
 <form class="filters" method="post" action="/lists/create" style="border-top:0;padding-top:0">

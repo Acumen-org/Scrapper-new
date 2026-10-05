@@ -44,6 +44,8 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from functools import lru_cache
+import math
 
 import yaml
 
@@ -153,6 +155,10 @@ def _validate(c: dict) -> None:
             if cr["key"] in seen:
                 raise ValueError(f"{p.get('name', key)}: two factors share the key {cr['key']}")
             seen.add(cr["key"])
+            point_values = [lv[0] for lv in cr.get("levels", [])]
+            point_values += [b[1] for b in cr.get("bands", [])]
+            if any(not math.isfinite(float(v)) or not 0 <= float(v) <= 100 for v in point_values):
+                raise ValueError(f"{p.get('name', key)}: {cr['label']} points must be between 0 and 100")
             kind = cr.get("kind")
             if kind == "field":
                 if cr.get("field") not in FIELDS:
@@ -261,11 +267,46 @@ def hashlib_short(text: str) -> str:
 
 def level_label(crit: dict, points: float) -> str:
     """The config's description of the level a points value sits at."""
-    for pts, label in crit.get("levels", []):
+    for pts, label in sorted(crit.get("levels", []), key=lambda lv: -float(lv[0])):
         if points >= pts:
             return label
     lv = crit.get("levels") or [[0, ""]]
     return lv[-1][1]
+
+
+@lru_cache(maxsize=1)
+def _base_levels() -> dict:
+    return {(key, c["key"]): tuple(float(lv[0]) for lv in c.get("levels", []))
+            for key, p in base_cfg()["products"].items() for c in p["criteria"]}
+
+
+def level_inputs(key: str, criterion: dict) -> list[float]:
+    """Stable evaluator levels, independent of an admin's edited point values."""
+    return list(criterion.get("level_inputs") or
+                _base_levels().get((key, criterion["key"]), ()))
+
+
+def configured_points(key: str, criterion: dict, points: float) -> float:
+    """Apply edited levels to built-in evaluators, including continuous scores.
+
+    Numeric bands and yes/no factors already read their configured points.
+    Built-in evaluators return their original scale; piecewise interpolation
+    preserves that scale by default and honours edits without changing evidence.
+    """
+    if criterion.get("bands") or criterion.get("kind") in ("field", "flag"):
+        return points
+    inputs = level_inputs(key, criterion)
+    levels = criterion.get("levels") or []
+    if not inputs or len(inputs) != len(levels):
+        return points
+    scale = dict(zip(inputs, (float(lv[0]) for lv in levels)))
+    scale.setdefault(0.0, 0.0)
+    scale.setdefault(100.0, 100.0)
+    ordered = sorted(scale)
+    for lo, hi in zip(ordered, ordered[1:]):
+        if lo <= points <= hi:
+            return scale[lo] + (scale[hi] - scale[lo]) * (points - lo) / (hi - lo)
+    return points
 
 
 def band(value, bands, default=0.0) -> float:
@@ -1419,6 +1460,7 @@ def evaluate(key: str, d: dict) -> Result:
         out = fn(d, c, key)
         pts, ev = out[0], out[1]
         known = out[2] if len(out) > 2 else True
+        pts = configured_points(key, c, float(pts))
         ov = d["overrides"].get((key, c["key"]))
         manual = None
         if ov is not None and c.get("manual"):

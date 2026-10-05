@@ -720,7 +720,9 @@ def nav(active: str) -> str:
     feed = esc(n["feed"]) if n.get("feed") else "none yet"
     pages = json.dumps(_pages_for(acct))
     return (f'<script>window.BW_PAGES={pages};</script>' + PALETTE_HTML +
-            '<nav class="side">'
+            '<header class="mobile-nav"><a href="/">Bellwether</a>'
+            '<button type="button" data-nav-toggle aria-controls="main-nav" aria-expanded="false">Menu</button></header>'
+            '<nav class="side" id="main-nav" aria-label="Main navigation">'
             f'<a class="brand" href="/"><div class="mark">B</div><div class="t">{APP_NAME}'
             '<small>Adviser intelligence</small></div></a>'
             f'<button class="find" type="button" onclick="palShow()">{ICONS["search"]}'
@@ -748,7 +750,7 @@ def page(title: str, active: str, body: str, css: str = "", js: str = "",
         f'<title>{esc(title)} . {APP_NAME}</title>{FAVICON}'
         f'<link rel="stylesheet" href="{asset("app.css")}">'
         f'{("<style>" + css + "</style>") if css else ""}{SPECULATION}</head>'
-        f'<body>{nav(active)}{body}'
+        f'<body>{nav(active)}<main id="main-content">{body}</main>'
         f'<script src="{asset("app.js")}" defer></script>{orb}'
         f'{("<script>" + js + "</script>") if js else ""}'
         f'</body></html>', status_code=status)
@@ -973,24 +975,21 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
                 f'</form>')
         if ms:
             pw_form = (f'<details class="alt"{" open" if show_password else ""}>'
-                       f'<summary>Use a Bellwether password instead</summary>{form}</details>')
+                       f'<summary>Sign in with a password</summary>{form}</details>')
         else:
             pw_form = form
-    hint = ("Use your Acumen Strategy Microsoft account. Your name marks the firms you "
-            "own and the reviews you clear." if ms else
-            "Your name marks the firms you own and the reviews you clear, so a shared "
-            "queue stays honest about who did what.")
+    hint = '<p class="hint">Use your Acumen Strategy account.</p>' if ms else ""
     return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to {APP_NAME}</title>{FAVICON}
 <link rel="stylesheet" href="{asset('app.css')}"></head>
 <body class="signin-page"><main class="signin">
-<canvas data-orb="breathing" data-size="64" data-px="132" data-tint="#d9d4ca"
+<canvas data-orb="breathing" data-size="64" data-px="112" data-tint="#ef7e89"
  aria-label="Bellwether"></canvas>
 <h1>{APP_NAME}</h1>
-<p class="sub">Intelligence on every adviser firm, and who to call next</p>
+<p class="sub">Adviser intelligence</p>
 {err}{ms_btn}{pw_form}
-<p class="hint">{hint}</p>
+{hint}
 </main><script type="module" src="{asset('orb.js')}"></script></body></html>""",
                         status_code=status or (200 if not error else 401))
 

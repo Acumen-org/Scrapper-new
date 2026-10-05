@@ -69,7 +69,7 @@ def frame(title: str, tab: str, lede: str, inner: str, msg: str = "", err: str =
     flash = (f'<div class="note good">{esc(msg)}</div>' if msg else "") + \
             (f'<div class="note bad">{esc(err)}</div>' if err else "")
     body = (f'<div class="pg"><div class="head"><div><h1>{esc(title)}</h1>'
-            f'<div class="lede">{lede}</div></div></div>{tabs(tab)}{flash}{inner}</div>')
+            f'{("<p class=lede>" + lede + "</p>") if lede else ""}</div></div>{tabs(tab)}{flash}{inner}</div>')
     return page(title, "enrichment", body)
 
 
@@ -136,12 +136,10 @@ def sources(msg: str = Query(""), err: str = Query("")):
     c.close()
     kinds = "".join(ui.opt(k, "directory", v) for k, v in KINDS.items())
     add = f"""<section class="s"><h2>Add directories or websites</h2>
-<p class="lede">Paste the address of any page that lists advisers (an association's find-an-advisor
-results, a conference speaker list, a state society directory, a firm's team page), one per line.
-Bellwether reads it straight away and tells you whether its generic reader can pull people, firms,
-emails and phones from it, or whether the site needs a custom adapter (for example because results
-only appear after a search form, behind a login, or are blocked by the site's robots rules). Check
-each site's terms of use before adding it.</p>
+<p class="lede">Add source URLs. Sites that need a custom script are flagged after testing.</p>
+<details class="source-help"><summary>Supported sources</summary>
+<p>Advisor directories, association listings and conference pages. Search forms, login walls
+and blocked pages may need a custom adapter. Check each site's terms of use before adding it.</p></details>
 <form method="post" action="/enrichment/add" style="max-width:820px">
 <label>Name<input type="text" name="name" placeholder="For example: NAPFA advisor directory, Texas" required></label>
 <label style="margin-top:10px">Addresses, one per line<textarea name="urls" required placeholder="https://..."></textarea></label>
@@ -152,15 +150,13 @@ each site's terms of use before adding it.</p>
 <label class="inline" style="margin-top:16px"><input type="checkbox" name="robots" value="1" checked> Obey the site's robots rules</label>
 </div>
 <button class="primary" type="submit" style="margin-top:12px">Add and test</button></form></section>"""
-    inner = (f'<section class="s" style="border-top:0;padding-top:0"><div class="s-head"><h2>Directories and websites you added</h2></div>'
+    inner = (f'<section class="s" style="border-top:0;padding-top:0"><div class="s-head"><h2>Your sources</h2></div>'
              f'<table><tbody>{"".join(srows) or "<tr><td class=empty>None yet. Add one below.</td></tr>"}</tbody></table></section>'
              f'{add}'
-             f'<section class="s"><div class="s-head"><h2>What Bellwether already reads</h2>'
-             f'<span class="more">Each firm&rsquo;s own website has its own tab</span></div>'
+             f'<section class="s"><div class="s-head"><h2>Built-in sources</h2></div>'
              f'<table><thead><tr><th>Source</th><th>What it gives</th><th>How often</th><th>Last run</th></tr></thead>'
              f'<tbody>{"".join(brow)}</tbody></table></section>')
-    return frame("Enrichment", "sources", "Where every fact in Bellwether comes from, and the "
-                 "directories and websites the team has added.", inner, msg, err)
+    return frame("Enrichment", "sources", "", inner, msg, err)
 
 
 @router.post("/enrichment/add")

@@ -227,14 +227,19 @@ def due(job: Job, st: dict, backlog: int | None) -> bool:
         return True
     if st.get("desired_state") == "paused":
         return False
-    if backlog:
-        return True
     nxt = st.get("next_run_at")
+    # A failed slice keeps its retry delay even if work remains in the queue.
+    # Otherwise a permanently failing source immediately runs again forever.
+    if backlog and st.get("last_status") not in ("failed", "timeout"):
+        return True
     if not nxt:
         return True
     try:
-        return datetime.fromisoformat(nxt) <= datetime.now(timezone.utc)
-    except ValueError:
+        due_at = datetime.fromisoformat(nxt)
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        return due_at <= datetime.now(timezone.utc)
+    except (ValueError, TypeError):
         return True
 
 
