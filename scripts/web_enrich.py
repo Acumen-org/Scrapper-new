@@ -465,6 +465,7 @@ def ask_ai(conn, run: FirmRun) -> int:
         return 0
     n = 0
     for _bare, text, url in run.ai_pages[:AI_PAGES_MAX]:
+        source_phones = {row['phone'] for row in harvest.extract_phones(text or '')}
         try:
             found = ai.extract_people(text, url, run.roster.names)
         except Exception:
@@ -491,8 +492,7 @@ def ask_ai(conn, run: FirmRun) -> int:
                     run.person_email.setdefault(key, email)
                     n += 1
             p = contacts.norm_phone(phone)
-            if (p and re.sub(r"\D", "", p)[-4:] in re.sub(r"\D", "", text or "")
-                    and not _shared(run, p, key)):
+            if p and p in source_phones and not _shared(run, p, key):
                 pin(conn, run.crd, "phone", p, "ai", person_key=key, person_name=name,
                     title=title, label=_phone_label(run, p, None, key), source_ref=url)
                 n += 1

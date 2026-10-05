@@ -1657,6 +1657,8 @@ def score_all(conn, progress=None) -> dict[str, int]:
                          " VALUES (?,?,?,?,?,?,?)", scope[i:i + 5000])
     rerank(conn)
     conn.commit()
+    if progress:
+        progress(len(feats), len(feats))
     return counts
 
 

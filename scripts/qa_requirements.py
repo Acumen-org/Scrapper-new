@@ -85,6 +85,18 @@ class FirmChatChecks(unittest.TestCase):
 
 
 class EnrichmentChecks(unittest.TestCase):
+    def test_ai_phone_must_match_the_complete_published_number(self):
+        from scripts import web_enrich
+        for number, expected in [('415-987-6789', 0), ('512-234-6789', 1)]:
+            run = web_enrich.FirmRun('123', '2026-10-05')
+            run.ai_pages = [(True, 'Morgan Ellis, direct 512-234-6789', 'https://qa.invalid/team')]
+            extractor = Mock()
+            extractor.extract_people.return_value = [{'name':'Morgan Ellis', 'phone':number}]
+            with patch.object(web_enrich, '_ai_module', return_value=extractor), \
+                    patch.object(web_enrich, 'pin') as pin:
+                web_enrich.ask_ai(Mock(), run)
+            self.assertEqual(pin.call_count, expected)
+
     def test_personal_and_role_mailboxes_stay_distinct(self):
         self.assertEqual(harvest.classify('morgan@northstarwealth.com')[1], 'personal')
         for local in ('info', 'hello', 'compliance'):
@@ -153,6 +165,19 @@ class SchedulerChecks(unittest.TestCase):
 
 
 class ScoringChecks(unittest.TestCase):
+    def test_full_rescore_reports_firms_that_fail_product_gates(self):
+        progress = Mock()
+        firms = {'1':{'raum':1}, '2':{'raum':2}}
+        with patch.object(products, 'init'), patch.object(products, 'stamp', return_value='test'), \
+                patch.object(products, 'load_features', return_value=firms), \
+                patch.object(products, 'rerank'), \
+                patch.object(products, 'evaluate_all', side_effect=[
+                    {'phh_fund':products.Result('phh_fund','gated')},
+                    {'phh_fund':products.Result('phh_fund','scored')} ]):
+            counts = products.score_all(Mock(), progress=progress)
+        self.assertEqual(counts['phh_fund'], 1)
+        progress.assert_called_with(2, 2)
+
     def test_edited_builtin_level_changes_actual_points(self):
         criterion={'key':'hnw_fit','levels':[[85,'Strong'],[60,'Medium'],[40,'Low'],[10,'Minimal']]}
         self.assertEqual(products.configured_points('phh_fund',criterion,75),60)
