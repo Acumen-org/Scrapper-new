@@ -78,7 +78,7 @@ def _field(key: str) -> str:
             ui.opt(ch, cur, CHOICE_LABEL.get(ch, ch)) for ch in s.choices) + '</select>')
     else:
         ctl = (f'<input type="text" name="{esc(key)}" value="{esc(settings.get(key, ""))}"'
-               f' placeholder="{esc(s.default)}"{dis} style="min-width:340px">')
+               f' placeholder="{esc(s.default)}"{dis} style="width:340px;max-width:100%;min-width:0">')
     return (f'<label style="margin-bottom:16px;max-width:640px">{esc(s.label)}{ctl}{hint}{pin}'
             f'</label>')
 

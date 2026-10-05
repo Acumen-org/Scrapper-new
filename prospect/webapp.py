@@ -983,14 +983,18 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to {APP_NAME}</title>{FAVICON}
 <link rel="stylesheet" href="{asset('app.css')}"></head>
-<body class="signin-page"><main class="signin">
-<canvas data-orb="breathing" data-size="64" data-px="112" data-tint="#ef7e89"
- aria-label="Bellwether"></canvas>
+<body class="signin-page">
+<div class="signin-scene" aria-hidden="true"><div class="signin-orbit"></div></div>
+<div class="signin-brand"><span>B</span> Bellwether</div>
+<main class="signin">
+<div class="signin-emblem"><canvas data-orb="weaving" data-size="64" data-px="188" data-tint="#ef7e89"
+ aria-label="Bellwether intelligence orb"></canvas></div>
 <h1>{APP_NAME}</h1>
 <p class="sub">Adviser intelligence</p>
 {err}{ms_btn}{pw_form}
 {hint}
-</main><script type="module" src="{asset('orb.js')}"></script></body></html>""",
+</main><footer class="signin-owner">Acumen Strategy</footer>
+<script type="module" src="{asset('orb.js')}"></script></body></html>""",
                         status_code=status or (200 if not error else 401))
 
 

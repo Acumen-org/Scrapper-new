@@ -133,7 +133,7 @@ def ask_firm(c, crd: str, q: str, history: list[dict], who: str) -> dict:
     if not text:
         return {"html": "<p>That firm is not in Bellwether.</p>", "text": ""}
     msgs = [{"role": h["role"], "content": str(h["content"])[:4000]}
-            for h in history[-6:] if h.get("role") in ("user", "assistant") and h.get("content")]
+            for h in history[-6:] if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")]
     msgs.append({"role": "user", "content": f"DATA ON THIS FIRM\n{text}\n\nQUESTION\n{q}"})
     out = ai.complete(SYSTEM, msgs, feature="ask", tier="smart", max_tokens=2500, who=who)
     return {"html": ai.md_to_html(out), "text": out}
@@ -149,13 +149,17 @@ def ask(c, q: str, scope: str = "global", history: list[dict] | None = None,
     if scope.startswith("firm:"):
         crd = scope[5:]
         if not ai.enabled("ask"):
-            return _offline(c, q)
+            if not ai.configured():
+                raise ai.AIError("Firm chat needs an AI provider. Ask an admin to connect one in Settings.")
+            if ai.budget_left() <= 0:
+                raise ai.AIError("Today's AI allowance is used up. It resets at midnight UTC.")
+            raise ai.AIError("Firm chat is disabled. Ask an admin to enable AI questions in Settings.")
         return ask_firm(c, crd, q, history, who)
     if not ai.enabled("ask"):
         return _offline(c, q)
 
     msgs = [{"role": h["role"], "content": str(h["content"])[:2000]}
-            for h in history[-6:] if h.get("role") in ("user", "assistant") and h.get("content")]
+            for h in history[-6:] if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")]
     msgs.append({"role": "user", "content": (
         f"{_vocab()}\n\nTurn this question into a Bellwether search. mode 'firm' when it is "
         f"about one named firm (put its name in firm_name); 'answer' when it needs a "

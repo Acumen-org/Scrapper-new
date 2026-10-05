@@ -73,11 +73,13 @@ async def api_ask(request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        return _j(False, error="Send a question and its firm context.")
     q = str(body.get("q") or "")
     scope = str(body.get("scope") or "global")
     history = body.get("history") if isinstance(body.get("history"), list) else []
     if scope.startswith("firm:") and not CRD_RE.match(scope[5:]):
-        scope = "global"
+        return _j(False, error="Invalid firm context. Reload the firm page.")
 
     def run():
         c = conn()

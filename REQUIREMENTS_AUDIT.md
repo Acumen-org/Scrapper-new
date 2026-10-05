@@ -60,6 +60,34 @@ test executes the actual fetch and render paths against localhost.
 
 ## Remaining production acceptance
 
+### Charcoal UI and firm chat follow-up (2026-10-05)
+
+- Replaced blue-tinted neutrals throughout the app with neutral charcoal.
+  The centered login now uses a larger Thinking Orb, orbital linework and
+  restrained red illumination. Reduced-motion behavior is preserved.
+- Firm pages now lead with a name/monogram identity and an overview containing
+  product fit with missing-factor counts, filing facts, asset history when
+  available, people and recent signals. Status editing is collapsed beside
+  notes and lists. All existing detailed tabs remain accessible.
+- Promoted firm-scoped AI to the first side panel and added a header shortcut.
+  Questions retain context for follow-ups during the current page session.
+  Pending submissions are locked, failures preserve the question with retry,
+  and expired sessions and timeouts have explicit errors. Unavailable firm AI
+  no longer silently searches the whole database. Invalid firm scope is rejected.
+- Home has clearer hierarchy and a collapsible geography view, reducing empty
+  vertical space without removing data. Narrow-screen search and settings fields
+  no longer overflow. Clearing a firm's status no longer crashes its page.
+- Validation: 24 offline regressions; authenticated smoke suite including role,
+  export, write and scoring checks; 200/200 concurrent requests while ingest
+  wrote; browser interaction and overflow checks from 320px through 1440px.
+  Firm-chat tests cover unavailable-provider responses, mocked successful replies,
+  follow-up history, duplicate prevention, recoverable HTTP errors, context
+  isolation between firms and malformed API requests. No browser JavaScript errors.
+- These tests used synthetic local records. Successful model answers were mocked;
+  production AI configuration and answer quality still require live acceptance.
+  Conversations are not persisted after navigation or reload. The production
+  integration acceptance items below remain outstanding.
+
 1. Register Microsoft Entra's Web callback as
    `https://bellwether.pmx.acumen-strategy.com/auth/microsoft/callback` and configure
    the tenant ID, client ID and secret in Settings. Complete real sign-in as Rahul

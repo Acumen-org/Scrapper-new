@@ -210,6 +210,10 @@
     var box = panel.querySelector(".aimsgs");
     var orb = panel.querySelector("canvas[data-orb]");
     var history = [];
+    var pending = false;
+    var inp = form && form.querySelector("input,textarea");
+    box.setAttribute("role", "log");
+    box.setAttribute("aria-live", "polite");
     function setOrb(s) { if (orb && window.BWOrb) window.BWOrb.set(orb, s); }
     function add(kind, html) {
       var d = document.createElement("div");
@@ -220,40 +224,84 @@
       return d;
     }
     function ask(q) {
-      if (!q) return;
+      if (!q || pending) return;
+      pending = true;
+      panel.setAttribute("aria-busy", "true");
+      panel.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+      if (inp) { inp.value = ""; inp.readOnly = true; }
+      var welcome = panel.querySelector(".ai-welcome");
+      if (welcome) welcome.hidden = true;
       add("me", esc(q));
       var wait = add("bot", '<span class="muted">Looking through the data</span>');
       setOrb("searching");
+      var controller = new AbortController();
+      var timeout = setTimeout(function () { controller.abort(); }, 90000);
       fetch("/api/ai/ask", {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ q: q, scope: panel.dataset.scope || "global", history: history.slice(-6) })
-      }).then(function (r) { return r.json(); }).then(function (d) {
+      }).then(function (r) {
+        if (r.status === 401 || (r.redirected && new URL(r.url).pathname === "/login"))
+          throw new Error("Your session expired. Sign in again to continue.");
+        if (!r.ok) throw new Error("The request failed. Try again.");
+        return r.json();
+      }).then(function (d) {
+        if (!d.ok) throw new Error(d.error || "No answer was returned. Try again.");
         setOrb("composing");
         wait.innerHTML = d.html || esc(d.error || "No answer");
         history.push({ role: "user", content: q });
         history.push({ role: "assistant", content: d.text || "" });
         setTimeout(function () { setOrb("breathing"); }, 900);
         box.scrollTop = box.scrollHeight;
-      }).catch(function () {
-        wait.innerHTML = '<span class="bad">Bellwether AI could not be reached.</span>';
+      }).catch(function (error) {
+        var message = error.name === "AbortError" ? "The answer took too long. Try again." :
+          error.message === "Failed to fetch" ? "Could not reach Bellwether. Try again." : error.message;
+        wait.innerHTML = '<span class="bad">' + esc(message) + '</span>';
+        var retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "sm ai-retry";
+        retry.textContent = "Retry";
+        retry.addEventListener("click", function () { if (!pending) { wait.remove(); ask(q); } });
+        wait.appendChild(document.createElement("br"));
+        wait.appendChild(retry);
+        if (inp) inp.value = q;
         setOrb("breathing");
+      }).finally(function () {
+        clearTimeout(timeout);
+        pending = false;
+        panel.setAttribute("aria-busy", "false");
+        panel.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
+        if (inp) inp.readOnly = false;
+        box.scrollTop = box.scrollHeight;
       });
     }
     if (form) {
       form.addEventListener("submit", function (e) {
         e.preventDefault();
-        var inp = form.querySelector("input");
         var q = inp.value.trim();
-        inp.value = "";
         ask(q);
+      });
+      if (inp.tagName === "TEXTAREA") inp.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          form.requestSubmit();
+        }
       });
     }
     panel.querySelectorAll(".aisugs button").forEach(function (b) {
-      b.addEventListener("click", function () { ask(b.textContent.trim()); });
+      b.addEventListener("click", function () { ask(b.dataset.question || b.textContent.trim()); });
     });
     var pre = panel.dataset.ask;
     if (pre) ask(pre);
   }
   document.querySelectorAll(".aipanel").forEach(aiPanel);
+  document.querySelectorAll("[data-focus-ai]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var chat = document.getElementById("firm-ai");
+      if (!chat) return;
+      chat.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+      chat.querySelector("textarea").focus({ preventScroll: true });
+    });
+  });
 })();

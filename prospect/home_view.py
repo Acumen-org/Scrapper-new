@@ -368,8 +368,8 @@ def home(type: str = "", product: str = "", state: str = ""):
     if d.get("scored_at"):
         fresh.append(f"scores computed {esc(ui.ago(d['scored_at']))}")
 
-    body = f"""<div class="pg wide">
-<div class="head dashboard-head"><h1 class="hello">Home</h1>{askbar}</div>
+    body = f"""<div class="pg wide dashboard">
+<div class="head dashboard-head"><h1 class="hello">Intelligence overview</h1>{askbar}</div>
 <section class="s" style="margin-top:22px;padding-top:0;border-top:0"><div class="kpis">{kpis}</div></section>
 <section class="s"><div class="s-head"><h2>Product lists</h2>
 <span class="more">Amber marks incomplete data</span></div>
@@ -380,7 +380,7 @@ def home(type: str = "", product: str = "", state: str = ""):
 <div class="feed">{feed_html}</div></div>
 <div><div class="s-head"><h2>Hiring activity</h2><a class="more" href="/firms?sort=hires&on=any">View firms</a></div>
 <div class="hbars">{hire_rows or '<p class="empty">Hiring data appears after the people feed loads.</p>'}</div>
-<div class="s-head" style="margin-top:30px"><h2>Firms by state</h2></div>{_map(d["by_state"])}</div>
+</div>
 </div></section>
 <section class="s"><div class="cols-21">
 <div><div class="s-head"><h2>Data coverage</h2>
@@ -393,6 +393,7 @@ def home(type: str = "", product: str = "", state: str = ""):
 <div><div class="s-head"><h2>Your firms</h2><a class="more" href="/firms?owner=me">View all</a></div>{mine_html}</div>
 <div><div class="s-head"><h2>Watching</h2></div>{watch_html}</div>
 </div></section>
+<details class="geography"><summary>Firms by state <span>Explore locations</span></summary>{_map(d["by_state"])}</details>
 <p class="meta" style="margin-top:34px">{" . ".join(fresh)}</p>
 </div>"""
     return page("Home", "home", body, orbs=True)

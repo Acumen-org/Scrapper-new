@@ -497,9 +497,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                     f'<div class="why">{esc(t["description"])}'
                     f'{" <span class=chip>" + esc(t["state"]) + "</span>" if t["state"] else ""}</div></div>')
     trig_html = (f'<div class="timeline">{"".join(trow)}</div>' if trow else
-                 '<p class="muted">Nothing has changed at this firm since tracking began: no '
-                 'assets jump, no custodian move, no advisors added. Steady is a finding, not '
-                 'missing data.</p>')
+                 '<p class="muted">No recorded signals.</p>')
 
     # ---- their own words
     points = []
@@ -647,24 +645,34 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     c.close()
     hiring_html = _hiring_section(None, crd, stats, mv, series)
 
-    # ---- overview
-    hl = []
-    if best:
-        hl.append(f'<div class="tp"><b>Best fit:</b> {esc(products.product(best.product)["name"])} '
-                  f'at {best.score:.0f} on {best.coverage:.0f}% known data'
-                  + (f'; the biggest unknown is {esc(best.missing[0].lower())}' if best.missing else "") + '.</div>')
-    if trigs:
-        hl.append(f'<div class="tp"><b>Latest change:</b> {esc(trigs[0]["description"])} '
-                  f'<span class="muted">({esc(ui.ago(trigs[0]["detected_date"]))})</span></div>')
-    if stats and (stats.get("hires_12m") or stats.get("departures_12m")):
-        hl.append(f'<div class="tp"><b>Team:</b> {stats.get("hires_12m") or 0} joined and '
-                  f'{stats.get("departures_12m") or 0} left in the last 12 months.</div>')
+    # A firm's identity comes from its actual filings, people and history.
+    profile_name = nice_name(f["business_name"] or f["legal_name"])
+    initials = "".join(w[0] for w in profile_name.split()[:2]) or "B"
     reach_word = (f'{flags["verified"]} verified address{"es" if flags["verified"] != 1 else ""}'
                   if flags["verified"] else
                   f'{flags["personal"]} named people with an address' if flags["personal"] else
                   "no named contacts yet")
-    hl.append(f'<div class="tp"><b>Reach:</b> {esc(reach_word)}'
-              f'{", " + str(flags["direct"]) + " direct lines" if flags["direct"] else ""}.</div>')
+    fit_cards = []
+    for r in scored[:3]:
+        missing = (f'{len(r.missing)} missing factor{"s" if len(r.missing) != 1 else ""}'
+                   if r.missing else "All factors known")
+        fit_cards.append(f'<a class="fit-preview" href="#fit-{r.product}">'
+                         f'<span>{esc(products.product(r.product)["name"])}</span>'
+                         f'<strong>{r.score:.0f}<small>/100</small></strong>'
+                         f'<div class="coverage-track" aria-hidden="true"><i style="width:{r.coverage:.0f}%"></i></div>'
+                         f'<span class="meta">{r.coverage:.0f}% known &middot; {missing}</span></a>')
+    profile_people = roster[:3] or unmatched[:3]
+    people_preview = "".join(
+        f'<a class="person-preview" href="#people"><span class="person-initial" aria-hidden="true">'
+        f'{esc(_pretty_name(person["name"])[:1])}</span><span><b>{esc(_pretty_name(person["name"]))}</b>'
+        f'<small>{esc(roles.clean_title(person.get("title") or "Registered adviser"))}</small></span>'
+        f'<span aria-hidden="true">&nearr;</span></a>' for person in profile_people)
+    profile_facts = f'''<dl class="kv">
+<dt>Services</dt><dd>{esc(", ".join(svc)) or "Not recorded"}</dd>
+<dt>Custodian</dt><dd>{esc(cust.get("primary_canonical") or "Not recorded")}</dd>
+<dt>Registered</dt><dd>{esc(f["registered_date"] or "Not recorded")}</dd>
+<dt>Latest filing</dt><dd>{esc(f["filing_date"] or "Not recorded")}</dd>
+</dl>'''
     if ai.configured():
         if brief:
             from .api_view import brief_html
@@ -677,11 +685,19 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                            f'data-busy="Writing" data-target="#brief">Write an AI brief</button>')
     else:
         brief_block = ""
-    overview_html = (f'<div class="cols-2"><div>{"".join(hl)}</div><div>{brief_block}</div></div>'
-                     if brief_block else "".join(hl))
+    overview_html = f'''<div class="s-head"><h2>Product fit</h2><a class="more" href="#fit">All factors &nearr;</a></div>
+<div class="fit-previews">{"".join(fit_cards) or '<p class="muted">No scored products. Review eligibility in Fit.</p>'}</div>
+<div class="profile-block"><div class="s-head"><h2>Firm profile</h2><a class="more" href="#assets">Assets &amp; clients &nearr;</a></div>
+{profile_facts}{aum_chart(history) if len(history) > 1 else ""}</div>
+<div class="profile-block"><div class="s-head"><h2>People to know</h2><a class="more" href="#people">View team &nearr;</a></div>
+{people_preview or '<p class="muted">No people recorded yet.</p>'}
+<a class="reach-summary" href="#contacts">{esc(reach_word.capitalize())}{", " + str(flags["direct"]) + " direct lines" if flags["direct"] else ""} &nearr;</a></div>
+<div class="profile-block"><div class="s-head"><h2>Recent signals</h2><a class="more" href="#signals">View all &nearr;</a></div>
+{"<div class=timeline>" + "".join(trow[:3]) + "</div>" if trow else '<p class="muted">No recorded signals.</p>'}</div>
+{('<div class="profile-block"><h2>AI brief</h2>' + brief_block + '</div>') if brief_block else ""}'''
 
     # ---- rail
-    cur_status = fs["status"] if fs else ""
+    cur_status = (fs["status"] or "") if fs else ""
     status_opts = "".join(
         f'<option value="{esc(s)}"{" selected" if s == cur_status else ""}>'
         f'{esc(s.capitalize() if s else "Not set")}</option>' for s in [""] + STATUSES)
@@ -692,16 +708,13 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     star = "&#9733; Watching" if watched else "&#9734; Watch"
     crumb = (f'<a href="/lists/{focus}">{esc(products.product(focus)["name"])}</a>'
              if focus else '<a href="/firms">Firms</a>')
-    saved_note = ('<div class="note good" style="margin:0 0 14px">Saved. The scores below '
-                  'already reflect it.</div>' if saved else "")
+    saved_note = ('<div class="note good" style="margin:0 0 14px">Saved.</div>' if saved else "")
     sub_bits = [x for x in (escn(f["business_name"]) if f["business_name"] and f["business_name"] != f["legal_name"] else "",
                             esc(" ".join(z for z in (nice_name(f["city"]), f["state"]) if z)),
                             f"CRD {esc(crd)}", website, esc(f["phone"]) if f["phone"] else "") if x]
     tags = [f'<span class="chip line">{esc(f["regulator"] or "")}-registered</span>' if f["regulator"] else ""]
-    for r in scored[:3]:
-        tags.append(f'<a class="chip{" warn" if r.coverage < 100 else ""}" href="#fit-{r.product}">'
-                    f'{esc(products.product(r.product)["name"])} {r.score:.0f}'
-                    f' &middot; {r.coverage:.0f}% known</a>')
+    for service in svc[:2]:
+        tags.append(f'<span class="chip line">{esc(service.capitalize())}</span>')
     if fs and fs["status"]:
         tags.append(f'<span class="chip warn">{esc(fs["status"])}{" . " + esc(fs["owner"]) if fs["owner"] else ""}</span>')
     if mail.get("platform") in ("m365", "google"):
@@ -728,21 +741,31 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     secnav = "".join(f'<a href="#{k}">{esc(lbl)}{f"<span class=cnt>{n}</span>" if n else ""}</a>'
                      for k, lbl, n in nav_items)
 
-    ai_rail = f"""<div class="panel aipanel" data-scope="firm:{esc(crd)}">
-<div class="aihead"><canvas data-orb="breathing" data-size="32" data-px="30" data-tint="#d9d4ca" aria-label="Bellwether AI"></canvas>
-<div><div class="t">Bellwether AI</div></div></div>
-<div class="aisugs"><button type="button">Who should I contact first, and how?</button>
-<button type="button">Which product fits best and why?</button>
-<button type="button">What changed here recently?</button></div>
-<div class="aimsgs"></div>
-<form class="aiform"><input type="text" aria-label="Ask about this firm" placeholder="Ask about this firm" autocomplete="off"><button class="sm primary" type="submit">Ask</button></form>
+    ai_state = ("Uses this firm's records" if ai.enabled("ask") else
+                "AI unavailable. An admin can review AI settings." if ai.configured() else
+                "An admin needs to connect an AI provider.")
+    ai_rail = f"""<div class="panel aipanel firm-chat" id="firm-ai" data-scope="firm:{esc(crd)}">
+<div class="aihead"><canvas data-orb="breathing" data-size="32" data-px="36" data-tint="#ef7e89" aria-label="Bellwether AI"></canvas>
+<div><div class="t">Bellwether AI</div><div class="s">{ai_state}</div></div></div>
+<div class="ai-context"><span class="context-dot" aria-hidden="true"></span><span>{esc(profile_name)}</span><small>CRD {esc(crd)}</small></div>
+<div class="ai-welcome"><h3>Explore this firm</h3>
+<div class="aisugs"><button type="button" data-question="Who should I contact first at this firm, and how?">Find the right contact <span aria-hidden="true">&nearr;</span></button>
+<button type="button" data-question="Which product fits this firm best and what evidence is missing?">Compare product fit <span aria-hidden="true">&nearr;</span></button>
+<button type="button" data-question="What changed at this firm recently?">Explain recent changes <span aria-hidden="true">&nearr;</span></button></div></div>
+<div class="aimsgs" role="log" aria-label="Conversation about {esc(profile_name)}" aria-live="polite" aria-relevant="additions text"></div>
+<form class="aiform"><label class="sr-only" for="firm-question">Ask about this firm</label>
+<textarea id="firm-question" rows="2" maxlength="1500" placeholder="Ask about this firm..." required></textarea>
+<div class="ai-compose-foot"><span>Enter to send &middot; Shift + Enter for a new line</span><button class="sm primary" type="submit">Send</button></div></form>
 </div>"""
 
     body = f"""<div class="pg wide">
 <div class="crumb"><a href="/">Home</a> / {crumb}</div>
-<div class="hero"><div class="head" style="padding-bottom:0"><div><h1>{escn(f['legal_name'])}</h1>
+<div class="hero firm-hero"><div class="head" style="padding-bottom:0"><div class="firm-identity"><div class="firm-monogram" aria-hidden="true">{esc(initials)}</div><div>
+<h1>{escn(f['legal_name'])}</h1>
 <div class="sub">{" &middot; ".join(sub_bits)}</div></div>
+ </div>
 <div class="acts">
+<button type="button" class="primary" data-focus-ai>Ask Bellwether AI &nearr;</button>
 <form method="post" action="/watch/{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}">
 <button type="submit" class="{"primary" if watched else ""}">{star}</button></form>
 </div></div>
@@ -751,7 +774,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <div class="kpis" style="margin:8px 0 0">{kpis}</div>
 <nav class="secnav">{secnav}</nav>
 <div class="dossier"><div>
-<section class="s anchor" id="overview"><h2>Overview</h2>{overview_html}</section>
+<section class="s anchor" id="overview" aria-label="Firm overview">{overview_html}</section>
 <section class="s anchor" id="fit"><div class="s-head"><h2>Fit</h2>
 <span class="more">{len(scored)} of {len(results)} lists &middot; Amber marks missing data</span></div>
 {_fit_section(crd, results, ranks, focus)}</section>
@@ -765,13 +788,13 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <section class="s anchor" id="compliance"><div class="s-head"><h2>Compliance and registration</h2></div>{comp_html}</section>
 </div>
 <aside class="rail">
-<div class="panel"><h3>Status and owner</h3>
+{ai_rail}
+<details class="panel firm-manage"><summary>Status and owner<span>{esc(cur_status.capitalize() or "Not set")}</span></summary>
 <form method="post" action="/firm/{esc(crd)}/status">
 <label>Status<select name="status">{status_opts}</select></label>
 <label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}" placeholder="Blank assigns to you"></label>
 <button class="primary sm" type="submit">Save</button></form>
-<details class="source-help"><summary>Scoring impact</summary><p>Meetings and customers raise relationship points.</p></details></div>
-{ai_rail}
+<details class="source-help"><summary>Scoring impact</summary><p>Meetings and customers raise relationship points.</p></details></details>
 <div class="panel"><h3>Notes</h3>
 <form method="post" action="/firm/{esc(crd)}/note">
 <textarea name="note" placeholder="Call notes, context, next step">{esc(note[0]['note'] if note else '')}</textarea>
