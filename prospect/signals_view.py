@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import products, ui
 from .webapp import (safe_back, escn, PRODUCTS, TYPE_LABEL, caveat, conn, current_owner, esc, money,
-                     page, qs_join, tier_chip)
+                     page, qs_join, score_cell)
 
 router = APIRouter()
 
@@ -73,7 +73,7 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
     rows = c.execute(f"""
         SELECT t.id, t.crd, t.trigger_type, t.detected_date, t.description, t.priority,
                a.state, f.legal_name, f.city, f.state AS st, f.raum,
-               sc.best_product, sc.best_tier, sc.best_score
+               sc.best_product, sc.best_score, sc.best_coverage
         {base}
         ORDER BY t.detected_date DESC, ABS(t.priority) DESC
         LIMIT ? OFFSET ?""", args + [per, (page_n - 1) * per]).fetchall()
@@ -101,8 +101,8 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
                if age > 200 else "")
         best = ""
         if r["best_product"]:
-            best = (f'{tier_chip(r["best_tier"])} <span class="small soft">'
-                    f'{esc(ui.product_name(r["best_product"]))}</span>')
+            best = (f'{score_cell(r["best_score"], r["best_coverage"], show_cov=False)}'
+                    f'<div class="meta">{esc(ui.product_name(r["best_product"]))}</div>')
         acts = (f'<span class="chip">{esc(r["state"])}</span>' if r["state"] else
                 f'<form method="post" action="/signals/action" class="act">'
                 f'<input type="hidden" name="tid" value="{r["id"]}">'

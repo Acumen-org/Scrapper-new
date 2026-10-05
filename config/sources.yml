@@ -106,6 +106,45 @@ sources:
       warn_pct_change: 5.0
       min_plausible: 15000
 
+  # Every registered investment adviser representative: current employers by
+  # CRD, previous registrations with dates, ten years of employment history,
+  # exams, designations and disclosure flags. Rosters and hiring movement for
+  # every tracked firm come from here. Same manifest as the firm feeds and the
+  # same no-archive rule, but zipped, about 169MB packed and 1.1GB of XML in
+  # roughly twenty members. Only people registered somewhere today are listed,
+  # so someone who leaves the industry simply drops out of the next file.
+  ia_indvl_feed:
+    label: "SEC individual investment adviser representative weekly compilation feed"
+    manifest_url: "https://reports.adviserinfo.sec.gov/reports/CompilationReports/CompilationReports.manifest.json"
+    base_url: "https://reports.adviserinfo.sec.gov/reports/CompilationReports/"
+    retains_history_upstream: false
+    cadence: weekly
+    wanted:
+      - key: indvl
+        filename_prefix: "IA_INDVL_Feed_"
+        compression: zip
+    # Asserted on the first <Indvl> of the first member. Registration category
+    # in this feed is always RA; broker registration shows only as
+    # Info/@actvAGReg, which is why that attribute is required.
+    expected_structure:
+      root_element: "IAPDIndividualReport"
+      record_element: "Indvl"
+      required_paths:
+        - "Info"
+        - "CrntEmps"
+        - "Exms"
+        - "Dsgntns"
+        - "PrevRgstns"
+        - "EmpHss"
+        - "DRPs"
+      required_attributes:
+        Info: ["indvlPK", "lastNm", "firstNm", "actvAGReg", "link"]
+        "CrntEmps/CrntEmp": ["orgPK", "orgNm"]
+        "CrntEmps/CrntEmp/CrntRgstns/CrntRgstn": ["regCat", "stDt"]
+    row_count:
+      warn_pct_change: 5.0
+      min_plausible: 300000
+
   # Owners and executive officers with their real titles, from Schedule A of the
   # FOIA archive. This is the only bulk source of who runs each firm and what
   # their position is. Ends 2024-12-31 like the rest of the archive; officer

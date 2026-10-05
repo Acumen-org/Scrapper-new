@@ -43,12 +43,15 @@ OPTIONAL_CLOSE = {"p", "li", "tr", "td", "th", "thead", "tbody", "option",
                   "dt", "dd", "html", "head", "body"}
 
 PAGES = [
-    "/", "/lists/phh_fund", "/lists/phh_fund?view=rules",
-    "/lists/phh_fund?view=disqualified", "/lists/phh_1031", "/lists/phh_jv",
-    "/lists/acubooth", "/lists/acubooth?tier=A&sig=1", "/lists/glynac",
-    "/signals", "/signals?product=glynac", "/firms", "/firms?view=contacts",
-    "/firms?on=acubooth&tier=A", "/firms?q=WEALTH", "/saved",
-    "/health", "/review", "/review?kind=match_13f", "/quit",
+    "/", "/ask", "/lists/phh_fund", "/lists/phh_fund?view=scoring",
+    "/lists/phh_fund?view=disqualified", "/lists/phh_jv?cov=gaps",
+    "/lists/acubooth", "/lists/acubooth?sig=1&cov=full", "/lists/glynac",
+    "/signals", "/firms", "/firms?view=contacts", "/firms?on=acubooth&sort=hires",
+    "/firms?q=WEALTH", "/people", "/people?joined=365", "/saved",
+    "/enrichment", "/enrichment/websites", "/enrichment/verify",
+    "/settings", "/settings/users", "/settings/signin", "/settings/ai",
+    "/settings/verify", "/settings/crawl", "/settings/jobs", "/settings/system",
+    "/settings/review", "/settings/review?kind=match_13f", "/quit",
 ]
 
 # Filled in at run time: the firm detail page needs a real CRD.
@@ -146,9 +149,25 @@ class Checker(HTMLParser):
         return "".join(self.text_parts)
 
 
+_SITE_CSS: list[str] = []
+
+
+def site_css() -> str:
+    """The shared stylesheet every page links (/static/app.css), read from the
+    source tree so the class and variable checks see the rules that apply."""
+    if not _SITE_CSS:
+        p = Path(__file__).resolve().parent.parent / "prospect" / "static" / "app.css"
+        _SITE_CSS.append(p.read_text(encoding="utf-8") if p.exists() else "")
+    return _SITE_CSS[0]
+
+
+def page_css(html: str) -> str:
+    return " ".join(re.findall(r"<style[^>]*>(.*?)</style>", html, re.S)) + " " + site_css()
+
+
 def css_var_check(page: str, html: str) -> None:
     """Every var(--x) must have a --x definition somewhere in the page CSS."""
-    styles = " ".join(re.findall(r"<style[^>]*>(.*?)</style>", html, re.S))
+    styles = page_css(html)
     inline = " ".join(re.findall(r'style="([^"]*)"', html))
     defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", styles))
     used = set(re.findall(r"var\((--[a-z0-9-]+)", styles + " " + inline))
@@ -163,14 +182,14 @@ def css_class_check(page: str, html: str) -> None:
     This is the check that actually finds formatting problems: an element given
     a class that was renamed, typo'd, or whose rule lives in a stylesheet the
     page does not include renders unstyled, and nothing else notices."""
-    styles = " ".join(re.findall(r"<style[^>]*>(.*?)</style>", html, re.S))
+    styles = page_css(html)
     defined = set(re.findall(r"\.([A-Za-z][\w-]*)", styles))
     used: set[str] = set()
     for attr in re.findall(r'class="([^"]*)"', html):
         used.update(a for a in attr.split() if a)
     # Classes deliberately carrying no style: they exist for JS hooks or as
     # data markers, and PAGE_CSS styles some only via element+class selectors.
-    hooks = {"krow", "on", "done"}
+    hooks = {"krow", "on", "done", "go", "anchor", "fit"}
     missing = sorted(c for c in used - defined - hooks if not c.startswith("js-"))
     if missing:
         warn(page, f"class used with no CSS rule: {missing}")

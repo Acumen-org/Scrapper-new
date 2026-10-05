@@ -1,6 +1,6 @@
 """Product scoring: how every firm is judged against every product list.
 
-The rules live in config/products.yml (gates, weights, points per level, tiers)
+The rules live in config/products.yml (gates, weights, points per level)
 and in one small function per criterion here, which decides which level a firm
 reaches and says why in plain words. Nothing in this module is a hidden
 number: a threshold is either in the config or named in the evidence string
@@ -23,6 +23,19 @@ Manual levels: criteria marked `manual` accept a level set by an SDR on the
 firm page (score_override). The manual level replaces the computed one for
 that firm, and the evidence says who set it, when and why, so a number never
 looks computed when a person chose it.
+
+Missing data: every criterion says whether its level rests on a finding or on
+data Bellwether does not have yet. Unknown criteria earn nothing, and each
+score carries its coverage (the share of the weight that rests on real data)
+and its potential (what it would be if every unknown came back at full
+marks). A firm with half its data missing therefore shows a modest score, an
+amber coverage figure and the list of what is missing, never a high number
+built from the half that happened to be known.
+
+One list per product, ranked by score; there are no tiers. The weights,
+levels and thresholds come from config/products.yml, overlaid by whatever an
+admin or the product's owner has changed on the Scoring screen (stored in
+scoring_config, with every version kept in scoring_history).
 """
 
 from __future__ import annotations
@@ -39,29 +52,192 @@ from . import config
 # ------------------------------------------------------------------ config
 
 _CFG: dict | None = None
+_CFG_STATE: dict = {"t": 0.0, "fp": None}
+CFG_CHECK_S = 10.0
+
+CONFIG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS scoring_config (
+    product    TEXT PRIMARY KEY,     -- a product key, or '_global'
+    body       TEXT NOT NULL,        -- JSON: the product's whole definition
+    updated_by TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scoring_history (
+    id         INTEGER PRIMARY KEY,
+    product    TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    note       TEXT,
+    updated_by TEXT,
+    updated_at TEXT NOT NULL
+);
+"""
+
+GLOBAL_KEYS = ("major_custodians", "phh_focus_states")
+
+
+def base_cfg() -> dict:
+    """The shipped defaults, exactly as config/products.yml states them."""
+    return yaml.safe_load((config.CONFIG_DIR / "products.yml").read_text(
+        encoding="utf-8"))
+
+
+def _overrides() -> tuple[dict, str | None]:
+    """Edited product definitions from the database, and a fingerprint that
+    changes whenever any of them does."""
+    from . import db
+    try:
+        c = db.connect()
+        try:
+            rows = c.execute("SELECT product, body, updated_at FROM scoring_config"
+                             ).fetchall()
+        finally:
+            c.close()
+    except Exception:
+        return {}, None
+    out = {r["product"]: json.loads(r["body"]) for r in rows}
+    fp = "|".join(sorted(f"{r['product']}@{r['updated_at']}" for r in rows))
+    return out, fp
+
+
+def _merge(base: dict, over: dict) -> dict:
+    merged = json.loads(json.dumps(base))
+    g = over.get("_global") or {}
+    for k in GLOBAL_KEYS:
+        if k in g:
+            merged[k] = g[k]
+    for key, body in over.items():
+        if key in merged["products"]:
+            merged["products"][key] = body
+    return merged
 
 
 def cfg() -> dict:
+    """The rules in force. Re-checks the database at most every few seconds, so
+    a change saved on the Scoring screen reaches every process (both web
+    workers and the background jobs) without a restart."""
     global _CFG
-    if _CFG is None:
-        _CFG = yaml.safe_load((config.CONFIG_DIR / "products.yml").read_text(
-            encoding="utf-8"))
-        _validate(_CFG)
+    import time as _t
+    if _CFG is not None and _t.monotonic() - _CFG_STATE["t"] < CFG_CHECK_S:
+        return _CFG
+    over, fp = _overrides()
+    _CFG_STATE["t"] = _t.monotonic()
+    if _CFG is not None and fp == _CFG_STATE["fp"]:
+        return _CFG
+    merged = _merge(base_cfg(), over)
+    try:
+        _validate(merged)
+    except ValueError:
+        # A stored edit that no longer validates (say, a criterion removed
+        # from the code) must not take every list down: fall back to the
+        # shipped rules, which always validate.
+        merged = base_cfg()
+        _validate(merged)
+    _CFG = merged
+    _CFG_STATE["fp"] = fp
     return _CFG
+
+
+def reload() -> None:
+    _CFG_STATE["t"] = 0.0
 
 
 def _validate(c: dict) -> None:
     """Fail loudly on a config that cannot mean what it says."""
     for key, p in c["products"].items():
-        w = sum(cr["weight"] for cr in p["criteria"])
-        if w != 100:
-            raise ValueError(f"products.yml: {key} weights add to {w}, not 100")
+        crits = [cr for cr in p["criteria"] if float(cr.get("weight", 0)) > 0]
+        w = round(sum(float(cr["weight"]) for cr in crits), 6)
+        if abs(w - 100) > 0.01:
+            raise ValueError(f"{p.get('name', key)}: weights add to {w:g}, not 100")
+        seen = set()
         for cr in p["criteria"]:
-            if cr["key"] not in CRITERIA:
-                raise ValueError(f"products.yml: {key}.{cr['key']} has no evaluator")
+            if cr["key"] in seen:
+                raise ValueError(f"{p.get('name', key)}: two factors share the key {cr['key']}")
+            seen.add(cr["key"])
+            kind = cr.get("kind")
+            if kind == "field":
+                if cr.get("field") not in FIELDS:
+                    raise ValueError(f"{p.get('name', key)}: unknown data field {cr.get('field')}")
+                if not cr.get("bands"):
+                    raise ValueError(f"{p.get('name', key)}: {cr['label']} needs bands")
+            elif kind == "flag":
+                if cr.get("field") not in FLAGS and not str(cr.get("field", "")).startswith(
+                        ("tag:", "web:")):
+                    raise ValueError(f"{p.get('name', key)}: unknown yes/no field {cr.get('field')}")
+            elif cr["key"] not in CRITERIA:
+                raise ValueError(f"{p.get('name', key)}: {cr['key']} has no evaluator")
         for g in p.get("gates", []) + p.get("disqualifiers", []):
             if g["key"] not in GATES:
-                raise ValueError(f"products.yml: {key} gate {g['key']} has no evaluator")
+                raise ValueError(f"{p.get('name', key)}: gate {g['key']} has no evaluator")
+
+
+def save_product(key: str, body: dict, who: str, note: str = "") -> None:
+    """Store an edited product definition after validating it in context."""
+    from . import db
+    if key != "_global" and key not in base_cfg()["products"]:
+        raise ValueError("unknown product")
+    over, _ = _overrides()
+    over[key] = body
+    _validate(_merge(base_cfg(), over))
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    c = db.connect()
+    try:
+        c.executescript(CONFIG_SCHEMA)
+        text = json.dumps(body, separators=(",", ":"))
+        c.execute("INSERT INTO scoring_config (product, body, updated_by, updated_at)"
+                  " VALUES (?,?,?,?) ON CONFLICT(product) DO UPDATE SET body=excluded.body,"
+                  " updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                  (key, text, who or None, now))
+        c.execute("INSERT INTO scoring_history (product, body, note, updated_by, updated_at)"
+                  " VALUES (?,?,?,?,?)", (key, text, note or None, who or None, now))
+        c.commit()
+    finally:
+        c.close()
+    reload()
+
+
+def reset_product(key: str, who: str) -> None:
+    """Back to the shipped defaults for one product (history keeps the old)."""
+    from . import db
+    c = db.connect()
+    try:
+        c.executescript(CONFIG_SCHEMA)
+        c.execute("DELETE FROM scoring_config WHERE product=?", (key,))
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        c.execute("INSERT INTO scoring_history (product, body, note, updated_by, updated_at)"
+                  " VALUES (?,?,?,?,?)", (key, "{}", "reset to defaults", who or None, now))
+        c.commit()
+    finally:
+        c.close()
+    reload()
+
+
+def history(key: str, limit: int = 12) -> list[dict]:
+    from . import db
+    try:
+        c = db.connect()
+        try:
+            return [dict(r) for r in c.execute(
+                "SELECT id, note, updated_by, updated_at FROM scoring_history"
+                " WHERE product=? ORDER BY id DESC LIMIT ?", (key, limit))]
+        finally:
+            c.close()
+    except Exception:
+        return []
+
+
+def edited(key: str) -> dict | None:
+    """Who last changed a product's scoring, if anyone has."""
+    from . import db
+    try:
+        c = db.connect()
+        try:
+            r = c.execute("SELECT updated_by, updated_at FROM scoring_config"
+                          " WHERE product=?", (key,)).fetchone()
+        finally:
+            c.close()
+    except Exception:
+        return None
+    return dict(r) if r else None
 
 
 def product_keys() -> list[str]:
@@ -73,15 +249,14 @@ def product(key: str) -> dict:
 
 
 def stamp() -> str:
-    return f"{config.load().stamp}|products.v{cfg()['config_version']}"
+    fp = _CFG_STATE.get("fp")
+    edit = "" if not fp else "+edited:" + hashlib_short(fp)
+    return f"{config.load().stamp}|products.v{cfg()['config_version']}{edit}"
 
 
-def tier_for(key: str, score: float) -> tuple[str, str]:
-    for threshold, label, action in product(key)["tiers"]:
-        if score >= threshold:
-            return str(label), action
-    t = product(key)["tiers"][-1]
-    return str(t[1]), t[2]
+def hashlib_short(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()[:8]
 
 
 def level_label(crit: dict, points: float) -> str:
@@ -151,12 +326,13 @@ def load_features(conn, crds: list[str] | None = None) -> dict[str, dict]:
     for r in _safe(conn, f"""SELECT crd, legal_name, regulator, is_era, raum,
             raum_disc, hnw_aum, hnw_clients, retail_aum, retail_clients,
             clients_total, iar_count, total_employees, q7b, state, country,
-            registered_date, website
+            registered_date, website, disciplinary
             FROM firm_current WHERE 1=1{only('crd')}""", a):
         d = dict(r)
         d.update(tags={}, funds=None, seg=None, cust=None, h13f={}, files_13f=False,
                  officers=[], owners=[], triggers=[], filings_12m=0, mail=None, web={},
-                 status=None, overrides={}, extra=None, brochure=None)
+                 status=None, overrides={}, extra=None, brochure=None, people=None,
+                 reach={"personal": 0, "verified": 0}, web_scanned=False)
         F[d["crd"]] = d
     if not F:
         return F
@@ -231,6 +407,18 @@ def load_features(conn, crds: list[str] | None = None) -> dict[str, dict]:
              FROM score_override WHERE 1=1{only('crd')}""",
          lambda d, r: d["overrides"].__setitem__((r["product"], r["criterion"]),
                                                  dict(r)))
+    each(f"SELECT * FROM firm_people_stats WHERE 1=1{only('crd')}",
+         lambda d, r: d.__setitem__("people", dict(r)))
+    each(f"""SELECT crd,
+               COUNT(DISTINCT person_key) FILTER (WHERE person_key != '' AND is_role=0
+                     AND verify_status NOT IN ('invalid','no_mail_server')
+                     AND (confidence >= 60 OR verify_status='valid')) AS personal,
+               COUNT(*) FILTER (WHERE verify_status='valid') AS verified
+             FROM contact_point WHERE kind='email'{only('crd')} GROUP BY crd""",
+         lambda d, r: d.__setitem__("reach", {"personal": r["personal"] or 0,
+                                              "verified": r["verified"] or 0}))
+    each(f"SELECT crd FROM web_enrich_state WHERE status='ok'{only('crd')}",
+         lambda d, r: d.__setitem__("web_scanned", True))
     return F
 
 
@@ -279,6 +467,21 @@ def not_found(d, what: str) -> str:
     if brochure_read(d):
         return f"No {what} in the brochure or filings"
     return f"No {what} in filings; brochure not read yet"
+
+
+def unknown(pts, ev: str):
+    """A level that rests on missing data rather than on a finding. The score
+    counts it as zero and the screen shows it as missing, so a firm never
+    looks strong because something about it is unknown."""
+    return pts, ev, False
+
+
+def negative(d, pts, what: str):
+    """Nothing found. That is a finding once the brochure has been read, and
+    missing data until then."""
+    if brochure_read(d):
+        return pts, not_found(d, what)
+    return unknown(pts, not_found(d, what))
 
 
 def hnw_share(d) -> float:
@@ -523,6 +726,8 @@ GATES = {
 # Each returns (points 0-100, evidence).
 
 def c_hnw_fit(d, c, key):
+    if not d["raum"] or d["hnw_aum"] is None:
+        return unknown(0, "Client mix not reported")
     s, a = hnw_share(d), avg_hnw(d)
     ev = f"HNW is {_pct(s)} of assets, {_money(a)} per HNW client"
     if s >= 0.60 and a >= 2e6:
@@ -545,7 +750,7 @@ def c_alts_use(d, c, key):
     t = d["tags"].get("alternatives")
     if t and t["present"]:
         return (45 if (t["hits"] or 0) >= 2 else 20), said(d, "alternatives")
-    return 0, not_found(d, "alternatives")
+    return negative(d, 0, "alternatives")
 
 
 def c_central_process(d, c, key):
@@ -561,7 +766,7 @@ def c_central_process(d, c, key):
         return 55, ic_ev
     if has(d, "model_portfolios"):
         return 55, said(d, "model_portfolios")
-    return 25, not_found(d, "central investment process")
+    return negative(d, 25, "central investment process")
 
 
 def c_portfolio_need(d, c, key):
@@ -570,7 +775,7 @@ def c_portfolio_need(d, c, key):
         return 80, said(d, "real_assets_income")
     if has(d, "real_assets_income"):
         return 55, said(d, "real_assets_income")
-    return 25, not_found(d, "stated need for income or real assets")
+    return negative(d, 25, "stated need for income or real assets")
 
 
 def phh_13f(d) -> tuple[int, float, list[str]]:
@@ -592,7 +797,7 @@ def c_re_familiarity(d, c, key):
         return 30, f"13F holds {', '.join(names)}"
     if has(d, "real_estate_direct"):
         return 30, said(d, "real_estate_direct")
-    return 0, not_found(d, "real estate")
+    return negative(d, 0, "real estate")
 
 
 def c_ops_fit(d, c, key):
@@ -605,7 +810,7 @@ def c_ops_fit(d, c, key):
         return 60, f"Custodies at {cust}"
     if cust:
         return 30, f"Custodian {cust}; K-1 and private fund support unknown"
-    return 30, "Custodian not reported"
+    return unknown(30, "Custodian not reported")
 
 
 def _status_points(d, mapping: dict, default=None):
@@ -630,6 +835,8 @@ def c_relationship(d, c, key):
 
 
 def c_repeat_potential(d, c, key):
+    if d["iar_count"] is None and d["hnw_clients"] is None:
+        return unknown(0, "Advisor and client counts not reported")
     iar, h = d["iar_count"] or 0, d["hnw_clients"] or 0
     ev = f"{iar:,} advisors, {h:,} HNW clients"
     if iar >= 10 or h >= 200:
@@ -646,10 +853,14 @@ def c_exchange_frequency(d, c, key):
         if (t["hits"] or 0) >= 5 or (t["distinct_phrases"] or 0) >= 3:
             return 60, said(d, "exchange_1031")
         return 28, said(d, "exchange_1031")
+    if not brochure_read(d):
+        return unknown(0, "Brochure not read yet")
     return 0, "No 1031 language in the brochure"
 
 
 def c_owner_client_fit(d, c, key):
+    if not d["raum"] or d["hnw_aum"] is None:
+        return unknown(0, "Client mix not reported")
     s, a = hnw_share(d), avg_hnw(d)
     ev = f"HNW is {_pct(s)} of assets, {_money(a)} per HNW client"
     if a >= 5e6:
@@ -664,7 +875,9 @@ def c_owner_client_fit(d, c, key):
 
 
 def c_intro_timing(d, c, key):
-    if (d["extra"] or {}).get("svc_financial_planning"):
+    if d["extra"] is None:
+        return unknown(33, "Services (Item 5.G) not read yet")
+    if d["extra"].get("svc_financial_planning"):
         return 67, "Offers financial planning (Item 5.G)"
     return 33, "No financial planning service reported"
 
@@ -673,6 +886,8 @@ def c_specialization(d, c, key):
     t = d["tags"].get("exchange_1031")
     if t and t["present"] and t["section_item"] in (4, 8):
         return 67, f"1031 work described in Item {t['section_item']} of the brochure"
+    if not brochure_read(d):
+        return unknown(33, "Brochure not read yet")
     return 33, "Generalist adviser"
 
 
@@ -688,13 +903,15 @@ def c_referral_potential(d, c, key):
         return 100, f"{d['hnw_clients']:,} HNW clients and owner or 1031 language"
     if tagged:
         return 50, said(d, "owner_clients" if has(d, "owner_clients") else "exchange_1031")
+    if not brochure_read(d):
+        return unknown(0, "Brochure not read yet")
     return 0, "No recurring owner client flow visible"
 
 
 def _geo(d, hit_pts, miss_pts, unset_pts):
     focus = [s.upper() for s in cfg().get("phh_focus_states") or []]
     if not focus:
-        return unset_pts, "PHH focus states not set"
+        return unknown(unset_pts, "PHH focus states not set in the scoring settings")
     if (d["state"] or "").upper() in focus:
         return hit_pts, f"Based in {d['state']}, a PHH focus state"
     return miss_pts, f"Based in {d['state']}, outside PHH focus states"
@@ -729,7 +946,7 @@ def c_direct_re(d, c, key):
         return 33, f"13F holds {', '.join(names)}"
     if has(d, "alternatives"):
         return 33, said(d, "alternatives")
-    return 0, not_found(d, "real estate")
+    return negative(d, 0, "real estate")
 
 
 def c_property_type(d, c, key):
@@ -738,11 +955,11 @@ def c_property_type(d, c, key):
     for t in ("private_real_estate", "real_estate_direct"):
         if has(d, t):
             return 33, said(d, t)
-    return 0, not_found(d, "property type")
+    return negative(d, 0, "property type")
 
 
 def c_capability_gap(d, c, key):
-    return 33, "Not yet known; set it after the first conversation"
+    return unknown(33, "Not yet known; set it after the first conversation")
 
 
 def c_geography_fit(d, c, key):
@@ -750,13 +967,13 @@ def c_geography_fit(d, c, key):
 
 
 def c_governance_fit(d, c, key):
-    return 50, "Not yet known; set it after the first conversation"
+    return unknown(50, "Not yet known; set it after the first conversation")
 
 
 def c_decision_speed(d, c, key):
     if advises_private_funds(d):
         return 100, "Already runs private funds, so it acts on live deals"
-    return 50, "Not yet known"
+    return unknown(50, "Not yet known")
 
 
 def c_jv_relationship(d, c, key):
@@ -766,10 +983,14 @@ def c_jv_relationship(d, c, key):
 
 # AcuBooth
 def c_hnw_assets(d, c, key):
+    if d["hnw_aum"] is None:
+        return unknown(0, "HNW assets not reported")
     return band(d["hnw_aum"] or 0, c["bands"]), f"{_money(d['hnw_aum'] or 0)} of HNW assets"
 
 
 def c_hnw_clients(d, c, key):
+    if d["hnw_clients"] is None:
+        return unknown(0, "HNW clients not reported")
     return band(d["hnw_clients"] or 0, c["bands"]), f"{d['hnw_clients'] or 0:,} HNW clients"
 
 
@@ -777,7 +998,7 @@ def c_schwab_share(d, c, key):
     cp = d["cust"] or {}
     s = cp.get("schwab_share_reported")
     if s is None:
-        return 0, "No custodian reported"
+        return unknown(0, "No custodian reported, so the Schwab share is unknown")
     return round(s * 100, 1), (f"Schwab holds {_pct(s)} of reported custody "
                                f"(as of {cp.get('as_of_filing_date')}); positions for "
                                f"late 2026, not accounts sellable today")
@@ -786,7 +1007,7 @@ def c_schwab_share(d, c, key):
 def c_clients_per_advisor(d, c, key):
     iar = d["iar_count"] or 0
     if not iar:
-        return 20, "No advisors reported"
+        return unknown(20, "No advisors reported")
     cpr = (d["hnw_clients"] or 0) / iar
     per = avg_hnw(d)
     mult = band(per, c["damping"], default=0.25)
@@ -796,6 +1017,8 @@ def c_clients_per_advisor(d, c, key):
 
 
 def c_advisors(d, c, key):
+    if d["iar_count"] is None:
+        return unknown(0, "Advisors not reported")
     return band(d["iar_count"] or 0, c["bands"]), f"{d['iar_count'] or 0:,} advisors"
 
 
@@ -803,7 +1026,7 @@ def c_advisors(d, c, key):
 def c_m365(d, c, key):
     m = d["mail"]
     if not m:
-        return 33, "Email platform not checked yet"
+        return unknown(33, "Email platform not checked yet")
     p = m["platform"]
     if p == "m365":
         return 100, f"Microsoft 365: {m['evidence']}"
@@ -811,7 +1034,9 @@ def c_m365(d, c, key):
         return 0, f"Google Workspace: {m['evidence']}"
     if p == "other":
         return 0, f"Not Microsoft 365: {m['evidence']}"
-    return 33, m["evidence"] or "Unknown"
+    if p in ("none", "no_domain"):
+        return 0, m["evidence"] or "No mail server"
+    return unknown(33, m["evidence"] or "Provider not identifiable")
 
 
 def c_black_diamond(d, c, key):
@@ -821,7 +1046,7 @@ def c_black_diamond(d, c, key):
     if plats:
         name = next(iter(plats))
         return 0, f"{name}: {plats[name]}"
-    return 33, "Portfolio platform not found in the brochure or website"
+    return unknown(33, "Portfolio platform not found in the brochure or website")
 
 
 GLYNAC_TRIGGER_POINTS = {"aum_jump": 80, "iar_growth": 65,
@@ -864,8 +1089,9 @@ def c_marketing(d, c, key):
     if socials:
         found.append("social media (" + ", ".join(socials[:3]) + ")")
     if not found:
-        return 0, ("No marketing flags in Item 5.L and no blog or social media found"
-                   if x else "Item 5.L not read yet")
+        if not x:
+            return unknown(0, "Item 5.L not read yet")
+        return 0, "No marketing flags in Item 5.L and no blog or social media found"
     return 20 * len(found), "Found: " + ", ".join(found)
 
 
@@ -886,7 +1112,7 @@ def c_portfolio_complexity(d, c, key):
 
 def c_compliance_owner(d, c, key):
     if not d["officers"]:
-        return 0, "No Schedule A roster on file"
+        return unknown(0, "No Schedule A roster on file")
     ccos = [o for o in d["officers"] if CCO_RE.search(o["title"] or "")]
     if not ccos:
         return 0, "No compliance officer named on Schedule A"
@@ -908,6 +1134,8 @@ def c_assets_band(d, c, key):
 
 
 def c_providers(d, c, key):
+    if d["cust"] is None and d["funds"] is None:
+        return unknown(0, "No custodian or fund service providers on file")
     n, bits = 0, []
     k = (d["cust"] or {}).get("reported_custodians") or 0
     if k:
@@ -921,6 +1149,140 @@ def c_providers(d, c, key):
             bits.append(label)
     pts = 100 if n >= 5 else 60 if n >= 3 else 20 if n >= 1 else 0
     return pts, (", ".join(bits) if bits else "None reported")
+
+
+# Factors an admin can add from the Scoring screen without code: any number
+# in this catalogue scored by bands, or any yes/no below scored by two levels.
+# The function returns None when the value is not known, which the score
+# treats as missing data like any other criterion.
+
+def _years_registered(d):
+    try:
+        y = int((d["registered_date"] or "")[:4])
+    except ValueError:
+        return None
+    return date.today().year - y
+
+
+def _ppl(field):
+    return lambda d: (d["people"] or {}).get(field) if d["people"] else None
+
+
+def _growth(d):
+    p = d["people"]
+    if not p or not p.get("headcount"):
+        return None
+    start = (p["headcount"] or 0) - (p.get("net_12m") or 0)
+    return (p.get("net_12m") or 0) / start if start > 0 else None
+
+
+def _avg_client(d):
+    return d["raum"] / d["clients_total"] if d["raum"] and d["clients_total"] else None
+
+
+FIELDS: dict[str, tuple[str, str, object]] = {
+    "raum": ("Assets under management", "money", lambda d: d["raum"]),
+    "hnw_aum": ("HNW assets", "money", lambda d: d["hnw_aum"]),
+    "hnw_clients": ("HNW clients", "int", lambda d: d["hnw_clients"]),
+    "hnw_share": ("HNW share of assets", "pct",
+                  lambda d: hnw_share(d) if d["raum"] and d["hnw_aum"] is not None else None),
+    "avg_client": ("Average client size", "money", _avg_client),
+    "avg_hnw_client": ("Average HNW client size", "money",
+                       lambda d: avg_hnw(d) if d["hnw_clients"] else None),
+    "clients_total": ("Clients", "int", lambda d: d["clients_total"]),
+    "iar_count": ("Advisors (Item 5.B)", "int", lambda d: d["iar_count"]),
+    "total_employees": ("Employees", "int", lambda d: d["total_employees"]),
+    "private_funds": ("Private funds advised", "int", fund_count),
+    "filings_12m": ("ADV amendments in 12 months", "int", lambda d: d["filings_12m"]),
+    "years_registered": ("Years registered", "int", _years_registered),
+    "headcount": ("People on IAPD now", "int", _ppl("headcount")),
+    "hires_12m": ("Advisors hired in 12 months", "int", _ppl("hires_12m")),
+    "departures_12m": ("Advisors who left in 12 months", "int", _ppl("departures_12m")),
+    "headcount_growth": ("Headcount growth, 12 months", "pct", _growth),
+    "personal_emails": ("Named people with an email", "int",
+                        lambda d: d["reach"]["personal"]),
+    "verified_emails": ("Verified email addresses", "int", lambda d: d["reach"]["verified"]),
+    "signals_90d": ("Signals in the last 90 days", "int",
+                    lambda d: sum(1 for t in d["triggers"]
+                                  if recency(t["detected_date"]) >= 0.84)),
+}
+
+
+def _mail_is(platform):
+    def f(d):
+        m = d["mail"]
+        if not m or m["platform"] not in ("m365", "google", "other", "none"):
+            return None
+        return m["platform"] == platform
+    return f
+
+
+FLAGS: dict[str, tuple[str, object]] = {
+    "m365": ("Email runs on Microsoft 365", _mail_is("m365")),
+    "google": ("Email runs on Google Workspace", _mail_is("google")),
+    "files_13f": ("Files 13F", lambda d: bool(d["files_13f"])),
+    "financial_planning": ("Offers financial planning (Item 5.G)",
+                           lambda d: None if d["extra"] is None
+                           else bool(d["extra"].get("svc_financial_planning"))),
+    "sec_registered": ("SEC-registered", lambda d: d["regulator"] == "SEC"),
+    "independent": ("Independent (no bank, insurer or wirehouse control)",
+                    lambda d: captive_reason(d) is None),
+    "has_disclosure": ("Discloses a disciplinary event (Item 11)",
+                       lambda d: None if d.get("disciplinary") is None
+                       else d.get("disciplinary") == "Y"),
+    "private_funds_any": ("Advises any private fund", advises_private_funds),
+    "has_personal_email": ("Has a named person with an email",
+                           lambda d: d["reach"]["personal"] > 0),
+}
+
+
+def flag_value(d, field: str):
+    if field.startswith("tag:"):
+        tag = field[4:]
+        if has(d, tag):
+            return True
+        return False if brochure_read(d) else None
+    if field.startswith("web:"):
+        sig = field[4:]
+        if sig in d["web"]:
+            return True
+        return False if d["web_scanned"] else None
+    return FLAGS[field][1](d)
+
+
+def flag_label(field: str) -> str:
+    if field.startswith("tag:"):
+        return "Brochure mentions " + tag_label(field[4:]).lower()
+    if field.startswith("web:"):
+        return "Website shows " + field[4:].replace("_", " ")
+    return FLAGS.get(field, (field,))[0]
+
+
+def fmt_field(kind: str, v) -> str:
+    if v is None:
+        return "-"
+    if kind == "money":
+        return _money(v)
+    if kind == "pct":
+        return f"{v * 100:.0f}%"
+    return f"{v:,.0f}" if isinstance(v, (int, float)) else str(v)
+
+
+def c_field(d, c, key):
+    label, kind, fn = FIELDS[c["field"]]
+    v = fn(d)
+    if v is None:
+        return unknown(0, f"{label}: not known")
+    return band(v, c["bands"]), f"{label}: {fmt_field(kind, v)}"
+
+
+def c_flag(d, c, key):
+    v = flag_value(d, c["field"])
+    label = flag_label(c["field"])
+    if v is None:
+        return unknown(0, f"{label}: not known yet")
+    return (float(c.get("yes", 100)), f"{label}: yes") if v else (
+        float(c.get("no", 0)), f"{label}: no")
 
 
 CRITERIA = {
@@ -999,14 +1361,20 @@ class Result:
     product: str
     status: str                      # scored | gated | disqualified
     reason: str = ""
-    score: float = 0.0
-    tier: str = "-"
+    score: float = 0.0               # points earned on known data, 0 to 100
+    coverage: float = 100.0          # share of the weight resting on known data
+    potential: float = 0.0           # the score if every unknown scored full marks
+    tier: str = ""                   # retired; kept so old callers do not break
     action: str = ""
     gates: list = field(default_factory=list)
     components: list = field(default_factory=list)
     penalties: list = field(default_factory=list)
     signals: list = field(default_factory=list)
     pitch: str = ""
+
+    @property
+    def missing(self) -> list[str]:
+        return [c["label"] for c in self.components if not c["known"]]
 
     def top_reasons(self, n=2) -> list[dict]:
         """The criteria contributing most, for a one-line 'why' on a list."""
@@ -1033,30 +1401,46 @@ def evaluate(key: str, d: dict) -> Result:
         if not ok:
             return Result(key, "gated", reason=f"{g['label']}: {ev}", gates=gates)
     for g in p.get("disqualifiers", []):
+        if g.get("off"):
+            continue                      # switched off on the Scoring screen
         hit, ev = GATES[g["key"]](d, g, key)
         if hit:
             gates.append({"label": g["label"], "passed": False, "evidence": ev,
                           "disqualifier": True})
             return Result(key, "disqualified", reason=f"{g['label']}: {ev}",
                           gates=gates)
-    comps, total = [], 0.0
+    comps, total, known_w, unknown_w = [], 0.0, 0.0, 0.0
     for c in p["criteria"]:
-        pts, ev = CRITERIA[c["key"]](d, c, key)
+        weight = float(c.get("weight", 0))
+        if weight <= 0:
+            continue                      # switched off on the Scoring screen
+        kind = c.get("kind")
+        fn = c_field if kind == "field" else c_flag if kind == "flag" else CRITERIA[c["key"]]
+        out = fn(d, c, key)
+        pts, ev = out[0], out[1]
+        known = out[2] if len(out) > 2 else True
         ov = d["overrides"].get((key, c["key"]))
         manual = None
         if ov is not None and c.get("manual"):
             manual = {"by": ov["set_by"], "at": (ov["set_at"] or "")[:10],
                       "note": ov["note"] or "", "computed": pts,
-                      "computed_evidence": ev}
+                      "computed_evidence": ev, "computed_known": known}
             pts = float(ov["points"])
             ev = level_label(c, pts)
+            known = True                  # a person who knows has said so
         pts = max(0.0, min(100.0, float(pts)))
-        contrib = pts * c["weight"] / 100.0
+        contrib = pts * weight / 100.0 if known else 0.0
         total += contrib
-        comps.append({"key": c["key"], "label": c["label"], "weight": c["weight"],
-                      "points": round(pts, 1), "contrib": round(contrib, 2),
-                      "evidence": ev, "level": level_label(c, pts),
-                      "manual": bool(c.get("manual")), "override": manual})
+        if known:
+            known_w += weight
+        else:
+            unknown_w += weight
+        comps.append({"key": c["key"], "label": c["label"], "weight": weight,
+                      "points": round(pts, 1) if known else 0.0,
+                      "contrib": round(contrib, 2), "evidence": ev,
+                      "level": level_label(c, pts) if known else "Missing data",
+                      "known": known, "manual": bool(c.get("manual")),
+                      "override": manual})
     pens = []
     for pen in p.get("penalties", []):
         ev = PENALTIES[pen["key"]](d)
@@ -1064,8 +1448,8 @@ def evaluate(key: str, d: dict) -> Result:
             total -= pen["points"]
             pens.append({"label": pen["label"], "points": pen["points"], "evidence": ev})
     total = round(max(0.0, total), 1)
-    tier, action = tier_for(key, total)
-    return Result(key, "scored", score=total, tier=tier, action=action, gates=gates,
+    return Result(key, "scored", score=total, coverage=round(known_w, 1),
+                  potential=round(min(100.0, total + unknown_w), 1), gates=gates,
                   components=comps, penalties=pens, signals=signals_for(d, key),
                   pitch=pitch_for(key, d, comps))
 
@@ -1092,15 +1476,14 @@ CREATE TABLE IF NOT EXISTS product_score (
     PRIMARY KEY (crd, product)
 );
 CREATE INDEX IF NOT EXISTS ix_ps_rank ON product_score (product, status, rank);
-CREATE INDEX IF NOT EXISTS ix_ps_tier ON product_score (product, tier);
+CREATE INDEX IF NOT EXISTS ix_ps_crd ON product_score (crd);
 CREATE TABLE IF NOT EXISTS firm_scope (
     crd          TEXT PRIMARY KEY,
     best_score   REAL NOT NULL,      -- highest score across products, 0-100
     best_product TEXT NOT NULL,
     best_tier    TEXT,
     products     TEXT NOT NULL,      -- comma separated product keys it is scored for
-    -- Work order for every background job: tier first, then score, so tier A
-    -- on any product outranks tier B on another whatever the raw numbers.
+    -- Work order for every background job: the best score on any list.
     priority     REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_scope_best ON firm_scope (best_score DESC);
@@ -1119,9 +1502,14 @@ CREATE TABLE IF NOT EXISTS score_override (
 
 def init(conn) -> None:
     conn.executescript(SCHEMA)
+    conn.executescript(CONFIG_SCHEMA)
     have = {r[1] for r in conn.execute("PRAGMA table_info(firm_scope)")}
     if "priority" not in have:
         conn.execute("ALTER TABLE firm_scope ADD COLUMN priority REAL NOT NULL DEFAULT 0")
+    from .db import add_column
+    for col, typ in (("coverage", "REAL"), ("potential", "REAL"), ("missing", "TEXT")):
+        add_column(conn, "product_score", col, typ)
+    add_column(conn, "firm_scope", "best_coverage", "REAL")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_scope_pri ON firm_scope (priority DESC)")
     # Columns the scores read on tables other jobs own. An existing install
     # gets them here, at startup, rather than waiting for the brochure job.
@@ -1136,42 +1524,46 @@ def init(conn) -> None:
 def _detail(r: Result) -> str:
     return json.dumps({"components": r.components, "penalties": r.penalties,
                        "signals": r.signals, "pitch": r.pitch, "gates": r.gates,
-                       "action": r.action}, separators=(",", ":"))
+                       "coverage": r.coverage, "potential": r.potential},
+                      separators=(",", ":"))
 
 
 def _rows_for(crd: str, d: dict, results: dict[str, Result], now: str, st: str):
     for key, r in results.items():
         if r.status == "gated":
             continue
+        scored = r.status == "scored"
         yield (crd, key, r.status, r.reason or None,
-               r.score if r.status == "scored" else None,
-               r.tier if r.status == "scored" else None, None, d["raum"],
-               _detail(r), now, st)
+               r.score if scored else None, None, None, d["raum"],
+               _detail(r), now, st,
+               r.coverage if scored else None, r.potential if scored else None,
+               "|".join(r.missing) if scored else None)
 
 
 INSERT = ("INSERT INTO product_score (crd, product, status, reason, score, tier, rank,"
-          " raum, detail_json, computed_at, config_stamp)"
-          " VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+          " raum, detail_json, computed_at, config_stamp, coverage, potential, missing)"
+          " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 
 
 def rerank(conn, key: str | None = None) -> None:
-    """Rank within each product: score, then size, then CRD for a stable order."""
+    """Rank within each product: score, then how much of it rests on known
+    data, then size, then CRD so the order never shuffles between runs."""
     keys = [key] if key else product_keys()
     for k in keys:
         conn.execute("""UPDATE product_score p SET rank = r.rn FROM (
-            SELECT crd, ROW_NUMBER() OVER (ORDER BY score DESC, raum DESC NULLS LAST,
-                                           crd) rn
+            SELECT crd, ROW_NUMBER() OVER (ORDER BY score DESC, coverage DESC NULLS LAST,
+                                           raum DESC NULLS LAST, crd) rn
             FROM product_score WHERE product=? AND status='scored') r
             WHERE p.crd = r.crd AND p.product = ?""", (k, k))
         conn.execute("UPDATE product_score SET rank=NULL WHERE product=?"
                      " AND status!='scored'", (k,))
 
 
-TIER_WEIGHT = {"A": 300, "B": 200, "C": 100}
-
-
 def _priority(r: Result) -> float:
-    return TIER_WEIGHT.get(r.tier, 0) + r.score
+    """Work order for every background job: the best score a firm has on any
+    list. Coverage breaks ties, so a firm whose score is already well founded
+    is enriched before an identical score resting on guesses."""
+    return r.score + r.coverage / 1000.0
 
 
 def _scope_row(crd: str, results: dict[str, Result]):
@@ -1179,8 +1571,8 @@ def _scope_row(crd: str, results: dict[str, Result]):
     if not scored:
         return None
     best = max(scored, key=_priority)
-    return (crd, best.score, best.product, best.tier,
-            ",".join(r.product for r in scored), _priority(best))
+    return (crd, best.score, best.product, None,
+            ",".join(r.product for r in scored), _priority(best), best.coverage)
 
 
 def score_all(conn, progress=None) -> dict[str, int]:
@@ -1208,16 +1600,17 @@ def score_all(conn, progress=None) -> dict[str, int]:
     conn.execute("DELETE FROM firm_scope")
     for i in range(0, len(scope), 5000):
         conn.executemany("INSERT INTO firm_scope (crd, best_score, best_product,"
-                         " best_tier, products, priority) VALUES (?,?,?,?,?,?)",
-                         scope[i:i + 5000])
+                         " best_tier, products, priority, best_coverage)"
+                         " VALUES (?,?,?,?,?,?,?)", scope[i:i + 5000])
     rerank(conn)
     conn.commit()
     return counts
 
 
 def rescore_firm(conn, crd: str) -> dict[str, Result]:
-    """Recompute one firm after a manual level or status change, in place."""
-    init(conn)
+    """Recompute one firm after a manual level or status change, in place.
+    No init() here: this runs inside a request, and schema work belongs to
+    startup, where it cannot queue behind readers."""
     feats = load_features(conn, [crd])
     d = feats.get(crd)
     if d is None:
@@ -1232,7 +1625,8 @@ def rescore_firm(conn, crd: str) -> dict[str, Result]:
     s = _scope_row(crd, res)
     if s:
         conn.execute("INSERT INTO firm_scope (crd, best_score, best_product,"
-                     " best_tier, products, priority) VALUES (?,?,?,?,?,?)", s)
+                     " best_tier, products, priority, best_coverage)"
+                     " VALUES (?,?,?,?,?,?,?)", s)
     for k in res:
         rerank(conn, k)
     conn.commit()
@@ -1245,7 +1639,6 @@ def set_override(conn, crd: str, key: str, criterion: str, points: float | None,
     crit = next((c for c in product(key)["criteria"] if c["key"] == criterion), None)
     if crit is None or not crit.get("manual"):
         raise ValueError(f"{key}.{criterion} does not accept a manual level")
-    init(conn)
     if points is None:
         conn.execute("DELETE FROM score_override WHERE crd=? AND product=?"
                      " AND criterion=?", (crd, key, criterion))

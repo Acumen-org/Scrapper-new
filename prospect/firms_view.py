@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
-from . import products, ui, xlsx
-from .webapp import (safe_back, escn, conn, current_owner, esc, money, page, qs_join, saved_view_href,
-                     signal_cutoff, tier_chip)
+from .names import nice_name
+
+from . import contacts, products, ui, xlsx
+from .webapp import (conn, current_owner, esc, escn, money, page, qs_join, safe_back,
+                     saved_view_href, score_cell, signal_cutoff)
 
 router = APIRouter()
 
@@ -25,40 +27,55 @@ FIRMS_CSS = """
 .listpick{min-width:0;padding:3px 7px;font-size:12px}
 """
 
-STATUS_LABEL = {"domain_accepts_mail": "domain ok", "no_mail_server": "dead domain",
-                "bad_syntax": "malformed", "queued": "unchecked", "candidate": "guess"}
+def contacts_rows(c, crds: list[str]) -> list[dict]:
+    """One row per address (and per direct line without an address) at these
+    firms, people before shared inboxes, best evidence first. Dead addresses
+    are left out: a mail merge should never send to a known bounce."""
+    if not crds:
+        return []
+    out: list[dict] = []
+    for i in range(0, len(crds), 1000):
+        chunk = crds[i:i + 1000]
+        ph = ",".join("?" * len(chunk))
+        rows = c.execute(f"""
+            SELECT cp.crd, f.legal_name AS firm, f.state, f.phone AS firm_phone,
+                   cp.person_key, cp.person_name AS person, cp.title, cp.kind, cp.value,
+                   cp.verify_status, cp.source, cp.confidence, cp.is_role
+            FROM contact_point cp JOIN firm_current f ON f.crd = cp.crd
+            WHERE cp.crd IN ({ph}) AND cp.verify_status NOT IN ('invalid','no_mail_server')
+            ORDER BY f.legal_name, cp.crd, (cp.person_key = ''), cp.is_role,
+                     cp.confidence DESC""", tuple(chunk)).fetchall()
+        phones: dict = {}
+        first: dict = {}
+        for r in rows:
+            if r["kind"] == "phone" and r["person_key"]:
+                phones.setdefault((r["crd"], r["person_key"]), r["value"])
+                first.setdefault((r["crd"], r["person_key"]), r)
+        emailed = set()
+        for r in rows:
+            if r["kind"] != "email":
+                continue
+            emailed.add((r["crd"], r["person_key"]))
+            status = r["verify_status"]
+            label = contacts.VERIFY_LABEL.get(status, status)
+            if r["source"] == "pattern" and status in ("unverified", "queued"):
+                label = "Guess, not checked"
+            out.append({"crd": r["crd"], "firm": nice_name(r["firm"]), "state": r["state"],
+                        "person": r["person"] or ("Shared inbox" if r["is_role"] else ""),
+                        "title": r["title"], "email": r["value"], "status": label,
+                        "status_key": status, "source": r["source"],
+                        "confidence": r["confidence"],
+                        "phone": phones.get((r["crd"], r["person_key"])) or r["firm_phone"]})
+        for k, num in phones.items():
+            if k in emailed:
+                continue
+            r = first[k]
+            out.append({"crd": r["crd"], "firm": nice_name(r["firm"]), "state": r["state"],
+                        "person": r["person"], "title": r["title"], "email": "",
+                        "status": "", "status_key": "", "source": r["source"],
+                        "confidence": r["confidence"], "phone": num})
+    return out
 
-# The person-level contact worklist, shared by the Contacts view and both Excel
-# exports. {extra} is a WHERE clause scoping it to the firms a screen selected.
-# One row per person; a firm inbox (info@) is a firm-level row, never pinned to
-# an officer's name.
-WORKLIST = """
-WITH people AS (
-    SELECT w.crd, w.person, w.title AS role, w.email, w.phone AS person_phone,
-           'their website' AS source, 'domain_accepts_mail' AS status, 3 AS trust
-    FROM web_contact w WHERE w.person IS NOT NULL AND w.email IS NOT NULL
-    UNION ALL
-    SELECT ce.crd, ce.name AS person, ce.title AS role, ce.email, NULL AS person_phone,
-           'inferred: ' || ce.pattern AS source, ce.status, 1 AS trust
-    FROM contact_email ce
-    UNION ALL
-    SELECT f.crd, NULL AS person, 'firm inbox' AS role, f.value AS email,
-           NULL AS person_phone, 'filed at firm' AS source,
-           'domain_accepts_mail' AS status, 2 AS trust
-    FROM firm_contact_info f WHERE f.kind='email'
-)
-SELECT p.crd, fc.legal_name, fc.state, fc.phone AS firm_phone,
-       p.person, MAX(p.role) AS role, p.email, p.source, p.status,
-       MAX(p.trust) AS trust, MAX(p.person_phone) AS person_phone,
-       MAX(sc.best_product) AS best_product, MAX(sc.best_tier) AS best_tier
-FROM people p
-JOIN firm_current fc ON fc.crd=p.crd
-LEFT JOIN firm_scope sc ON sc.crd=p.crd
-WHERE fc.is_era=0 {extra}
-GROUP BY p.crd, p.email, COALESCE(p.person,''), p.person, p.source, p.status,
-         fc.legal_name, fc.state, fc.phone
-ORDER BY fc.legal_name, p.crd, MAX(p.trust) DESC, p.person
-"""
 
 SIZES = {
     "": ("Any size", None, None),
@@ -86,7 +103,7 @@ def _states(c):
     return _STATES["v"]
 
 
-def _where(q, st, size, reg, lst, tier, stat, owner, trig, list_id):
+def _where(q, st, size, reg, lst, stat, owner, trig, list_id, hires="", reach=""):
     where: list[str] = []
     args: list = []
     if reg == "ERA":
@@ -116,14 +133,9 @@ def _where(q, st, size, reg, lst, tier, stat, owner, trig, list_id):
             where.append("f.raum<?")
             args.append(hi)
     if lst in products.product_keys():
-        if tier:
-            where.append("f.crd IN (SELECT crd FROM product_score WHERE product=?"
-                         " AND status='scored' AND tier=?)")
-            args += [lst, tier]
-        else:
-            where.append("f.crd IN (SELECT crd FROM product_score WHERE product=?"
-                         " AND status='scored')")
-            args.append(lst)
+        where.append("f.crd IN (SELECT crd FROM product_score WHERE product=?"
+                     " AND status='scored')")
+        args.append(lst)
     elif lst == "any":
         where.append("sc.crd IS NOT NULL")
     elif lst == "none":
@@ -133,6 +145,9 @@ def _where(q, st, size, reg, lst, tier, stat, owner, trig, list_id):
         args.append(stat)
     if owner == "none":
         where.append("(s.owner IS NULL OR s.owner='')")
+    elif owner == "me":
+        where.append("s.owner=?")
+        args.append(current_owner())
     elif owner:
         where.append("s.owner ILIKE ?")
         args.append(f"%{owner}%")
@@ -141,20 +156,42 @@ def _where(q, st, size, reg, lst, tier, stat, owner, trig, list_id):
                      " ON a.trigger_id=t.id WHERE t.crd=f.crd AND t.suppressed=0"
                      " AND a.state IS NULL AND t.detected_date >= ?)")
         args.append(signal_cutoff())
+    if hires:
+        where.append("ps.hires_12m >= ?")
+        args.append(int(hires))
+    if reach == "email":
+        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=f.crd AND x.kind='email'"
+                     " AND x.person_key != '' AND x.is_role=0 AND x.source != 'pattern'"
+                     " AND x.verify_status NOT IN ('invalid','no_mail_server'))")
+    elif reach == "verified":
+        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=f.crd AND x.kind='email'"
+                     " AND x.verify_status='valid')")
+    elif reach == "none":
+        where.append("NOT EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=f.crd"
+                     " AND x.kind='email' AND x.verify_status NOT IN ('invalid','no_mail_server'))")
     return " AND ".join(where) or "1=1", args
 
 
 FROM = """FROM firm_current f
     LEFT JOIN firm_scope sc ON sc.crd=f.crd
     LEFT JOIN firm_status s ON s.crd=f.crd
+    LEFT JOIN firm_people_stats ps ON ps.crd=f.crd
     WHERE {where}"""
+
+SORTS = {"": ("Best fit", "sc.priority DESC NULLS LAST, f.raum DESC NULLS LAST"),
+         "aum": ("Largest", "f.raum DESC NULLS LAST"),
+         "hires": ("Most hiring", "ps.hires_12m DESC NULLS LAST, f.raum DESC NULLS LAST"),
+         "growth": ("Fastest growing team", "ps.net_12m DESC NULLS LAST, f.raum DESC NULLS LAST"),
+         "advisors": ("Most advisors", "f.iar_count DESC NULLS LAST"),
+         "name": ("Name", "f.legal_name")}
 
 
 @router.get("/firms", response_class=HTMLResponse)
 def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
           size: str = Query(""), reg: str = Query(""), lst: str = Query("", alias="on"),
-          tier: str = Query(""), stat: str = Query(""), owner: str = Query(""),
+          stat: str = Query(""), owner: str = Query(""),
           trig: str = Query(""), list_id: str = Query("", alias="list"),
+          hires: str = Query(""), reach: str = Query(""), sort: str = Query(""),
           preset: str = Query(""), page_n: int = Query(1, ge=1, alias="page"),
           per: int = Query(50, ge=10, le=200)):
     # Links from before the product lists passed a preset; send them to the
@@ -164,25 +201,28 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
     if preset in old:
         return RedirectResponse(old[preset], status_code=307)
     c = conn()
-    where, args = _where(q, st, size, reg, lst, tier, stat, owner, trig, list_id)
+    hires = hires if hires.isdigit() else ""
+    sort = sort if sort in SORTS else ""
+    where, args = _where(q, st, size, reg, lst, stat, owner, trig, list_id, hires, reach)
     list_name = ""
     if list_id:
         r = c.execute("SELECT name FROM user_list WHERE id=?", (int(list_id),)).fetchone()
         list_name = r["name"] if r else ""
     qs = qs_join(view=view if view != "firms" else "", q=q, st=st, size=size, reg=reg,
-                 on=lst, tier=tier, stat=stat, owner=owner, trig=trig, list=list_id)
+                 on=lst, stat=stat, owner=owner, trig=trig, list=list_id, hires=hires,
+                 reach=reach, sort=sort)
     if view == "contacts":
         table, total = _contacts(c, where, args, page_n, per)
     else:
-        table, total = _firms(c, where, args, page_n, per, qs)
+        table, total = _firms(c, where, args, page_n, per, qs, sort)
     states = _states(c)
     lists = c.execute("SELECT id, name FROM user_list ORDER BY name").fetchall()
     c.close()
 
     def vtab(v, label):
         href = "/firms?" + qs_join(view=v if v != "firms" else "", q=q, st=st, size=size,
-                                   reg=reg, on=lst, tier=tier, stat=stat, owner=owner,
-                                   trig=trig, list=list_id)
+                                   reg=reg, on=lst, stat=stat, owner=owner, trig=trig,
+                                   list=list_id, hires=hires, reach=reach, sort=sort)
         return f'<a class="{"on" if view == v else ""}" href="{href}">{label}</a>'
 
     lst_opts = (ui.opt("", lst, "Any") + ui.opt("any", lst, "On any list")
@@ -192,16 +232,16 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
     pages = max(1, -(-total // per))
     prev = f'<a href="/firms?{qs}&page={page_n-1}">Previous</a>' if page_n > 1 else ""
     nxt = f'<a href="/firms?{qs}&page={page_n+1}">Next</a>' if page_n < pages else ""
-    exp = (f'<a class="btn" href="/firms/export.xlsx?{qs}">Export contacts</a>'
+    exp = (f'<a class="btn" href="/firms/export.xlsx?{qs}" data-noprefetch>Export contacts</a>'
            if view == "contacts" else
-           f'<a class="btn" href="/firms/export.csv?{qs}">Export firms</a>')
+           f'<a class="btn" href="/firms/export.csv?{qs}" data-noprefetch>Export firms</a>')
     title = f"Saved list: {esc(list_name)}" if list_name else "Firms"
     lede = ("A list you built by hand. Everything below works on it: filter it, "
             "open its contacts, export it." if list_name else
             "Every adviser in the SEC and state feeds. Search any firm, "
             "whether or not it made a product list.")
     user_list_opts = "".join(ui.opt(str(l["id"]), list_id, l["name"]) for l in lists)
-    body = f"""<div class="pg">
+    body = f"""<div class="pg wide">
 <div class="head"><div><h1>{title}</h1><div class="lede">{lede}</div></div>
 <div class="acts">{exp}</div></div>
 <form class="filters" method="get" action="/firms">
@@ -211,10 +251,13 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
 <label>Size<select name="size">{"".join(ui.opt(k, size, v[0]) for k, v in SIZES.items())}</select></label>
 <label>Registration<select name="reg">{"".join(ui.opt(k, reg, v) for k, v in REGS.items())}</select></label>
 <label>Product list<select name="on">{lst_opts}</select></label>
-<label>Tier<select name="tier">{ui.opt("", tier, "Any")}{"".join(ui.opt(t, tier, t) for t in ("A", "B", "C"))}</select></label>
+<label>Hiring<select name="hires">{ui.opt("", hires, "Any")}{ui.opt("1", hires, "Hired in 12 months")}{ui.opt("3", hires, "Hired 3+")}{ui.opt("5", hires, "Hired 5+")}</select></label>
+<label>Reach<select name="reach">{ui.opt("", reach, "Any")}{ui.opt("email", reach, "A named person's email")}{ui.opt("verified", reach, "A verified email")}{ui.opt("none", reach, "No email yet")}</select></label>
+<label>Owner<select name="owner">{ui.opt("", owner, "Anyone")}{ui.opt("me", owner, "Mine")}{ui.opt("none", owner, "Unclaimed")}</select></label>
 <label>Status<select name="stat">{ui.opt("", stat, "Any")}{"".join(ui.opt(s, stat, s.capitalize()) for s in ui.STATUS_OPTIONS)}</select></label>
 <label>Signal<select name="trig">{ui.opt("", trig, "Any")}{ui.opt("open", trig, "New in 60 days")}</select></label>
 <label>Saved list<select name="list">{ui.opt("", list_id, "Any")}{user_list_opts}</select></label>
+<label>Sort<select name="sort">{"".join(ui.opt(k, sort, v[0]) for k, v in SORTS.items())}</select></label>
 <button class="primary" type="submit">Apply</button>
 <a class="btn ghost" href="/firms">Clear</a>
 </form>
@@ -247,14 +290,14 @@ function addToList(sel){
 """
 
 
-def _firms(c, where, args, page_n, per, qs):
+def _firms(c, where, args, page_n, per, qs, sort=""):
     base = FROM.format(where=where)
     total = c.execute(f"SELECT COUNT(*) n {base}", args).fetchone()["n"]
     rows = c.execute(f"""
         SELECT f.crd, f.legal_name, f.city, f.state, f.raum, f.hnw_aum, f.iar_count,
-               f.regulator, f.is_era, sc.best_product, sc.best_tier, sc.best_score,
-               sc.products, s.status, s.owner
-        {base} ORDER BY sc.priority DESC NULLS LAST, f.raum DESC NULLS LAST
+               f.regulator, f.is_era, sc.best_product, sc.best_score, sc.best_coverage,
+               sc.products, s.status, s.owner, ps.headcount, ps.hires_12m, ps.departures_12m
+        {base} ORDER BY {SORTS.get(sort, SORTS[""])[1]}
         LIMIT ? OFFSET ?""", args + [per, (page_n - 1) * per]).fetchall()
     flags = ui.contact_flags(c, [r["crd"] for r in rows])
     lists = c.execute("SELECT id, name FROM user_list ORDER BY name").fetchall()
@@ -265,13 +308,18 @@ def _firms(c, where, args, page_n, per, qs):
         best = ""
         if r["best_product"]:
             n_on = len((r["products"] or "").split(","))
-            best = (f'{tier_chip(r["best_tier"])} <span class="small">'
-                    f'{esc(ui.product_name(r["best_product"]))}</span>'
-                    + (f'<div class="meta">on {n_on} lists</div>' if n_on > 1 else ""))
+            best = (f'{score_cell(r["best_score"], r["best_coverage"], show_cov=False)}'
+                    f'<div class="meta">{esc(ui.product_name(r["best_product"]))}'
+                    + (f', on {n_on} lists' if n_on > 1 else "") + '</div>')
         reg = "ERA" if r["is_era"] else (r["regulator"] or "")
         who = (f'<span class="chip">{esc(r["status"] or "claimed")}</span>'
                f'<div class="meta">{esc(r["owner"] or "")}</div>'
                if (r["status"] or r["owner"]) else "")
+        team = r["headcount"] if r["headcount"] is not None else (r["iar_count"] or 0)
+        moves = ""
+        if r["hires_12m"] or r["departures_12m"]:
+            moves = (f'<div class="meta"><span class="ok">+{r["hires_12m"] or 0}</span> '
+                     f'<span class="bad">-{r["departures_12m"] or 0}</span> in 12m</div>')
         add = (f'<form method="post" action="/firms/addtolist">'
                f'<input type="hidden" name="crd" value="{esc(r["crd"])}">'
                f'<input type="hidden" name="back" value="/firms?{esc(qs)}">'
@@ -283,65 +331,63 @@ def _firms(c, where, args, page_n, per, qs):
             f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="firm">'
             f'<a href="/firm/{esc(r["crd"])}">{escn(r["legal_name"] or "(unnamed)")}</a></div>'
             f'<div class="meta">{ui.firm_meta(r)} &middot; {esc(reg)}</div></td>'
-            f'<td class="num">{money(r["raum"])}</td>'
-            f'<td class="num">{hs:.0f}%</td><td class="num">{r["iar_count"] or 0}</td>'
+            f'<td class="num">{money(r["raum"])}<div class="meta">HNW {hs:.0f}%</div></td>'
+            f'<td class="num">{team}{moves}</td>'
             f'<td>{best or "<span class=muted>-</span>"}</td>'
             f'<td>{ui.contact_cell(flags[r["crd"]])}</td><td>{who}</td><td>{add}</td></tr>')
-    empty = '<tr><td colspan="8" class="empty">No firms match these filters.</td></tr>'
+    empty = '<tr><td colspan="7" class="empty">No firms match these filters.</td></tr>'
     return (f'<table><thead><tr><th>Firm</th><th class="num">AUM</th>'
-            f'<th class="num" title="High net worth share of assets">HNW</th>'
-            f'<th class="num">Advisors</th><th>Best list</th><th>Reach</th>'
-            f'<th>Owner</th><th></th></tr></thead>'
+            f'<th class="num" title="People registered at the firm now, and job moves in 12 months">Team</th>'
+            f'<th>Best list</th><th>Reach</th><th>Owner</th><th></th></tr></thead>'
             f'<tbody>{"".join(body) or empty}</tbody></table>'), total
 
 
 def _contacts(c, where, args, page_n, per):
-    scope = (f"AND fc.crd IN (SELECT f.crd {FROM.format(where=where)})")
-    rows = c.execute(WORKLIST.format(extra=scope), args).fetchall()
+    crds = [r["crd"] for r in c.execute(
+        f"SELECT f.crd {FROM.format(where=where)} ORDER BY sc.priority DESC NULLS LAST,"
+        f" f.raum DESC NULLS LAST LIMIT 3000", args)]
+    rows = contacts_rows(c, crds)
     total = len(rows)
     body = []
     for r in rows[(page_n - 1) * per: page_n * per]:
-        chip = "lead" if r["status"] == "domain_accepts_mail" else (
-            "dis" if r["status"] in ("no_mail_server", "bad_syntax") else "warn")
-        src_chip = "lead" if r["trust"] >= 2 else ""
-        phone = r["person_phone"] or r["firm_phone"] or "-"
-        who = (f'<b>{esc(r["person"])}</b>' if r["person"]
+        chip = f'v-{r["status_key"]}' if r["status_key"] else ""
+        who = (f'<b>{esc(r["person"])}</b>' if r["person"] and r["person"] != "Shared inbox"
                else '<span class="muted">Shared inbox</span>')
-        best = (f'{tier_chip(r["best_tier"])} <span class="small soft">'
-                f'{esc(ui.product_name(r["best_product"]))}</span>'
-                if r["best_product"] else "")
+        em = ((f'<a href="mailto:{esc(r["email"])}">{esc(r["email"])}</a>'
+               f'<div class="meta"><span class="chip {chip}">{esc(r["status"])}</span> '
+               f'<span class="muted">{esc(r["source"])}</span></div>')
+              if r["email"] else '<span class="muted">-</span>')
         body.append(
-            f'<tr><td><a class="firm" href="/firm/{esc(r["crd"])}">{escn(r["legal_name"] or "")}</a>'
+            f'<tr><td><a class="firm" href="/firm/{esc(r["crd"])}">{esc(r["firm"])}</a>'
             f'<div class="meta">CRD {esc(r["crd"])} &middot; {esc(r["state"] or "-")}</div></td>'
-            f'<td>{who}<div class="meta">{esc(r["role"] or "")}</div></td>'
-            f'<td><a href="mailto:{esc(r["email"])}">{esc(r["email"])}</a>'
-            f'<div class="meta"><span class="chip {src_chip}">{esc(r["source"])}</span> '
-            f'<span class="chip {chip}">{esc(STATUS_LABEL.get(r["status"], r["status"]))}</span></div></td>'
-            f'<td>{esc(phone)}</td><td>{best}</td></tr>')
-    empty = ('<tr><td colspan="5" class="empty">No contacts for this set yet. The '
-             'website and brochure jobs on System fill them in.</td></tr>')
+            f'<td>{who}<div class="meta">{esc(r["title"] or "")}</div></td>'
+            f'<td>{em}</td><td class="nowrap">{esc(r["phone"] or "-")}</td></tr>')
+    empty = ('<tr><td colspan="4" class="empty">No contacts for this set yet. The website, '
+             'brochure and directory jobs fill them in by themselves.</td></tr>')
     return (f'<table><thead><tr><th>Firm</th><th>Person</th><th>Email</th>'
-            f'<th>Phone</th><th>Best list</th></tr></thead>'
+            f'<th>Phone</th></tr></thead>'
             f'<tbody>{"".join(body) or empty}</tbody></table>'), total
 
 
 @router.get("/firms/export.csv")
 def export_csv(q: str = "", st: str = "", size: str = "", reg: str = "",
-               on: str = "", tier: str = "", stat: str = "", owner: str = "",
-               trig: str = "", list_id: str = Query("", alias="list")):
+               on: str = "", stat: str = "", owner: str = "", trig: str = "",
+               list_id: str = Query("", alias="list"), hires: str = "", reach: str = "",
+               sort: str = ""):
     import csv
     import io
     c = conn()
-    where, args = _where(q, st, size, reg, on, tier, stat, owner, trig, list_id)
+    hires = hires if hires.isdigit() else ""
+    sort = sort if sort in SORTS else ""
+    where, args = _where(q, st, size, reg, on, stat, owner, trig, list_id, hires, reach)
     rows = c.execute(f"""
-        SELECT f.crd, f.legal_name, f.business_name, f.website, f.phone,
-               (SELECT MIN(value) FROM firm_contact_info fi WHERE fi.crd=f.crd
-                 AND fi.kind='email') AS filed_email,
+        SELECT f.crd, f.legal_name, f.business_name, f.website, f.phone AS main_phone,
                f.city, f.state, f.regulator, f.raum, f.hnw_clients, f.hnw_aum,
-               f.iar_count, sc.best_product, sc.best_tier, sc.best_score,
+               f.iar_count, ps.headcount, ps.hires_12m, ps.departures_12m,
+               sc.best_product, sc.best_score, sc.best_coverage,
                sc.products AS on_lists, s.status AS work_status, s.owner AS work_owner
-        {FROM.format(where=where)} ORDER BY sc.priority DESC NULLS LAST,
-        f.raum DESC NULLS LAST LIMIT 60000""", args).fetchall()
+        {FROM.format(where=where)} ORDER BY {SORTS[sort][1]} LIMIT 60000""",
+                     args).fetchall()
     c.close()
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
@@ -355,21 +401,22 @@ def export_csv(q: str = "", st: str = "", size: str = "", reg: str = "",
 
 @router.get("/firms/export.xlsx")
 def export_xlsx(q: str = "", st: str = "", size: str = "", reg: str = "",
-                on: str = "", tier: str = "", stat: str = "", owner: str = "",
-                trig: str = "", list_id: str = Query("", alias="list")):
+                on: str = "", stat: str = "", owner: str = "", trig: str = "",
+                list_id: str = Query("", alias="list"), hires: str = "", reach: str = "",
+                sort: str = ""):
     c = conn()
-    where, args = _where(q, st, size, reg, on, tier, stat, owner, trig, list_id)
-    scope = f"AND fc.crd IN (SELECT f.crd {FROM.format(where=where)})"
-    rows = c.execute(WORKLIST.format(extra=scope), args).fetchall()
+    hires = hires if hires.isdigit() else ""
+    sort = sort if sort in SORTS else ""
+    where, args = _where(q, st, size, reg, on, stat, owner, trig, list_id, hires, reach)
+    crds = [r["crd"] for r in c.execute(
+        f"SELECT f.crd {FROM.format(where=where)} ORDER BY {SORTS[sort][1]} LIMIT 5000", args)]
+    rows = contacts_rows(c, crds)
     c.close()
-    headers = ["Firm", "CRD", "State", "Person", "Role", "Email", "Email source",
-               "Email status", "Phone", "Best list", "Tier"]
-    out = [[r["legal_name"] or "", r["crd"], r["state"] or "", r["person"] or "",
-            r["role"] or "", r["email"] or "", r["source"] or "",
-            STATUS_LABEL.get(r["status"], r["status"]),
-            r["person_phone"] or r["firm_phone"] or "",
-            ui.product_name(r["best_product"]) if r["best_product"] else "",
-            r["best_tier"] or ""] for r in rows]
+    headers = ["Firm", "CRD", "State", "Person", "Title", "Email", "Email status",
+               "Source", "Confidence", "Phone"]
+    out = [[r["firm"], r["crd"], r["state"] or "", r["person"] or "", r["title"] or "",
+            r["email"] or "", r["status"] or "", r["source"] or "", r["confidence"] or "",
+            r["phone"] or ""] for r in rows]
     data = xlsx.write_sheet(headers, out, sheet_name="Contacts")
     return Response(data, media_type=(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
@@ -401,7 +448,7 @@ def saved():
         f'<input type="hidden" name="list_id" value="{l["id"]}">'
         f'<button type="submit" class="sm ghost">Delete</button></form></td></tr>'
         for l in lists)
-    where_lbl = {"signals": "Signals", "inbox": "Signals", "firms": "Firms"}
+    where_lbl = {"signals": "Signals", "inbox": "Signals", "firms": "Firms", "people": "People"}
     vrows = "".join(
         f'<tr class="go" data-href="{esc(saved_view_href(v))}"><td>'
         f'<a class="firm" href="{esc(saved_view_href(v))}">{esc(v["name"])}</a>'

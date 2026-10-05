@@ -62,9 +62,22 @@ def observed(conn) -> tuple[dict[str, tuple[str, str]], str]:
     """
     firm_pat: dict[str, tuple[str, str]] = {}
     pop: Counter = Counter()
-    rows = list(conn.execute(
+    rows = []
+    # Published person-to-address pairs from every real source. Pattern guesses
+    # are excluded: learning a pattern from our own guesses would be circular.
+    try:
+        rows += [(r["crd"], r["person_name"], r["value"]) for r in conn.execute(
+            "SELECT crd, person_name, value FROM contact_point WHERE kind='email'"
+            " AND person_key != '' AND person_name IS NOT NULL AND is_role=0"
+            " AND source NOT IN ('pattern')"
+            " AND verify_status NOT IN ('invalid','no_mail_server')")]
+    except Exception:
+        conn.rollback()
+    # Rows are dicts under Postgres, so they are unpacked by name: tuple
+    # unpacking a dict row yields its column names, not its values.
+    rows += [(r["crd"], r["person"], r["email"]) for r in conn.execute(
         "SELECT crd, person, email FROM web_contact"
-        " WHERE person IS NOT NULL AND email IS NOT NULL"))
+        " WHERE person IS NOT NULL AND email IS NOT NULL")]
     rows += [(r["crd"], r["name"], r["value"]) for r in conn.execute(
         """SELECT f.crd, s.name, f.value FROM firm_contact_info f
            JOIN schedule_a s ON s.crd=f.crd AND s.is_individual=1
@@ -84,11 +97,19 @@ def observed(conn) -> tuple[dict[str, tuple[str, str]], str]:
 
 
 def domain_for(conn, crd: str) -> str | None:
-    """The firm's own mail domain: a filed email's domain first, else its
-    website. Never a social or freemail host."""
-    r = conn.execute("""SELECT value FROM firm_contact_info
-        WHERE crd=? AND kind='email' ORDER BY id LIMIT 1""", (crd,)).fetchone()
-    if r:
+    """The firm's own mail domain: the domain its published addresses use
+    first, else its website. Never a social or freemail host."""
+    try:
+        rows = conn.execute("""SELECT value FROM contact_point
+            WHERE crd=? AND kind='email' AND source != 'pattern'
+              AND verify_status NOT IN ('invalid','no_mail_server')
+            ORDER BY confidence DESC, id LIMIT 20""", (crd,)).fetchall()
+    except Exception:
+        conn.rollback()
+        rows = []
+    rows += conn.execute("""SELECT value FROM firm_contact_info
+        WHERE crd=? AND kind='email' ORDER BY id LIMIT 1""", (crd,)).fetchall()
+    for r in rows:
         dom = r["value"].rsplit("@", 1)[-1].lower()
         if not any(b in dom for b in BAD_EMAIL_DOMAINS):
             return dom

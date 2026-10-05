@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import products
 from .webapp import escn, conn, current_owner, esc, page
+from .settings_view import settings_tabs
 
 router = APIRouter()
 
@@ -39,13 +40,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# A firm someone will actually call: tier A or B on any product list. Review
+# A firm someone will actually call: a score of 50 or more on any list. Review
 # effort spent anywhere else is effort the safe defaults already cover.
+# The firms about to be called: a score of 50 or more on some list.
 CALLED = """(SELECT crd FROM product_score
-             WHERE status='scored' AND tier IN ('A','B'))"""
+             WHERE status='scored' AND score >= 50)"""
 
 
-@router.get("/review", response_class=HTMLResponse)
+@router.get("/settings/review", response_class=HTMLResponse)
 def review_queue(kind: str = Query(""), page_n: int = Query(1, ge=1, alias="page"),
                  per: int = Query(40, ge=10, le=200), scope: str = Query("called")):
     # Both values land in links on the page: anything outside the known set
@@ -129,9 +131,9 @@ def review_queue(kind: str = Query(""), page_n: int = Query(1, ge=1, alias="page
     title="The tag stands at full confidence">Tag stands</button></form></td></tr>""")
 
     if kind:
-        prevl = (f'<a href="/review?kind={kind}&scope={scope}&page={page_n-1}">Previous</a>'
+        prevl = (f'<a href="/settings/review?kind={kind}&scope={scope}&page={page_n-1}">Previous</a>'
                  if page_n > 1 else "")
-        nxtl = (f'<a href="/review?kind={kind}&scope={scope}&page={page_n+1}">Next</a>'
+        nxtl = (f'<a href="/settings/review?kind={kind}&scope={scope}&page={page_n+1}">Next</a>'
                 if len(rows_html) >= per else "")
         pager_html = f'<div class="pager">{prevl} Page {page_n} {nxtl}</div>'
     else:
@@ -139,30 +141,29 @@ def review_queue(kind: str = Query(""), page_n: int = Query(1, ge=1, alias="page
 
     def tab(v, label, count):
         cls = "on" if kind == v else ""
-        return (f'<a class="{cls}" href="/review?kind={v}&scope={scope}">{label} '
+        return (f'<a class="{cls}" href="/settings/review?kind={v}&scope={scope}">{label} '
                 f'<span class="muted">{count:,}</span></a>')
 
     worth = n_match_c + n_neg_c
     if scope == "called":
         scope_line = (f'Showing the <b>{worth}</b> items that sit on a firm someone '
-                      f'will actually call (tier A or B on any product list). The other '
+                      f'will actually call (a score of 50 or more on any list). The other '
                       f'{n_match + n_neg - worth:,} are held safely by the defaults '
                       f'and never need a human. '
-                      f'<a href="/review?kind={esc(kind)}&scope=all">Show everything '
+                      f'<a href="/settings/review?kind={esc(kind)}&scope=all">Show everything '
                       f'anyway</a>')
         counts = (n_match_c, n_neg_c)
     else:
         scope_line = (f'Showing all {n_match + n_neg:,} open items. '
-                      f'<a href="/review?kind={esc(kind)}&scope=called">Back to the '
+                      f'<a href="/settings/review?kind={esc(kind)}&scope=called">Back to the '
                       f'{worth} that matter</a>')
         counts = (n_match, n_neg)
 
     body = f"""<div class="pg">
-<div class="head"><div><h1>System</h1>
+<div class="head"><div><h1>Review queue</h1>
 <div class="lede">You never have to clear the review queue. An unreviewed item always
 defaults to the safe reading; reviewing sharpens the firms you are about to call.</div></div></div>
-<div class="seg" style="margin-bottom:12px"><a href="/health">Health</a>
-<a class="on" href="/review">Review queue</a></div>
+{settings_tabs("review")}
 <div class="seg" style="margin:0 0 6px">{tab('', 'All', sum(counts))}
 {tab('match_13f', '13F matches', counts[0])}{tab('brochure_negation', 'Brochure negations', counts[1])}</div>
 <div class="note plain">{scope_line}</div>
@@ -178,27 +179,27 @@ confidence lower. Each decision re-scores the firm at once.</p>
 </table>
 {pager_html}
 </div>"""
-    return page("Review queue", "system", body, REVIEW_CSS)
+    return page("Review queue", "settings", body, REVIEW_CSS)
 
 
 @router.post("/review/match")
 def decide_match(crd: str = Form(...), cik: str = Form(...),
                  decision: str = Form(...)):
     if decision not in ("confirmed", "denied"):
-        return RedirectResponse("/review", status_code=303)
+        return RedirectResponse("/settings/review", status_code=303)
     c = conn()
     c.execute("UPDATE adv_13f_match SET status=?, reviewed_by=?, reviewed_at=?"
               " WHERE crd=? AND cik=?", (decision, current_owner() or "bd", _now(), crd, cik))
     c.commit()
     products.rescore_firm(c, crd)
     c.close()
-    return RedirectResponse("/review?kind=match_13f", status_code=303)
+    return RedirectResponse("/settings/review?kind=match_13f", status_code=303)
 
 
 @router.post("/review/negation")
 def decide_negation(nid: int = Form(...), decision: str = Form(...)):
     if decision not in ("negation_confirmed", "tag_confirmed"):
-        return RedirectResponse("/review", status_code=303)
+        return RedirectResponse("/settings/review", status_code=303)
     c = conn()
     row = c.execute("SELECT crd, tag FROM brochure_negation WHERE id=?", (nid,)).fetchone()
     c.execute("UPDATE brochure_negation SET status=?, decided_by=?, decided_at=?"
@@ -220,4 +221,4 @@ def decide_negation(nid: int = Form(...), decision: str = Form(...)):
             c.execute("UPDATE brochure_tag SET present=0, confidence=0.9"
                       " WHERE crd=? AND tag=?", (row["crd"], row["tag"]))
     c.commit()
-    return RedirectResponse("/review?kind=brochure_negation", status_code=303)
+    return RedirectResponse("/settings/review?kind=brochure_negation", status_code=303)

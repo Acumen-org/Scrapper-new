@@ -1,7 +1,8 @@
 # Bellwether, containerised.
 #
-# The image holds only code. The database, the captured SEC snapshots, the
-# brochure cache and the session key all live on a mounted volume at /data,
+# The image holds only code (and an optional headless browser for reading
+# JavaScript-only websites). The captured SEC snapshots, the brochure cache,
+# the web cache and the session key all live on a mounted volume at /data,
 # because they are gigabytes, they must survive a redeploy, and they are the one
 # thing here that cannot be rebuilt from this repository in a hurry.
 
@@ -18,6 +19,21 @@ WORKDIR /app
 # Dependencies first so code edits do not invalidate the wheel layer.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# A headless Chromium for the firm websites that only draw themselves with
+# JavaScript. Best effort on purpose: if the browser download or its system
+# libraries fail, the build carries on and the crawler simply skips those
+# pages, rather than a CDN hiccup blocking a deploy. Shared path, readable by
+# the unprivileged user the app runs as. Build with WITH_BROWSER=0 to leave it
+# out and save about 400MB.
+ARG WITH_BROWSER=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN if [ "$WITH_BROWSER" = "1" ]; then \
+      (python -m playwright install --with-deps chromium \
+         && chmod -R a+rX /opt/ms-playwright) \
+      || echo "headless browser not installed; JavaScript-only pages will be skipped"; \
+    fi \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY prospect/ ./prospect/
 COPY scripts/ ./scripts/

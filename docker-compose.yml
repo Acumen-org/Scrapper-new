@@ -5,7 +5,12 @@
 # only way in is through Caddy over HTTPS.
 #
 #   docker compose up -d --build
-#   docker compose exec app python -m scripts.manage_users add you --name "Your Name"
+#   docker compose exec app python -m scripts.manage_users add you --name "Your Name" --role admin
+#
+# Reacher (the check-if-email-exists backend) runs beside the app for email
+# verification. It is reachable only from the app on the internal network. It
+# needs outbound port 25 from this server to do its job; Bellwether's own
+# built-in checker needs the same, and falls back to domain checks without it.
 
 services:
   app:
@@ -14,13 +19,24 @@ services:
     environment:
       # Read from a .env file beside this one. Never inline real secrets here:
       # this file is tracked, .env is not.
+      BELLWETHER_DSN: ${BELLWETHER_DSN:?set BELLWETHER_DSN in .env}
       BELLWETHER_SECRET: ${BELLWETHER_SECRET:?set BELLWETHER_SECRET in .env}
       BELLWETHER_CONTACT: ${BELLWETHER_CONTACT:?set BELLWETHER_CONTACT in .env}
       BELLWETHER_HTTPS: "1"
+      BELLWETHER_REACHER_URL: http://reacher:8080
     volumes:
       - bellwether-data:/data
     expose:
       - "8787"
+    depends_on:
+      - reacher
+
+  reacher:
+    # Pinned: a moving tag would change verification behaviour silently.
+    image: reacherhq/backend:v0.11.7
+    restart: unless-stopped
+    expose:
+      - "8080"
 
   caddy:
     image: caddy:2-alpine
@@ -39,8 +55,8 @@ services:
       - caddy-config:/config
 
 volumes:
-  # Named, not a bind mount: this holds the 2GB database and the brochure cache,
-  # and it must outlive every container rebuild.
+  # Named, not a bind mount: this holds the snapshots and the brochure and web
+  # caches, and it must outlive every container rebuild.
   bellwether-data:
   caddy-data:
   caddy-config:

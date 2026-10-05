@@ -5,6 +5,7 @@ Order matters and every step is idempotent:
   1. snapshot   capture this week's feed (skips when already held; a missed week
                 is lost permanently upstream, so this always runs first)
   2. firms      parse the newest snapshot into the firm table
+     people     the individual feed: every rep, prior firms, joins and departures
   3. diff       forward-looking triggers between the two newest firm snapshots
   4. rescore    every product list from current data (config/products.yml)
   5. brochures  continue coverage of the product lists, a bounded slice per run,
@@ -74,6 +75,11 @@ def main() -> int:
         run("scripts.ingest_firms", "--source", "adv_state_feed")
         # Marketing, services and related-person answers the scores read.
         run("scripts.ingest_adv_extra")
+    # Every registered rep, where they were before, and who joined or left
+    # each firm. Captures the week's individual feed and rebuilds the roster;
+    # a no-op when that feed is already loaded.
+    if "people" not in skip:
+        run("scripts.ingest_people")
     # The static bulk archives and everything derived from them. All of
     # these are no-ops once held: the archives never change, the crosswalk
     # loads once, and enrich skips what it has already backfilled. They are
@@ -129,7 +135,7 @@ def main() -> int:
         if cusip_due(conn):
             run("scripts.build_cusip_map", "--filings", "25")
 
-    print("\nweekly cycle complete; check /health for flags")
+    print("\nweekly cycle complete; check Settings, System for flags")
     return 0
 
 

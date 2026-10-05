@@ -263,3 +263,104 @@ def check(email: str) -> tuple[str, str]:
                                  f"address there can receive mail"
     return "domain_accepts_mail", f"{domain} accepts mail; whether this " \
                                   f"particular mailbox exists is still unproven"
+
+
+# ------------------------------------------------- lookups for SMTP checking
+#
+# prospect.verify opens an SMTP conversation with a domain's mail server, so it
+# needs more than "is there an MX": which servers, in the order the domain asks
+# senders to try them, and the address to fall back on when there is no MX at
+# all. These are added alongside the functions above rather than changing them,
+# because other jobs depend on exactly what those return.
+
+QTYPE_A = 1
+QTYPE_AAAA = 28
+
+
+def _ask(domain: str, qtype: int, timeout: float = TIMEOUT
+         ) -> tuple[bytes, list[tuple[int, int, int]]] | None:
+    """One DNS question. Returns (raw reply, [(rtype, rdata offset, rdlength)])
+    for the answer section, with an empty list when the domain answers with
+    nothing or does not exist, and None when no resolver could be reached."""
+    domain = (domain or "").strip().lower().rstrip(".")
+    if not domain:
+        return b"", []
+    qid = random.randint(0, 0xFFFF)
+    query = (struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0)
+             + _encode_name(domain) + struct.pack(">HH", qtype, 1))
+    for resolver in RESOLVERS:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(timeout)
+                s.sendto(query, (resolver, 53))
+                data, _ = s.recvfrom(8192)
+        except OSError:
+            continue
+        if len(data) < 12:
+            continue
+        rid, flags, qd, an, _, _ = struct.unpack(">HHHHHH", data[:12])
+        if rid != qid:            # a stray or spoofed reply, not our answer
+            continue
+        rcode = flags & 0x000F
+        if rcode == 3:            # NXDOMAIN
+            return data, []
+        if rcode != 0:
+            continue
+        i = 12
+        for _ in range(qd):
+            i = _skip_name(data, i) + 4
+        out: list[tuple[int, int, int]] = []
+        for _ in range(an):
+            i = _skip_name(data, i)
+            if i + 10 > len(data):
+                break
+            rtype, _, _, rdlen = struct.unpack(">HHIH", data[i:i + 10])
+            i += 10
+            if i + rdlen > len(data):
+                break
+            out.append((rtype, i, rdlen))
+            i += rdlen
+        return data, out
+    return None
+
+
+def mx_records(domain: str, timeout: float = TIMEOUT) -> list[tuple[int, str]] | None:
+    """(preference, host) pairs, most preferred (lowest number) first.
+
+    [] when the domain publishes no MX or does not exist, None when no resolver
+    could be reached. A null MX (RFC 7505, a single record pointing at ".",
+    meaning "this domain accepts no mail") comes back as [(0, "")] so a caller
+    can tell it apart from "no MX", which RFC 5321 says to treat as "try the
+    domain's own address"."""
+    got = _ask(domain, QTYPE_MX, timeout)
+    if got is None:
+        return None
+    data, answers = got
+    out: list[tuple[int, str]] = []
+    for rtype, at, rdlen in answers:
+        if rtype != QTYPE_MX or rdlen < 3:
+            continue
+        pref = struct.unpack(">H", data[at:at + 2])[0]
+        host, _ = _read_name(data, at + 2)
+        out.append((pref, host.rstrip(".")))
+    # Ties keep a stable order by name, so repeated checks hit the same server.
+    out.sort(key=lambda p: (p[0], p[1]))
+    return out
+
+
+def a_records(domain: str, timeout: float = TIMEOUT, ipv6: bool = False) -> list[str] | None:
+    """IPv4 (or, with ipv6=True, IPv6) addresses for a name. [] when there are
+    none, None when no resolver could be reached. A CNAME in the answer is
+    skipped: the resolver has already followed it and the addresses follow."""
+    qtype = QTYPE_AAAA if ipv6 else QTYPE_A
+    got = _ask(domain, qtype, timeout)
+    if got is None:
+        return None
+    data, answers = got
+    out: list[str] = []
+    for rtype, at, rdlen in answers:
+        if rtype == QTYPE_A and qtype == QTYPE_A and rdlen == 4:
+            out.append(socket.inet_ntoa(data[at:at + 4]))
+        elif rtype == QTYPE_AAAA and qtype == QTYPE_AAAA and rdlen == 16:
+            out.append(socket.inet_ntop(socket.AF_INET6, data[at:at + 16]))
+    return out

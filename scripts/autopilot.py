@@ -1,415 +1,104 @@
-"""Autopilot: background completeness jobs, always under user control.
+"""The background worker: runs every job in prospect/jobs.py, by itself.
 
-Jobs run in small slices and re-read their desired state between slices, so
-Pause in the UI takes effect within seconds and nothing has to be killed. One
-worker process at a time (pid file); starting any job from the UI launches it.
+One worker process at a time (pid file, claimed atomically). It loops over the
+jobs in registry order and runs one slice of each job that is due: a job with
+a backlog is due again straight away, so backlogs drain round-robin with no job
+starving the others; a job that is caught up is due again after its cadence.
+Paused jobs are skipped unless someone pressed Run now.
 
-  brochures     continue Part 2A coverage, best-scored firms first
-  brochure_retag   re-tag held brochures when the vocabulary grows, from the
-                   saved text, no refetch
-  mail_platform    Microsoft 365 or Google, from public DNS mail records
-  firm_refresh  fetch current ADV Part 1 PDFs for the flagged firms (Q5K3 or
-                Q7B yes) and extract current custodian names, refreshing data
-                whose bulk source ends 2024-12-31
-  contact_extract  read filed emails and phones off cached brochure pages
-  web_enrich       read each firm's own website for people, titles and contacts
-  email_verify     syntax and mail-domain checks on guessed addresses, locally
-                   via DNS: no account, no key, no cost
-  cusip_verify     re-verify the target security map when older than 90 days
+Every slice is a separate Python process with a time limit. A website that
+never answers or a PDF that sends the parser into a spin costs one slice, not
+the worker; and the worker's own memory never grows with what the jobs read.
 
-Nothing here talks to a paid service. Every job reaches only the SEC, an
-adviser's own website, or a DNS resolver.
+The web app starts this worker at boot and checks every few minutes that it is
+alive, so nobody has to remember to start it.
 
     python -m scripts.autopilot
 """
 
 from __future__ import annotations
 
-import io
-import os
-import re
 import subprocess
 import sys
 import time
-from datetime import date, datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prospect import config, db, mailcheck, net, procs  # noqa: E402
+from prospect import config, db, jobs, procs  # noqa: E402
 
 PID_FILE = config.DATA_DIR / "autopilot.pid"
-
-REFRESH_SCHEMA = """
-CREATE TABLE IF NOT EXISTS firm_refresh (
-    crd         TEXT PRIMARY KEY,
-    fetched_at  TEXT NOT NULL,
-    pdf_bytes   INTEGER,
-    custodians  TEXT,               -- pipe separated, deduped, as filed today
-    status      TEXT NOT NULL       -- ok | fetch_failed | parse_failed
-);
-"""
+IDLE_SLEEP_S = 20
 
 
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def set_task(conn, kind, **kw):
-    cols = ", ".join(f"{k}=?" for k in kw)
-    conn.execute(f"UPDATE auto_task SET {cols}, updated_at=? WHERE kind=?",
-                 (*kw.values(), now(), kind))
+def run_slice(conn, job: jobs.Job) -> tuple[str, str]:
+    """(status, last line of output) for one slice of one job."""
+    conn.execute("UPDATE auto_task SET running_since=? WHERE kind=?",
+                 (jobs.now_iso(), job.kind))
     conn.commit()
-
-
-def desired(conn, kind) -> str:
-    r = conn.execute("SELECT desired_state FROM auto_task WHERE kind=?",
-                     (kind,)).fetchone()
-    return r["desired_state"] if r else "paused"
-
-
-# ------------------------------------------------------------------ jobs
-
-def job_brochures(conn, cfg) -> bool:
-    """One slice of brochure coverage over the product lists. Returns True
-    when work remains."""
-    band = conn.execute("SELECT COUNT(*) n FROM firm_scope").fetchone()["n"]
-    done = conn.execute("SELECT COUNT(*) n FROM brochure b JOIN firm_scope s"
-                        " ON s.crd=b.crd").fetchone()["n"]
-    set_task(conn, "brochures", progress=done, total=band,
-             message=f"{done:,} of {band:,} brochures processed")
-    if done >= band:
-        set_task(conn, "brochures", desired_state="paused",
-                 message=f"complete: {done:,} of {band:,}")
-        return False
-    r = subprocess.run([sys.executable, "-m", "scripts.brochures",
-                        "--scope", "scored", "--limit", "25"],
-                       cwd=config.ROOT, capture_output=True, text=True)
-    if r.returncode != 0:
-        set_task(conn, "brochures", message=f"slice failed: {r.stdout[-160:]}")
-    return True
-
-
-CUSTODIAN_RE = re.compile(r"Legal name of custodian:\s*(.+)")
-
-
-def job_firm_refresh(conn, cfg, fetch) -> bool:
-    """Fetch current ADV Part 1 PDFs for flagged firms; extract custodians.
-
-    The extraction pattern was verified against a live filing before this was
-    written: 'Legal name of custodian:' lines carry the names as filed today.
-    """
-    conn.executescript(REFRESH_SCHEMA)
-    todo = conn.execute("""
-        SELECT f.crd FROM firm_current f JOIN firm_scope s ON s.crd=f.crd
-        WHERE (f.q5k3='Y' OR f.q7b='Y')
-          AND f.crd NOT IN (SELECT crd FROM firm_refresh)
-        ORDER BY s.priority DESC
-        LIMIT 12""").fetchall()
-    total = conn.execute("""SELECT COUNT(*) n FROM firm_current f
-        JOIN firm_scope s ON s.crd=f.crd
-        WHERE (f.q5k3='Y' OR f.q7b='Y')""").fetchone()["n"]
-    done = conn.execute("SELECT COUNT(*) n FROM firm_refresh").fetchone()["n"]
-    set_task(conn, "firm_refresh", progress=done, total=total,
-             message=f"{done:,} of {total:,} flagged firms refreshed")
-    if not todo:
-        set_task(conn, "firm_refresh", desired_state="paused",
-                 message=f"complete: {done:,} of {total:,}")
-        return False
-
-    # The PDF is parsed in memory and never opened again: the custodian names
-    # are what we wanted and they go straight into firm_refresh. Writing each
-    # one to disk built up megabytes that nothing ever read.
-    import pdfplumber
-    for row in todo:
-        crd = row["crd"]
-        try:
-            r = fetch._request(
-                f"https://reports.adviserinfo.sec.gov/reports/ADV/{crd}/PDF/{crd}.pdf",
-                stream=False)
-            pdf = r.content
-            r.close()
-        except Exception:
-            conn.execute("INSERT OR REPLACE INTO firm_refresh VALUES (?,?,?,?,?)",
-                         (crd, now(), None, None, "fetch_failed"))
-            conn.commit()
-            continue
-        try:
-            with pdfplumber.open(io.BytesIO(pdf)) as doc:
-                # NUL bytes from embedded fonts are rejected by Postgres.
-                text = "\n".join((p.extract_text() or "") for p in doc.pages).replace("\x00", "")
-            names = []
-            for n in CUSTODIAN_RE.findall(text):
-                n = " ".join(n.split())
-                if n and n not in names:
-                    names.append(n)
-            conn.execute("INSERT OR REPLACE INTO firm_refresh VALUES (?,?,?,?,?)",
-                         (crd, now(), len(pdf), "|".join(names) or None, "ok"))
-        except Exception:
-            conn.execute("INSERT OR REPLACE INTO firm_refresh VALUES (?,?,?,?,?)",
-                         (crd, now(), len(pdf), None, "parse_failed"))
-        conn.commit()
-    return True
-
-
-def job_contact_extract(conn, cfg) -> bool:
-    """One slice of brochure contact extraction: filed emails and phones from
-    the first pages of PDFs already on disk. No network at all."""
-    total = conn.execute("SELECT COUNT(*) n FROM brochure WHERE status='ok'"
-                         ).fetchone()["n"]
+    cmd = [sys.executable, "-m", job.module, *job.args]
     try:
-        done = conn.execute("SELECT COUNT(*) n FROM contact_scan").fetchone()["n"]
-    except Exception:
-        done = 0
-    set_task(conn, "contact_extract", progress=done, total=total,
-             message=f"{done:,} of {total:,} brochures scanned for contacts")
-    if done >= total:
-        set_task(conn, "contact_extract", desired_state="paused",
-                 message=f"complete: {done:,} of {total:,}; more arrive as "
-                         f"brochures download")
-        return False
-    r = subprocess.run([sys.executable, "-m", "scripts.extract_brochure_contacts",
-                        "--limit", "40"], cwd=config.ROOT,
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        set_task(conn, "contact_extract", message=f"slice failed: {r.stdout[-160:]}")
-    return True
-
-
-def job_web_enrich(conn, cfg) -> bool:
-    """One slice of website contact enrichment: people, titles, emails, and
-    phones from each firm's own site. Slices are small because each firm can
-    take several polite seconds."""
-    total = conn.execute("""SELECT COUNT(*) n FROM firm_current f
-        JOIN firm_scope s ON s.crd=f.crd
-        WHERE f.website IS NOT NULL AND f.website != ''""").fetchone()["n"]
-    try:
-        done = conn.execute("SELECT COUNT(*) n FROM web_enrich_state").fetchone()["n"]
-    except Exception:
-        done = 0
-    set_task(conn, "web_enrich", progress=done, total=total,
-             message=f"{done:,} of {total:,} firm websites read")
-    if done >= total:
-        set_task(conn, "web_enrich", desired_state="paused",
-                 message=f"complete: {done:,} of {total:,}")
-        return False
-    r = subprocess.run([sys.executable, "-m", "scripts.web_enrich",
-                        "--limit", "6"], cwd=config.ROOT,
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        set_task(conn, "web_enrich", message=f"slice failed: {r.stdout[-160:]}")
-    return True
-
-
-DONE_STATES = ("bad_syntax", "no_mail_server", "domain_accepts_mail")
-
-
-def job_infer_emails(conn, cfg) -> bool:
-    """One slice of decision-maker email inference across the scored lists.
-
-    Builds guesses from the pattern each firm uses for its own people, checks
-    them against the mail domain, and stops when every officer on the scored
-    lists has an address. Cheap: one subprocess slice, all local."""
-    total = conn.execute("""SELECT COUNT(*) n FROM schedule_a s
-        JOIN firm_scope sc ON sc.crd=s.crd
-        WHERE s.is_individual=1 AND sc.best_tier IN ('A','B')""").fetchone()["n"]
-    done = conn.execute("SELECT COUNT(*) n FROM contact_email").fetchone()["n"]
-    set_task(conn, "infer_emails", progress=min(done, total), total=total,
-             message=f"{done:,} decision-maker addresses inferred")
-    r = subprocess.run([sys.executable, "-m", "scripts.infer_emails",
-                        "--limit", "800"], cwd=config.ROOT,
-                       capture_output=True, text=True)
-    made = 0
-    for line in (r.stdout or "").splitlines():
-        if line.startswith("generated"):
-            try:
-                made = int(line.split()[1].replace(",", ""))
-            except (IndexError, ValueError):
-                made = 0
-    if r.returncode != 0:
-        set_task(conn, "infer_emails", message=f"slice failed: {r.stdout[-160:]}")
-        return True
-    if made == 0:
-        set_task(conn, "infer_emails", desired_state="paused",
-                 message="complete: every scored-list officer has an address")
-        return False
-    return True
-
-
-def job_email_verify(conn, cfg) -> bool:
-    """Syntax and mail-domain checks on queued candidates, locally and free.
-
-    This used to POST each address to an undocumented mailwarm.com endpoint. It
-    returned the same verdict for a real address and a fabricated one at the
-    same firm, so it distinguished nothing while relying on someone else's
-    service. Now every check is a syntax test and a DNS MX lookup done here: no
-    account, no key, no quota, and fast enough to do a batch per slice instead
-    of one address every ten seconds.
-    """
-    pending = conn.execute("SELECT COUNT(*) n FROM contact_email"
-                           " WHERE status='queued'").fetchone()["n"]
-    checked = conn.execute(
-        "SELECT COUNT(*) n FROM contact_email WHERE status IN"
-        " ('bad_syntax','no_mail_server','domain_accepts_mail')").fetchone()["n"]
-    set_task(conn, "email_verify", progress=checked, total=checked + pending,
-             message=f"{pending:,} queued, {checked:,} checked")
-    if not pending:
-        set_task(conn, "email_verify", desired_state="paused",
-                 message=f"queue empty; {checked:,} checked")
-        return False
-
-    rows = conn.execute("SELECT id, email FROM contact_email"
-                        " WHERE status='queued' ORDER BY id LIMIT 40").fetchall()
-    # One MX answer per domain: candidates come in threes per person and whole
-    # teams share a domain, so caching turns hundreds of lookups into a handful.
-    seen: dict[str, tuple[str, str]] = {}
-    for r in rows:
-        dom = (r["email"] or "").rsplit("@", 1)[-1].lower()
-        if dom in seen:
-            status, _ = seen[dom]
-            if not mailcheck.valid_syntax(r["email"]):
-                status = "bad_syntax"
-        else:
-            status, why = mailcheck.check(r["email"])
-            if status != "unknown":       # never cache a resolver failure
-                seen[dom] = (status, why)
-        # 'unknown' means DNS was unreachable, so it stays queued for retry
-        # rather than being recorded as a finding.
-        if status == "unknown":
-            continue
-        conn.execute("UPDATE contact_email SET status=?, checked_at=? WHERE id=?",
-                     (status, now(), r["id"]))
-    conn.commit()
-    # Re-read after the batch: the counts above were taken before any work, so
-    # leaving them would show a progress bar one slice behind reality.
-    left = conn.execute("SELECT COUNT(*) n FROM contact_email"
-                        " WHERE status='queued'").fetchone()["n"]
-    done = conn.execute(
-        "SELECT COUNT(*) n FROM contact_email WHERE status IN"
-        " ('bad_syntax','no_mail_server','domain_accepts_mail')").fetchone()["n"]
-    set_task(conn, "email_verify", progress=done, total=done + left,
-             message=f"{left:,} queued, {done:,} checked")
-    return True
-
-
-def job_cusip_verify(conn, cfg) -> bool:
-    r = conn.execute("SELECT MAX(finished_at) t FROM run_log"
-                     " WHERE source_key='cusip_map' AND status='ok'").fetchone()
-    age = 999
-    if r and r["t"]:
-        age = (date.today() - date.fromisoformat(r["t"][:10])).days
-    if age <= 90:
-        set_task(conn, "cusip_verify", desired_state="paused", progress=1, total=1,
-                 message=f"verified {age} days ago; due at 90")
-        return False
-    set_task(conn, "cusip_verify", message="re-verifying the CUSIP map now")
-    subprocess.run([sys.executable, "-m", "scripts.build_cusip_map",
-                    "--filings", "25"], cwd=config.ROOT, capture_output=True)
-    set_task(conn, "cusip_verify", desired_state="paused", progress=1, total=1,
-             message="re-verified; next due in 90 days")
-    return False
-
-
-def job_brochure_retag(conn, cfg) -> bool:
-    """Re-tag held brochures to the current vocabulary, from saved text."""
-    import yaml
-    ver = int(yaml.safe_load((config.CONFIG_DIR / "brochure_tags.yml").read_text(
-        encoding="utf-8"))["config_version"])
-    total = conn.execute("SELECT COUNT(*) n FROM brochure WHERE status='ok'"
-                         ).fetchone()["n"]
-    try:
-        left = conn.execute("SELECT COUNT(*) n FROM brochure WHERE status='ok'"
-                            " AND COALESCE(tag_version,1) < ?", (ver,)).fetchone()["n"]
-    except Exception:
-        conn.rollback()
-        left = total
-    set_task(conn, "brochure_retag", progress=total - left, total=total,
-             message=f"{total - left:,} of {total:,} on vocabulary v{ver}")
-    if left == 0:
-        set_task(conn, "brochure_retag", desired_state="paused",
-                 message=f"complete: all {total:,} on vocabulary v{ver}")
-        subprocess.run([sys.executable, "-m", "scripts.score_products"],
-                       cwd=config.ROOT, capture_output=True)
-        return False
-    r = subprocess.run([sys.executable, "-m", "scripts.brochures", "--retag",
-                        "--limit", "200", "--workers", "2"], cwd=config.ROOT,
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        set_task(conn, "brochure_retag", message=f"slice failed: {r.stdout[-160:]}")
-    return True
-
-
-def job_mail_platform(conn, cfg) -> bool:
-    """One slice of email platform lookups, best-scored firms first."""
-    total = conn.execute("SELECT COUNT(*) n FROM firm_scope").fetchone()["n"]
-    try:
-        done = conn.execute("SELECT COUNT(*) n FROM firm_mail_platform m"
-                            " JOIN firm_scope s ON s.crd=m.crd").fetchone()["n"]
-    except Exception:
-        conn.rollback()
-        done = 0
-    set_task(conn, "mail_platform", progress=done, total=total,
-             message=f"{done:,} of {total:,} firms checked")
-    if done >= total:
-        set_task(conn, "mail_platform", desired_state="paused",
-                 message=f"complete: {done:,} of {total:,}; re-checked every 90 days")
-        return False
-    r = subprocess.run([sys.executable, "-m", "scripts.mail_platform",
-                        "--limit", "400"], cwd=config.ROOT,
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        set_task(conn, "mail_platform", message=f"slice failed: {r.stdout[-160:]}")
-        return True
-    return "0 firms to check" not in (r.stdout or "")
-
-
-JOBS = {"brochures": job_brochures, "brochure_retag": job_brochure_retag,
-        "mail_platform": job_mail_platform, "firm_refresh": None,  # bound below
-        "contact_extract": job_contact_extract,
-        "web_enrich": job_web_enrich,
-        "infer_emails": job_infer_emails,
-        "email_verify": job_email_verify, "cusip_verify": job_cusip_verify}
+        r = subprocess.run(cmd, cwd=str(config.ROOT), capture_output=True, text=True,
+                           timeout=job.timeout_s, encoding="utf-8", errors="replace")
+        out = (r.stdout or "").strip().splitlines()
+        err = (r.stderr or "").strip().splitlines()
+        last = out[-1] if out else ""
+        if r.returncode != 0:
+            return "failed", (err[-1] if err else last)[:300]
+        return "ok", last[:300]
+    except subprocess.TimeoutExpired:
+        return "timeout", f"stopped after {job.timeout_s // 60} minutes; resumes next slice"
+    except OSError as exc:
+        return "failed", str(exc)[:300]
 
 
 def main() -> int:
-    # One worker at a time, claimed atomically. The previous read-then-write
-    # check both raced and, because os.kill(pid, 0) terminates on Windows,
-    # killed the very process it was checking for. See prospect.procs.
     if not procs.claim_pidfile(PID_FILE):
         print(f"autopilot already running (pid {PID_FILE.read_text().strip()})")
         return 0
-    cfg = config.load()
     conn = db.connect()
-    fetch = net.Fetcher(cfg.http)
-    conn.executescript(REFRESH_SCHEMA)
-    for k in JOBS:
-        conn.execute("INSERT OR IGNORE INTO auto_task (kind) VALUES (?)", (k,))
+    jobs.init(conn)
+    # A worker that died mid-slice leaves running_since set; clear it so the
+    # screen does not show a job as running forever.
+    conn.execute("UPDATE auto_task SET running_since=NULL")
     conn.commit()
-    print("autopilot up; obeying desired_state per job")
-
-    idle_cycles = 0
+    print("autopilot up", flush=True)
     try:
         while True:
             worked = False
-            for kind in JOBS:
-                if desired(conn, kind) != "running":
+            tv = jobs.tag_version()
+            for job in jobs.JOBS:
+                st = jobs.states(conn).get(job.kind, {})
+                ok, why = jobs.requirement(job)
+                if not ok:
+                    if st.get("message") != why:
+                        conn.execute("UPDATE auto_task SET message=?, force=0 WHERE kind=?",
+                                     (why, job.kind))
+                        conn.commit()
                     continue
-                fn = JOBS[kind]
-                if kind == "firm_refresh":
-                    worked = job_firm_refresh(conn, cfg, fetch) or worked
+                backlog = jobs.count(conn, job.backlog_sql, tv)
+                if not jobs.due(job, st, backlog):
+                    continue
+                status, msg = run_slice(conn, job)
+                worked = True
+                left = jobs.count(conn, job.backlog_sql, tv)
+                if status != "ok":
+                    # A failing job backs off for an hour instead of spinning.
+                    nxt = jobs.schedule_next(jobs.Job(job.kind, "", "", "", every_hours=1), 0)
                 else:
-                    worked = fn(conn, cfg) or worked
-            if worked:
-                idle_cycles = 0
-            else:
-                idle_cycles += 1
-                if idle_cycles > 360:  # ~30 min with nothing to do: exit quietly
-                    break
-                time.sleep(5)
+                    nxt = jobs.schedule_next(job, left)
+                conn.execute(
+                    "UPDATE auto_task SET running_since=NULL, last_run_at=?, next_run_at=?,"
+                    " last_status=?, message=?, last_output=?, runs=COALESCE(runs,0)+1,"
+                    " force=0, updated_at=? WHERE kind=?",
+                    (jobs.now_iso(), nxt, status, msg or None, msg or None, jobs.now_iso(),
+                     job.kind))
+                conn.commit()
+                print(f"{job.kind}: {status} {msg}", flush=True)
+            if not worked:
+                time.sleep(IDLE_SLEEP_S)
     finally:
         PID_FILE.unlink(missing_ok=True)
-    print("autopilot idle exit")
-    return 0
 
 
 if __name__ == "__main__":

@@ -1,22 +1,24 @@
-"""Bellwether web app: the data and intelligence layer for go-to-market.
+"""Bellwether web app: the intelligence platform on US investment advisers.
 
 A bellwether is a leading indicator, which is what every row in this system is:
-a filing, a website or a change that says a firm is worth calling before anyone
-else notices. Bellwether turns SEC filings and each firm's own public words
-into product lists (who fits PHH, AcuBooth and Glynac, and why), signals (what
-changed this week) and call-ready firm pages.
+a filing, a website, a hire or a change that says a firm is worth calling before
+anyone else notices. Bellwether turns SEC filings, each firm's own public
+words, its people and its websites into ranked product lists, signals and
+firm dossiers, with Bellwether AI on top to ask questions in plain English.
 
 Architecture rules learned the hard way:
 
   - GET handlers never write. All working tables are created once at startup,
     because DDL inside a request is a write transaction that queues behind any
     background ingest.
-  - One visual system, defined here once: dark, a single dark red accent, green
-    only where something is a lead, amber only where something needs care.
-  - A number never renders without the reason for it. Every score on every
-    screen can be opened to the evidence that produced it.
+  - One visual system, in static/app.css: dark, one dark red accent, green
+    only where something is a lead or confirmed, amber where something is
+    missing or needs care.
+  - A number never renders without the reason for it, and a score never
+    renders without how much of it rests on known data.
   - No page needs a manual. If a screen needs explaining, the explanation goes
     on the screen, next to the thing it explains. UI copy carries no em dashes.
+  - Jobs run by themselves. Nobody has to remember to start anything.
 
     python -m uvicorn prospect.webapp:app --port 8787
 """
@@ -24,24 +26,28 @@ Architecture rules learned the hard way:
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import html
+import json
 import os
-import re
-import sqlite3
 import subprocess
 import sys
 import threading
 import urllib.parse
 from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
-from . import auth, config, db, procs, products
+from . import auth, config, db, procs, products, settings, users
 from .names import nice_name
 
 APP_NAME = "Bellwether"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # Session cookies are marked Secure when served over HTTPS, which is every
 # deployment except running it on your own machine over plain http.
@@ -54,23 +60,34 @@ SECURE_COOKIES = os.environ.get("BELLWETHER_HTTPS", "").lower() in ("1", "true",
 # OTHER live process in the new container.
 MANAGED = os.environ.get("BELLWETHER_MANAGED", "").lower() in ("1", "true", "yes")
 
-# The signed-in user, request scoped. Context variables propagate into the
+# The signed-in account, request scoped. Context variables propagate into the
 # threadpool FastAPI runs sync endpoints on, so this is safe for both kinds.
 CURRENT_USER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "current_user", default=None)
+CURRENT_ACCOUNT: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "current_account", default=None)
 
 
 def current_user() -> str | None:
     return CURRENT_USER.get()
 
 
+def current_account() -> dict | None:
+    return CURRENT_ACCOUNT.get()
+
+
 def current_owner() -> str:
     """Display name of whoever is signed in, for stamping ownership fields."""
-    u = CURRENT_USER.get()
-    return auth.display_name(u) if u else ""
+    a = CURRENT_ACCOUNT.get()
+    return (a or {}).get("name") or (CURRENT_USER.get() or "")
 
 
-app = FastAPI(title=APP_NAME)
+def is_admin() -> bool:
+    return users.is_admin(current_account())
+
+
+app = FastAPI(title=APP_NAME, docs_url=None, redoc_url=None, openapi_url=None)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 _cfg = config.load()
 _scoring = yaml.safe_load((config.CONFIG_DIR / "scoring.yml").read_text(encoding="utf-8"))
@@ -168,14 +185,6 @@ CREATE TABLE IF NOT EXISTS firm_contact_info (
     UNIQUE (crd, kind, value)
 );
 CREATE INDEX IF NOT EXISTS ix_fci_crd ON firm_contact_info (crd);
-CREATE TABLE IF NOT EXISTS auto_task (
-    kind          TEXT PRIMARY KEY,
-    desired_state TEXT NOT NULL DEFAULT 'paused',  -- running | paused
-    progress      INTEGER DEFAULT 0,
-    total         INTEGER DEFAULT 0,
-    message       TEXT,
-    updated_at    TEXT
-);
 CREATE TABLE IF NOT EXISTS scheduler_state (
     id           INTEGER PRIMARY KEY CHECK (id = 1),
     last_check   TEXT,                -- heartbeat: scheduler looked at due-ness
@@ -198,22 +207,94 @@ CREATE TABLE IF NOT EXISTS user_list_item (
     PRIMARY KEY (list_id, crd)
 );
 CREATE INDEX IF NOT EXISTS ix_uli_crd ON user_list_item (crd);
+-- Indexes the busiest screens lean on.
+CREATE INDEX IF NOT EXISTS ix_trig_crd_date ON trigger_event (crd, detected_date);
+CREATE INDEX IF NOT EXISTS ix_trig_date ON trigger_event (detected_date);
+CREATE INDEX IF NOT EXISTS ix_hist_crd ON firm_history (crd, filing_date);
 """
+
+
+def _init_optional(c, module: str) -> None:
+    """Modules whose tables are optional at boot: a failure here is logged by
+    being skipped, never allowed to stop the app from serving."""
+    try:
+        mod = __import__(f"prospect.{module}", fromlist=["init"])
+        mod.init(c)
+    except Exception:
+        try:
+            c.rollback()
+        except Exception:
+            pass
 
 
 @app.on_event("startup")
 def _init_once() -> None:
-    """Every table and view the app touches exists before the first request,
-    so request handlers never issue DDL and GETs stay pure readers."""
+    """Every table the app touches exists before the first request, so request
+    handlers never issue DDL and GETs stay pure readers."""
     c = db.connect()
     db.init(c)
     db.init_firm(c)
-    c.executescript(APP_TABLES)
+    # A brand new install has none of the tables the weekly cycle creates, and
+    # the app's own tables reference some of them (a signal's action points at
+    # the signal). Create those first, from the scripts that own them.
+    for mod in ("scripts.triggers", "scripts.build_firm_history", "scripts.ingest_13f_index",
+                "scripts.match_13f", "scripts.ingest_13f_holdings", "scripts.brochures",
+                "scripts.ingest_schedule_a", "scripts.web_enrich", "scripts.mail_platform",
+                "scripts.ingest_adv_extra", "scripts.custodian_share", "scripts.segment_real_estate"):
+        try:
+            m = __import__(mod, fromlist=["SCHEMA"])
+            c.executescript(m.SCHEMA)
+            if mod == "scripts.web_enrich":
+                for col, decl in m.STATE_COLUMNS:
+                    db.add_column(c, "web_enrich_state", col, decl)
+            c.commit()
+        except Exception:
+            c.rollback()
+    try:
+        c.executescript(APP_TABLES)
+    except Exception:
+        c.rollback()
+        c.executescript(APP_TABLES.split("-- Indexes the busiest")[0])
     products.init(c)
-    # Columns added to app tables after they first shipped.
     if "title" not in {r[1] for r in c.execute("PRAGMA table_info(contact_email)")}:
         c.execute("ALTER TABLE contact_email ADD COLUMN title TEXT")
     c.commit()
+    settings.init(c)
+    users.init(c)
+    for mod in ("contacts", "jobs", "ai", "roles", "people", "verify", "directory",
+                "websignals"):
+        _init_optional(c, mod)
+    c.close()
+
+    # First boot after the contact tables were unified: copy the old ones in.
+    # In the background, so the health check answers while it runs, and under
+    # an advisory lock, so exactly one process of the two workers does it.
+    def _backfill():
+        b = db.connect()
+        try:
+            got = b.execute("SELECT pg_try_advisory_lock(424242) ok").fetchone()["ok"]
+            if not got:
+                return
+            empty = b.execute("SELECT NOT EXISTS (SELECT 1 FROM contact_point) e").fetchone()["e"]
+            b.commit()
+            if empty:
+                from . import contacts
+                contacts.backfill(b)
+        except Exception:
+            try:
+                b.rollback()
+            except Exception:
+                pass
+        finally:
+            # Session locks outlive a transaction, and this connection goes
+            # back to the pool: release it on every path.
+            try:
+                b.execute("SELECT pg_advisory_unlock_all()")
+                b.commit()
+            except Exception:
+                pass
+            b.close()
+    threading.Thread(target=_backfill, daemon=True, name="contact-backfill").start()
 
     # In a container, pidfiles surviving on the mounted volume are lies: the
     # new PID namespace reuses low numbers, so a stale scheduler.pid routinely
@@ -228,6 +309,8 @@ def _init_once() -> None:
                 (config.DATA_DIR / name).unlink(missing_ok=True)
         except FileExistsError:
             pass
+        except OSError:
+            pass
 
     # Record the supervisor PID from inside the app rather than trusting the
     # launcher to have done it, so Quit always has a live PID to stop.
@@ -236,42 +319,43 @@ def _init_once() -> None:
     except OSError:
         pass
 
-    # Autopilot is a separate process and does not survive a restart. If a job
-    # was left switched on, switch it back on.
-    try:
-        n = c.execute("SELECT COUNT(*) n FROM auto_task"
-                      " WHERE desired_state='running'").fetchone()["n"]
-    except sqlite3.Error:
-        n = 0
-    except Exception:
-        c.rollback()
-        n = 0
-    c.close()
-    if n:
-        ensure_autopilot()
+    # Work out Home's numbers in the background now, so the first person to
+    # open it after a deploy does not wait for them.
+    def _warm():
+        try:
+            from . import home_view
+            home_view.data()
+        except Exception:
+            pass
+    threading.Thread(target=_warm, daemon=True, name="warm-home").start()
 
-    # The weekly pull runs itself. One worker wins the claim; the other simply
-    # does not schedule.
+    # The scheduler runs itself. One worker wins the claim; the other simply
+    # does not schedule. BELLWETHER_SCHEDULER=0 switches it off, for a test copy
+    # that must not crawl or check mail on its own.
+    if os.environ.get("BELLWETHER_SCHEDULER", "1") == "0":
+        return
     if procs.claim_pidfile(config.DATA_DIR / "scheduler.pid"):
-        t = threading.Thread(target=_scheduler_loop, daemon=True,
-                             name="weekly-scheduler")
+        t = threading.Thread(target=_scheduler_loop, daemon=True, name="scheduler")
         t.start()
 
 
 FEED_DUE_DAYS = 6.5   # the SEC publishes weekly; pull as soon as a new file is due
-CHECK_EVERY_S = 1800  # look every 30 minutes; cheap, one indexed query
+CHECK_EVERY_S = 300   # look every five minutes; cheap, a few indexed queries
 
 
 def _weekly_due(c) -> tuple[bool, str]:
     """Whether an automatic pull should start now, and why or why not."""
     last = c.execute("SELECT MAX(captured_at) t FROM snapshot"
                      " WHERE source_key='adv_feed'").fetchone()["t"]
+    forced = c.execute("SELECT force FROM auto_task WHERE kind='weekly_cycle'").fetchone()
+    if forced and forced["force"]:
+        return True, "run requested from Settings"
     if not last:
         return True, "no feed capture held at all"
     age_days = (datetime.now(timezone.utc)
                 - datetime.fromisoformat(last)).total_seconds() / 86400
     if age_days < FEED_DUE_DAYS:
-        return False, f"feed captured {age_days:.1f} days ago; due at {FEED_DUE_DAYS}"
+        return False, f"feed captured {age_days:.1f} days ago; next pull due at {FEED_DUE_DAYS} days"
     busy = c.execute("SELECT COUNT(*) n FROM run_log WHERE status='running'"
                      " AND started_at::timestamptz > NOW() - INTERVAL '2 hours'").fetchone()["n"]
     if busy:
@@ -279,14 +363,26 @@ def _weekly_due(c) -> tuple[bool, str]:
     return True, f"feed is {age_days:.1f} days old"
 
 
+def start_weekly() -> None:
+    log = open(config.DATA_DIR / "weekly.log", "ab")
+    subprocess.Popen([sys.executable, "-m", "scripts.run_weekly", "--brochure-slice", "120"],
+                     cwd=str(config.ROOT), stdout=log, stderr=log,
+                     creationflags=procs.SPAWN_FLAGS)
+
+
 def _scheduler_loop() -> None:
-    """Check due-ness on a slow clock and launch the weekly cycle when a new
-    feed file should exist. Failures land in run_log like any manual run."""
+    """Keep everything running without anyone thinking about it: launch the
+    weekly SEC cycle when a new feed is due, and make sure the background
+    worker that runs every other job is alive. Failures land in scheduler_state
+    for Settings to show."""
     import time as _time
-    _time.sleep(20)  # let startup settle before the first check
+    _time.sleep(15)  # let startup settle before the first check
     while True:
         try:
+            ensure_autopilot()
             c = conn()
+            c.execute("INSERT INTO auto_task (kind, desired_state) VALUES ('weekly_cycle',"
+                      " 'running') ON CONFLICT (kind) DO NOTHING")
             due, why = _weekly_due(c)
             now_s = datetime.now(timezone.utc).isoformat(timespec="seconds")
             c.execute("INSERT INTO scheduler_state (id, last_check, message)"
@@ -294,14 +390,10 @@ def _scheduler_loop() -> None:
                       " last_check=excluded.last_check, message=excluded.message",
                       (now_s, why))
             if due:
-                c.execute("UPDATE scheduler_state SET last_started=? WHERE id=1",
+                c.execute("UPDATE scheduler_state SET last_started=? WHERE id=1", (now_s,))
+                c.execute("UPDATE auto_task SET force=0, last_run_at=? WHERE kind='weekly_cycle'",
                           (now_s,))
-                log = open(config.DATA_DIR / "weekly.log", "ab")
-                subprocess.Popen(
-                    [sys.executable, "-m", "scripts.run_weekly",
-                     "--brochure-slice", "120"],
-                    cwd=str(config.ROOT), stdout=log, stderr=log,
-                    creationflags=procs.SPAWN_FLAGS)
+                start_weekly()
             c.commit()
             c.close()
         except Exception as exc:
@@ -321,9 +413,11 @@ def _scheduler_loop() -> None:
 
 
 def ensure_autopilot() -> bool:
-    """Launch the autopilot worker unless one is already alive. Liveness goes
+    """Launch the background worker unless one is already alive. Liveness goes
     through procs.is_alive, never os.kill(pid, 0), which on Windows terminates
     the process being checked."""
+    if os.environ.get("BELLWETHER_SCHEDULER", "1") == "0":
+        return False
     pidfile = config.DATA_DIR / "autopilot.pid"
     if procs.alive_pid(pidfile) is not None:
         return True
@@ -334,10 +428,6 @@ def ensure_autopilot() -> bool:
     return True
 
 
-def _kill_tree(pid: int) -> None:
-    procs.kill_tree(pid)
-
-
 def stop_everything() -> None:
     """Stop the whole tool: background jobs first, then the server itself.
     Killing the supervisor tree is the only reliable stop on Windows, because
@@ -345,9 +435,8 @@ def stop_everything() -> None:
     apf = config.DATA_DIR / "autopilot.pid"
     ap = procs.alive_pid(apf)
     if ap is not None:
-        _kill_tree(ap)
+        procs.kill_tree(ap)
     apf.unlink(missing_ok=True)
-
     srv = config.DATA_DIR / "server.pid"
     recorded = procs.alive_pid(srv)
     srv.unlink(missing_ok=True)
@@ -356,14 +445,17 @@ def stop_everything() -> None:
     if target is None:
         return
     if recorded is not None and recorded != target:
-        _kill_tree(recorded)
-    _kill_tree(target)
+        procs.kill_tree(recorded)
+    procs.kill_tree(target)
 
 
 def conn():
-    """Per-request connection. No DDL here, ever: reads must never become writes."""
+    """Per-request connection, from the pool. No DDL here, ever: reads must
+    never become writes."""
     return db.connect()
 
+
+# ---------------------------------------------------------------- formatting
 
 def esc(v) -> str:
     return html.escape(str(v)) if v is not None else ""
@@ -378,6 +470,8 @@ def money(v) -> str:
     if v is None:
         return "-"
     v = float(v)
+    if v >= 1e12:
+        return f"${v/1e12:.2f}T"
     if v >= 1e9:
         return f"${v/1e9:.2f}B"
     if v >= 1e6:
@@ -385,6 +479,16 @@ def money(v) -> str:
     if v >= 1e3:
         return f"${v/1e3:.0f}K"
     return f"${v:,.0f}"
+
+
+def num(v) -> str:
+    return f"{v:,.0f}" if isinstance(v, (int, float)) else "-"
+
+
+def initials(name: str) -> str:
+    parts = [p for p in (name or "").replace(".", " ").split() if p[:1].isalpha()]
+    return ((parts[0][0] + (parts[-1][0] if len(parts) > 1 else "")).upper()
+            if parts else "?")
 
 
 SIGNAL_WINDOW_DAYS = 60   # "new" on Home and the sidebar count
@@ -398,7 +502,7 @@ def signal_cutoff(days: int = SIGNAL_WINDOW_DAYS) -> str:
 def safe_back(target: str | None, default: str = "/") -> str:
     """A redirect target that can only stay inside this app.
 
-    "/firms" is fine; "//evil.example", "/\evil.example" and "https://..." are
+    "/firms" is fine; "//evil.example", "/\\evil.example" and "https://..." are
     not: browsers read the first two as a jump to another host, which made
     every `back` field an open redirect."""
     t = (target or "").strip()
@@ -413,200 +517,63 @@ def qs_join(**kw) -> str:
     return urllib.parse.urlencode({k: v for k, v in kw.items() if v not in ("", None)})
 
 
-# ---------------------------------------------------------------------------
-# One visual system. Dark neutrals plus exactly three signal colours:
-# red (the accent; danger and disqualifiers), green (a lead), amber (care).
-PAGE_CSS = """
-:root{
- --bg:#1f1e1c; --side:#191816; --raise:#282724; --raise2:#302e2b;
- --ink:#eceae4; --soft:#b6b1a5; --faint:#8a857b;
- --rule:#33312d; --rule2:#46433d;
- --red:#a63232; --red-hi:#c65454; --red-bg:rgba(166,50,50,.16);
- --ok:#63aa7c; --ok-bg:rgba(99,170,124,.13);
- --amber:#cfa95c; --amber-bg:rgba(207,169,92,.12);
-}
-*{box-sizing:border-box}
-html{color-scheme:dark}
-body{margin:0 0 0 236px;background:var(--bg);color:var(--ink);
-font:14.5px/1.55 "Segoe UI",system-ui,-apple-system,sans-serif;
--webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-::selection{background:var(--red-bg)}
-a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--rule2);
-text-underline-offset:3px;transition:color .12s,text-decoration-color .12s}
-a:hover{color:var(--red-hi);text-decoration-color:var(--red-hi)}
+def caveat(key: str, text: str) -> str:
+    return f'<abbr title="{esc(CAVEATS[key].strip())}">{text}</abbr>'
 
-/* ---- sidebar */
-nav.side{position:fixed;top:0;left:0;bottom:0;width:236px;background:var(--side);
-padding:18px 12px 14px;display:flex;flex-direction:column;gap:1px;z-index:10;
-overflow-y:auto}
-nav.side .brand{display:flex;align-items:center;gap:10px;padding:2px 10px 16px;
-text-decoration:none}
-nav.side .brand .mark{width:28px;height:28px;border-radius:8px;background:var(--red);
-color:#fff;display:flex;align-items:center;justify-content:center;
-font:700 16px Georgia,serif;flex:none}
-nav.side .brand .t{font:650 17px Georgia,"Times New Roman",serif;
-letter-spacing:-.02em;color:var(--ink);line-height:1.15}
-nav.side .brand .t small{display:block;font:400 10px "Segoe UI",sans-serif;
-color:var(--faint);letter-spacing:.13em;text-transform:uppercase;margin-top:2px}
-nav.side .find{display:flex;align-items:center;gap:9px;margin:0 2px 14px;
-padding:8px 11px;border-radius:9px;background:var(--raise);color:var(--faint);
-font-size:13px;cursor:pointer;border:0;width:auto;text-align:left}
-nav.side .find:hover{color:var(--ink);background:var(--raise2)}
-nav.side .find kbd{margin-left:auto;font:11px "Segoe UI",sans-serif;color:var(--faint);
-background:var(--side);border-radius:5px;padding:1px 6px}
-nav.side .find svg{width:14px;height:14px}
-nav.side .grp{font-size:10px;letter-spacing:.14em;text-transform:uppercase;
-color:var(--faint);padding:14px 11px 5px}
-nav.side a.i{display:flex;align-items:center;gap:10px;padding:7px 11px;border-radius:8px;
-color:var(--soft);text-decoration:none;font-size:13.5px;position:relative;
-transition:background .12s,color .12s}
-nav.side a.i svg{width:15px;height:15px;flex:none;opacity:.75}
-nav.side a.i .cnt{margin-left:auto;font-size:11px;color:var(--faint);
-font-variant-numeric:tabular-nums}
-nav.side a.i .cnt.hot{color:var(--ok)}
-nav.side a.i:hover{background:rgba(255,255,255,.04);color:var(--ink)}
-nav.side a.i.on{background:var(--red-bg);color:var(--ink);font-weight:600}
-nav.side a.i.on::before{content:"";position:absolute;left:-12px;top:7px;bottom:7px;
-width:3px;border-radius:2px;background:var(--red)}
-nav.side a.i.on svg{opacity:1;color:var(--red-hi)}
-nav.side a.i .dot{width:7px;height:7px;border-radius:99px;flex:none;margin:0 4px}
-nav.side .foot{margin-top:auto;padding:12px 10px 0;font-size:11px;color:var(--faint);
-line-height:1.6}
-nav.side .foot .me{display:flex;align-items:center;gap:8px;padding:2px 0 6px;
-font-size:12.5px;color:var(--ink);font-weight:600}
-nav.side .foot .me form{margin-left:auto;display:flex}
-nav.side .foot .me button{background:none;border:0;padding:3px;cursor:pointer;
-color:var(--faint);display:flex}
-nav.side .foot .me button:hover{color:var(--red-hi)}
-nav.side .foot svg{width:14px;height:14px}
-nav.side .foot a{color:var(--faint);text-decoration:none}
-nav.side .foot a:hover{color:var(--red-hi)}
 
-/* ---- page frame: one centred measure, so wide screens get even margins */
-.pg{max-width:1360px;margin:0 auto;padding:30px 36px 110px}
-.pg.narrow{max-width:1120px}
-.crumb{font-size:12.5px;color:var(--faint);margin-bottom:10px}
-.crumb a{color:var(--faint);text-decoration:none}
-.crumb a:hover{color:var(--ink)}
-.head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
-flex-wrap:wrap;padding-bottom:18px}
-h1{margin:0;font:600 30px/1.18 Georgia,"Times New Roman",serif;letter-spacing:-.022em}
-h2{font:600 20px/1.3 Georgia,"Times New Roman",serif;letter-spacing:-.015em;margin:0}
-h3{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);
-font-weight:600;margin:0 0 10px}
-.lede{color:var(--soft);font-size:14.5px;margin-top:8px;max-width:760px}
-.lede b{color:var(--ink);font-weight:600}
-.acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-section.s{padding:26px 0 0;margin-top:26px;border-top:1px solid var(--rule)}
-section.s:first-of-type{border-top:0;margin-top:0}
-.s-head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;
-margin-bottom:12px}
-.s-head .more{font-size:13px;color:var(--soft)}
-.muted{color:var(--faint)}
-.soft{color:var(--soft)}
-.ok{color:var(--ok)} .bad{color:var(--red-hi)} .warnc{color:var(--amber)}
-.small{font-size:12.5px}
+def score_cell(score, coverage=None, potential=None, show_cov: bool = True) -> str:
+    """A score with its foundation: the solid bar is what the firm earned on
+    data we hold, the hatched part is what is still unknown, and the label says
+    how much of the scoring rests on known data."""
+    if score is None:
+        return '<span class="muted">-</span>'
+    score = float(score)
+    cov = float(coverage) if coverage is not None else 100.0
+    pot = float(potential) if potential is not None else score
+    unk = max(0.0, min(100.0 - score, pot - score))
+    hi = " hi" if score >= 60 and cov >= 80 else ""
+    tip = (f"{score:.0f} of 100, earned on known data. {cov:.0f}% of the scoring rests on "
+           f"data Bellwether holds" + (f"; with the missing {100 - cov:.0f}% it could reach "
+                                       f"{pot:.0f}." if cov < 99.5 else "."))
+    cov_html = ""
+    if coverage is None:
+        # A score from before coverage was recorded: say nothing rather than
+        # claim it rests on complete data. The next rescore fills it in.
+        tip = f"{score:.0f} of 100."
+    elif show_cov:
+        cov_html = (f'<span class="cov{" part" if cov < 80 else ""}">'
+                    f'{cov:.0f}% known</span>')
+    return (f'<div class="score{hi}" title="{esc(tip)}"><span class="v">{score:.0f}</span>'
+            f'<span class="sbar"><i class="k" style="width:{score:.0f}%"></i>'
+            f'<i class="u" style="width:{unk:.0f}%"></i></span>{cov_html}</div>')
 
-/* ---- numbers in a row, separated by hairlines rather than boxes */
-.strip{display:flex;flex-wrap:wrap;gap:0;margin:4px 0 6px}
-.strip a,.strip div.k{display:block;padding:4px 26px 6px 0;margin-right:26px;
-border-right:1px solid var(--rule);text-decoration:none;min-width:90px}
-.strip > :last-child{border-right:0}
-.strip .n{font:600 25px/1.15 "Segoe UI",system-ui,sans-serif;letter-spacing:-.02em;
-color:var(--ink);font-variant-numeric:tabular-nums lining-nums}
-.strip .l{font-size:11.5px;color:var(--faint);margin-top:2px}
-.strip a:hover .n{color:var(--red-hi)}
-.strip a.on .n{color:var(--red-hi)}
 
-/* ---- controls */
-form.filters{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;padding:14px 0;
-border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);margin:8px 0 4px}
-label{display:flex;flex-direction:column;gap:5px;font-size:10.5px;color:var(--faint);
-text-transform:uppercase;letter-spacing:.09em}
-select,input[type=text],input[type=search],input[type=password],textarea{
-font:13.5px "Segoe UI",sans-serif;padding:7px 10px;border:1px solid var(--rule2);
-border-radius:8px;background:var(--bg);color:var(--ink);min-width:118px}
-input[type=search]{min-width:200px}
-select:focus,input:focus,textarea:focus{outline:none;border-color:var(--red);
-box-shadow:0 0 0 2px var(--red-bg)}
-textarea{width:100%;min-height:96px;resize:vertical}
-button,.btn{font:13.5px "Segoe UI",sans-serif;padding:7px 14px;border:1px solid var(--rule2);
-border-radius:8px;background:var(--raise2);color:var(--ink);cursor:pointer;
-text-decoration:none;display:inline-flex;align-items:center;gap:6px;line-height:1.3;
-transition:border-color .12s,background .12s}
-button:hover,.btn:hover{border-color:var(--faint);background:#39372f;color:var(--ink)}
-button.primary,.btn.primary{background:var(--red);color:#fff;border-color:transparent;
-font-weight:600}
-button.primary:hover,.btn.primary:hover{background:var(--red-hi)}
-button.ghost,.btn.ghost{background:transparent;border-color:transparent;color:var(--soft)}
-button.ghost:hover,.btn.ghost:hover{background:var(--raise);color:var(--ink)}
-button.sm,.btn.sm{padding:3px 10px;font-size:12px;border-radius:7px}
-.seg{display:inline-flex;gap:2px;background:var(--raise);border-radius:9px;padding:3px}
-.seg a{padding:5px 12px;border-radius:7px;font-size:13px;color:var(--soft);
-text-decoration:none}
-.seg a:hover{color:var(--ink)}
-.seg a.on{background:var(--raise2);color:var(--ink);font-weight:600}
+def missing_chip(missing: str | None, max_items: int = 3) -> str:
+    items = [m for m in (missing or "").split("|") if m]
+    if not items:
+        return ""
+    shown = ", ".join(items[:max_items]) + (f" +{len(items) - max_items}" if len(items) > max_items else "")
+    return (f'<span class="missing" title="Missing data: {esc(", ".join(items))}">'
+            f'Missing: {esc(shown)}</span>')
 
-/* ---- tables: no box, rows separated by a hairline */
-table{width:100%;border-collapse:separate;border-spacing:0}
-th{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);
-text-align:left;padding:12px 12px 8px;border-bottom:1px solid var(--rule2);
-font-weight:600;white-space:nowrap}
-td{padding:12px;border-bottom:1px solid var(--rule);vertical-align:top;font-size:13.5px}
-th:first-child,td:first-child{padding-left:2px}
-th:last-child,td:last-child{padding-right:2px}
-tbody tr{transition:background .1s}
-tbody tr:hover td{background:rgba(255,255,255,.022)}
-tbody tr.go{cursor:pointer}
-td a{text-decoration:none}
-.num{text-align:right;font-variant-numeric:tabular-nums}
-.firm{font-weight:600}
-.meta{color:var(--faint);font-size:12px;margin-top:3px;font-weight:400}
-.why{color:var(--soft);font-size:12.5px;line-height:1.45}
-.why b{color:var(--ink);font-weight:600}
 
-/* ---- chips and tiers */
-.chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:2px 9px;
-border-radius:99px;background:var(--raise);color:var(--soft);white-space:nowrap;
-line-height:1.5}
-.chip.lead{background:var(--ok-bg);color:var(--ok)}
-.chip.dis{background:var(--red-bg);color:var(--red-hi)}
-.chip.warn{background:var(--amber-bg);color:var(--amber)}
-.chip.line{background:transparent;border:1px solid var(--rule2)}
-.tier{display:inline-flex;align-items:center;justify-content:center;min-width:24px;
-height:22px;padding:0 7px;border-radius:6px;font:700 12px "Segoe UI",sans-serif;
-background:var(--raise);color:var(--faint)}
-.tier.A{background:var(--ok-bg);color:var(--ok)}
-.tier.B{background:var(--raise2);color:var(--ink)}
-.tier.C{background:var(--raise);color:var(--soft)}
-.score{display:flex;align-items:center;gap:9px;font-variant-numeric:tabular-nums;
-font-size:14px;font-weight:600}
-.score .b{flex:none;width:54px;height:4px;border-radius:3px;background:var(--rule2);
-overflow:hidden}
-.score .b i{display:block;height:100%;background:var(--soft)}
-.score.A .b i{background:var(--ok)}
-.bar{display:inline-block;height:4px;border-radius:3px;background:var(--ok);
-vertical-align:middle;margin-right:7px}
-.bar.neg{background:var(--red-hi)}
+# ---------------------------------------------------------------- static assets
 
-/* ---- notes, empty states, panels */
-.note{background:var(--amber-bg);border-left:2px solid var(--amber);
-border-radius:0 8px 8px 0;padding:10px 14px;font-size:13px;color:var(--amber);
-margin:10px 0}
-.note.plain{background:var(--raise);border-left-color:var(--rule2);color:var(--soft)}
-.empty{padding:30px 2px;color:var(--faint);font-size:13.5px}
-.panel{background:var(--raise);border-radius:14px;padding:16px 18px}
-.pager{display:flex;gap:14px;align-items:center;margin-top:16px;font-size:13px;
-color:var(--soft)}
-abbr{border-bottom:1px dotted var(--faint);cursor:help;text-decoration:none}
-details > summary{cursor:pointer;list-style:none}
-details > summary::-webkit-details-marker{display:none}
-.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13.5px;margin:0}
-.kv dt{color:var(--faint)}
-.kv dd{margin:0}
-@media (max-width:980px){body{margin-left:0} nav.side{position:static;width:auto}
- .pg{padding:22px 18px 80px}}
-"""
+_ASSET_V: dict[str, str] = {}
+
+
+def asset(path: str) -> str:
+    """A static URL that changes whenever the file does, so browsers can cache
+    it for a year and still never run yesterday's script."""
+    v = _ASSET_V.get(path)
+    if v is None:
+        try:
+            v = hashlib.sha256((STATIC_DIR / path).read_bytes()).hexdigest()[:10]
+        except OSError:
+            v = "0"
+        _ASSET_V[path] = v
+    return f"/static/{path}?v={v}"
+
 
 FAVICON = ('<link rel="icon" href="data:image/svg+xml,'
            '%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E'
@@ -614,115 +581,43 @@ FAVICON = ('<link rel="icon" href="data:image/svg+xml,'
            '%3Ctext x=%2716%27 y=%2722%27 font-family=%27Georgia%27 font-size=%2718%27 '
            'fill=%27white%27 text-anchor=%27middle%27%3EB%3C/text%3E%3C/svg%3E">')
 
+# Pages render before the click lands: hovering a link for a moment starts
+# loading the next page in the background (Chrome and Edge), so moving around
+# the app feels instant. GET pages never write, which is what makes this safe.
+SPECULATION = """<script type="speculationrules">{"prerender":[{"where":{"and":[
+{"href_matches":"/*"},{"not":{"href_matches":"/logout"}},{"not":{"href_matches":"/quit"}},
+{"not":{"href_matches":"/auth/*"}},{"not":{"href_matches":"/*export*"}},
+{"not":{"href_matches":"/static/*"}},{"not":{"selector_matches":"[data-noprefetch]"}}]},
+"eagerness":"moderate"}]}</script>"""
 
-# ---- the command palette: firms by name or CRD, and every page by name.
-PALETTE_JS = """
-<div id="pal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
-z-index:60" onclick="if(event.target.id=='pal')palHide()">
- <div style="max-width:600px;margin:12vh auto 0;background:var(--raise);
- border-radius:14px;overflow:hidden;box-shadow:0 22px 70px rgba(0,0,0,.55)">
-  <input id="palq" placeholder="Find a firm by name or CRD, or go to a page"
-   style="width:100%;border:0;background:var(--raise2);padding:15px 18px;
-   font-size:15.5px;min-width:0;border-radius:0">
-  <div id="palr"></div>
-  <div style="padding:8px 16px;font-size:11.5px;color:var(--faint)">
-   Arrow keys to move, Enter to open, Esc to close</div>
- </div>
-</div>
-<script>
-var PAGES=__PAGES__;
-function palShow(){var p=document.getElementById('pal');p.style.display='block';
- var q=document.getElementById('palq');q.value='';palItems=PAGES.slice(0,8);palSel=0;palRender();
- setTimeout(function(){q.focus();},0);}
-function palHide(){document.getElementById('pal').style.display='none';}
-var palT=null, palSel=0, palItems=[];
-document.addEventListener('keydown',function(e){
- if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()=='k'){e.preventDefault();palShow();return;}
- var pal=document.getElementById('pal');
- if(pal.style.display=='block'){
-  if(e.key=='Escape'){palHide();}
-  if(e.key=='ArrowDown'){e.preventDefault();palMove(1);}
-  if(e.key=='ArrowUp'){e.preventDefault();palMove(-1);}
-  if(e.key=='Enter'&&palItems.length){location.href=palItems[palSel].href;}
-  return;
- }
- if(e.target.tagName=='INPUT'||e.target.tagName=='TEXTAREA'||e.target.tagName=='SELECT')return;
- if(e.key=='/'){e.preventDefault();palShow();return;}
- if(typeof rowKey=='function')rowKey(e);
-});
-document.addEventListener('input',function(e){
- if(e.target.id!='palq')return;
- clearTimeout(palT);
- var v=e.target.value, lv=v.toLowerCase();
- var pages=PAGES.filter(function(p){return p.name.toLowerCase().indexOf(lv)>=0;});
- if(v.length<2){palItems=pages.slice(0,8);palSel=0;palRender();return;}
- palT=setTimeout(function(){
-  fetch('/api/search?q='+encodeURIComponent(v)).then(function(r){return r.json();})
-  .then(function(d){palItems=pages.slice(0,3).concat(d.map(function(x){
-    return {name:x.name,href:'/firm/'+encodeURIComponent(x.crd),
-            meta:'CRD '+x.crd+' \\u00b7 '+(x.state||'')+' \\u00b7 '+x.raum
-                 +(x.best?' \\u00b7 '+x.best:'')};}));palSel=0;palRender();});
- },120);
-});
-function palEsc(s){var d=document.createElement('span');
- d.textContent=String(s==null?'':s);return d.innerHTML;}
-function palRender(){
- /* Every field is escaped before entering innerHTML: firm names come from SEC
-    filings, which is still text somebody else typed. */
- document.getElementById('palr').innerHTML=palItems.map(function(x,i){
-  return '<a href="'+palEsc(x.href)+'" style="display:flex;justify-content:space-between;'
-   +'gap:12px;padding:10px 18px;text-decoration:none;font-size:14px;'
-   +(i==palSel?'background:var(--red-bg)':'')+'">'
-   +'<span>'+palEsc(x.name)+'</span><span style="color:var(--faint);font-size:12.5px">'
-   +palEsc(x.meta||'Page')+'</span></a>';}).join('')
-  || '<div style="padding:12px 18px;color:var(--faint);font-size:13px">Nothing matches</div>';
-}
-function palMove(d){palSel=Math.max(0,Math.min(palItems.length-1,palSel+d));palRender();}
-/* Whole table rows open their firm, except when the click lands on a control. */
-document.addEventListener('click',function(e){
- var tr=e.target.closest('tr.go'); if(!tr)return;
- if(e.target.closest('a,button,select,input,form,label,summary'))return;
- location.href=tr.dataset.href;
-});
-</script>
-"""
-
-
-def _palette() -> str:
-    import json as _json
-    pages = [{"name": "Home", "href": "/"},
-             {"name": "Signals", "href": "/signals"},
-             {"name": "Firms", "href": "/firms"},
-             {"name": "Saved lists", "href": "/saved"},
-             {"name": "System", "href": "/health"},
-             {"name": "Review queue", "href": "/review"}]
-    for k in products.product_keys():
-        pages.insert(1 + products.product_keys().index(k),
-                     {"name": products.product(k)["name"] + " list",
-                      "href": f"/lists/{k}"})
-    return PALETTE_JS.replace("__PAGES__", _json.dumps(pages))
-
-
-_NAV_CACHE: dict = {"t": 0.0}
+PALETTE_HTML = """<div id="pal"><div class="box">
+<input id="palq" placeholder="Find a firm, a person, or a page" autocomplete="off">
+<div id="palr"></div>
+<div class="foot">Arrow keys to move, Enter to open, Esc to close</div></div></div>"""
 
 I = ('fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"'
      ' stroke-linejoin="round"')
 ICONS = {
     "home": f'<svg viewBox="0 0 24 24" {I}><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg>',
+    "ask": f'<svg viewBox="0 0 24 24" {I}><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2"/></svg>',
     "signals": f'<svg viewBox="0 0 24 24" {I}><path d="M22 12h-4l-3 8-6-16-3 8H2"/></svg>',
     "firms": f'<svg viewBox="0 0 24 24" {I}><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-4h6v4"/></svg>',
+    "people": f'<svg viewBox="0 0 24 24" {I}><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.9.7 3.1 2.4 3.5 5.2"/></svg>',
     "saved": f'<svg viewBox="0 0 24 24" {I}><path d="M6 3h12v18l-6-4-6 4z"/></svg>',
-    "system": f'<svg viewBox="0 0 24 24" {I}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+    "enrich": f'<svg viewBox="0 0 24 24" {I}><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="4"/></svg>',
+    "settings": f'<svg viewBox="0 0 24 24" {I}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
     "search": f'<svg viewBox="0 0 24 24" {I}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
     "out": f'<svg viewBox="0 0 24 24" {I}><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg>',
 }
 FAMILY_COLOUR = {"PHH": "#c65454", "AcuBooth": "#cfa95c", "Glynac": "#63aa7c"}
 
+_NAV_CACHE: dict = {"t": 0.0}
+
 
 def _nav_counts() -> dict:
-    """Sidebar counts, cached for a few seconds: they head every page."""
+    """Sidebar counts, cached for half a minute: they head every page."""
     import time as _time
-    if _time.monotonic() - _NAV_CACHE["t"] < 8.0:
+    if _time.monotonic() - _NAV_CACHE["t"] < 30.0:
         return _NAV_CACHE
     c = conn()
 
@@ -739,26 +634,21 @@ def _nav_counts() -> dict:
             return 0
 
     out = {"t": _time.monotonic()}
-    tiers: dict = {}
+    lists: dict = {}
     try:
         for r in c.execute("SELECT product, COUNT(*) n FROM product_score"
-                           " WHERE status='scored' AND tier='A' GROUP BY product"):
-            tiers[r["product"]] = r["n"]
+                           " WHERE status='scored' GROUP BY product"):
+            lists[r["product"]] = r["n"]
     except Exception:
         c.rollback()
-    out["tierA"] = tiers
+    out["lists"] = lists
     out["signals"] = one("""SELECT COUNT(*) n FROM trigger_event t
         JOIN firm_scope s ON s.crd=t.crd
         LEFT JOIN trigger_action a ON a.trigger_id=t.id
         WHERE t.suppressed=0 AND a.state IS NULL AND t.detected_date >= ?""",
                          (signal_cutoff(),))
-    # Only items on tier A firms earn a badge: those are the calls about to be
-    # made. The rest wait in the queue on safe defaults.
-    hot = "(SELECT crd FROM product_score WHERE status='scored' AND tier='A')"
-    out["review"] = (one(f"SELECT COUNT(*) n FROM adv_13f_match WHERE status='review'"
-                         f" AND crd IN {hot}")
-                     + one(f"SELECT COUNT(*) n FROM brochure_negation WHERE status='open'"
-                           f" AND crd IN {hot}"))
+    out["review"] = (one("SELECT COUNT(*) n FROM adv_13f_match WHERE status='review'")
+                     + one("SELECT COUNT(*) n FROM brochure_negation WHERE status='open'"))
     feed = None
     try:
         feed = c.execute("SELECT published_at FROM snapshot WHERE source_key='adv_feed'"
@@ -772,109 +662,127 @@ def _nav_counts() -> dict:
     return out
 
 
+def _pages_for(acct: dict | None) -> list[dict]:
+    pages = [{"name": "Home", "href": "/"}, {"name": "Bellwether AI", "href": "/ask"},
+             {"name": "Signals", "href": "/signals"}, {"name": "Firms", "href": "/firms"},
+             {"name": "People", "href": "/people"}, {"name": "Saved lists", "href": "/saved"}]
+    for k in products.product_keys():
+        pages.append({"name": products.product(k)["name"] + " list", "href": f"/lists/{k}"})
+        pages.append({"name": products.product(k)["name"] + " scoring",
+                      "href": f"/lists/{k}?view=scoring"})
+    if users.can_manage_enrichment(acct):
+        pages.append({"name": "Enrichment", "href": "/enrichment"})
+    if users.is_admin(acct):
+        for name, href in (("Settings", "/settings"), ("Jobs", "/settings/jobs"),
+                           ("Users and roles", "/settings/users"),
+                           ("AI provider", "/settings/ai"),
+                           ("Microsoft sign-in", "/settings/signin"),
+                           ("System health", "/settings/system"),
+                           ("Review queue", "/settings/review")):
+            pages.append({"name": name, "href": href})
+    return pages
+
+
 def nav(active: str) -> str:
     n = _nav_counts()
-    user = current_user()
+    acct = current_account()
 
     def item(key, href, label, cnt=None, hot=False, icon=None, dot=None):
         ic = ICONS.get(icon or key, "")
         if dot:
             ic = f'<span class="dot" style="background:{dot}"></span>'
-        c = (f'<span class="cnt{" hot" if hot else ""}">{cnt:,}</span>'
-             if cnt else "")
+        c = (f'<span class="cnt{" hot" if hot else ""}">{cnt:,}</span>' if cnt else "")
         return (f'<a class="i{" on" if key == active else ""}" href="{href}">'
                 f'{ic}{esc(label)}{c}</a>')
 
     plist = "".join(
-        item(f"list:{k}", f"/lists/{k}", products.product(k)["name"],
-             n["tierA"].get(k), hot=True,
+        item(f"list:{k}", f"/lists/{k}", products.product(k)["name"], n["lists"].get(k),
              dot=FAMILY_COLOUR.get(products.product(k)["family"], "#888"))
         for k in products.product_keys())
+    data = ""
+    if users.can_manage_enrichment(acct):
+        data += item("enrichment", "/enrichment", "Enrichment", icon="enrich")
+    if users.is_admin(acct):
+        data += item("settings", "/settings", "Settings", n.get("review"))
+    if data:
+        data = '<div class="grp">Data</div>' + data
     who = ""
-    if user:
-        who = (f'<div class="me">{esc(auth.display_name(user))}'
-               f'<form method="post" action="/logout">'
-               f'<button type="submit" title="Sign out">{ICONS["out"]}</button>'
-               f'</form></div>')
-    quit_link = "" if MANAGED else f'<a href="/quit">Quit {APP_NAME}</a><br>'
+    if acct:
+        role = users.ROLE_LABEL.get(acct.get("role"), "")
+        if acct.get("role") == "owner" and acct.get("families"):
+            role = "Owner, " + ", ".join(acct["families"])
+        who = (f'<div class="me"><div class="av">{esc(initials(acct.get("name") or ""))}</div>'
+               f'<div class="who"><b>{esc(acct.get("name") or "")}</b><span>{esc(role)}</span></div>'
+               f'<form method="post" action="/logout"><button type="submit" title="Sign out">'
+               f'{ICONS["out"]}</button></form></div>')
+    quit_link = ("" if MANAGED or not users.is_admin(acct)
+                 else f'<a href="/quit">Quit {APP_NAME}</a><br>')
     feed = esc(n["feed"]) if n.get("feed") else "none yet"
-    return (FAVICON + _palette() +
+    pages = json.dumps(_pages_for(acct))
+    return (f'<script>window.BW_PAGES={pages};</script>' + PALETTE_HTML +
             '<nav class="side">'
             f'<a class="brand" href="/"><div class="mark">B</div><div class="t">{APP_NAME}'
-            '<small>GTM intelligence</small></div></a>'
+            '<small>Adviser intelligence</small></div></a>'
             f'<button class="find" type="button" onclick="palShow()">{ICONS["search"]}'
-            'Find a firm<kbd>Ctrl K</kbd></button>'
+            'Find anything<kbd>Ctrl K</kbd></button>'
             + item("home", "/", "Home")
+            + item("ask", "/ask", "Bellwether AI")
             + '<div class="grp">Product lists</div>' + plist
             + '<div class="grp">Work</div>'
-            + item("signals", "/signals", "Signals", n.get("signals"))
+            + item("signals", "/signals", "Signals", n.get("signals"), hot=True)
             + item("firms", "/firms", "Firms")
+            + item("people", "/people", "People")
             + item("saved", "/saved", "Saved lists")
-            + '<div class="grp">Data</div>'
-            + item("system", "/health", "System", n.get("review"))
-            + f'<div class="foot">{who}{quit_link}SEC feed of {feed}</div></nav>')
+            + data
+            + f'<div class="foot">{who}<div class="fresh">{quit_link}SEC feed of {feed}</div></div>'
+            + '</nav>')
 
 
 def page(title: str, active: str, body: str, css: str = "", js: str = "",
-         status: int = 200) -> HTMLResponse:
+         status: int = 200, orbs: bool = False) -> HTMLResponse:
     """Every screen goes through here: one head, one sidebar, one stylesheet."""
+    orb = (f'<script type="module" src="{asset("orb.js")}"></script>' if orbs else "")
     return HTMLResponse(
         f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>{esc(title)} . {APP_NAME}</title><style>{PAGE_CSS}{css}</style></head>'
-        f'<body>{nav(active)}{body}{("<script>" + js + "</script>") if js else ""}'
+        f'<title>{esc(title)} . {APP_NAME}</title>{FAVICON}'
+        f'<link rel="stylesheet" href="{asset("app.css")}">'
+        f'{("<style>" + css + "</style>") if css else ""}{SPECULATION}</head>'
+        f'<body>{nav(active)}{body}'
+        f'<script src="{asset("app.js")}" defer></script>{orb}'
+        f'{("<script>" + js + "</script>") if js else ""}'
         f'</body></html>', status_code=status)
 
 
-def caveat(key: str, text: str) -> str:
-    return f'<abbr title="{esc(CAVEATS[key].strip())}">{text}</abbr>'
-
-
-def tier_chip(tier: str | None, title: str = "") -> str:
-    t = tier or "-"
-    cls = t if t in ("A", "B", "C") else ""
-    return f'<span class="tier {cls}" title="{esc(title)}">{esc(t)}</span>'
-
-
-def score_cell(score, tier) -> str:
-    if score is None:
-        return '<span class="muted">-</span>'
-    w = max(0, min(100, float(score)))
-    cls = tier if tier in ("A", "B", "C") else ""
-    return (f'<div class="score {cls}"><span>{score:.0f}</span>'
-            f'<span class="b"><i style="width:{w:.0f}%"></i></span></div>')
+def forbidden(what: str = "this page") -> HTMLResponse:
+    return page("Not available", "", f"""<div class="pg narrow">
+<h1>Not available to you</h1><p class="lede">{esc(what.capitalize())} is for admins. If you
+need it, ask an admin to change your role in Settings, Users.</p>
+<p><a class="btn" href="/">Back to Home</a></p></div>""", status=403)
 
 
 # --- who is signed in -----------------------------------------------------
 # Deny by default: the middleware requires a session for every path that is not
 # explicitly public, so a route added later is protected without anyone having
-# to remember to protect it.
+# to remember to protect it. Admin areas are guarded here too, by prefix.
 
-LOGIN_CSS = """
-.signin{max-width:360px;margin:0 auto;padding:90px 24px 40px}
-.signin .mk{width:48px;height:48px;border-radius:13px;background:var(--red);
-color:#fff;display:flex;align-items:center;justify-content:center;
-margin:0 auto 20px;font:700 24px Georgia,serif}
-.signin h1{font-size:27px;text-align:center;margin:0 0 6px}
-.signin .sub{text-align:center;color:var(--soft);font-size:13.5px;margin:0 0 26px}
-.signin label{margin-bottom:14px}
-.signin input{width:100%;min-width:0;padding:10px 12px;font-size:14px}
-.signin button{width:100%;padding:10px;margin-top:6px;font-size:14px;justify-content:center}
-.signin .err{background:var(--red-bg);border-left:2px solid var(--red);
-padding:9px 13px;font-size:13px;color:var(--red-hi);margin-bottom:18px;
-border-radius:0 8px 8px 0}
-.signin .hint{color:var(--faint);font-size:12px;line-height:1.65;margin-top:22px;
-text-align:center}
-"""
+PUBLIC_PREFIXES = ("/static/",)
+PUBLIC_PATHS = auth.PUBLIC_PATHS | {"/auth/microsoft", "/auth/microsoft/callback"}
+ADMIN_PREFIXES = ("/settings", "/admin/", "/health", "/review", "/quit")
+ENRICH_PREFIXES = ("/enrichment",)
 
 
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    if path in auth.PUBLIC_PATHS:
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
         return await call_next(request)
-    user = auth.read_session(request.cookies.get(auth.COOKIE))
-    if not user or user not in auth.load_users():
+    login = auth.read_session(request.cookies.get(auth.COOKIE))
+    acct = users.get(login) if login else None
+    if not acct or not acct.get("active"):
+        if path.startswith("/api/"):
+            return JSONResponse({"ok": False, "error": "Signed out. Reload the page."},
+                                status_code=401)
         if request.method != "GET":
             return RedirectResponse("/login", status_code=303)
         nxt = request.url.path
@@ -882,12 +790,23 @@ async def require_login(request: Request, call_next):
             nxt += "?" + request.url.query
         return RedirectResponse(
             "/login?next=" + urllib.parse.quote(nxt, safe=""), status_code=303)
-    request.state.user = user
-    token = CURRENT_USER.set(user)
+    request.state.user = acct["login"]
+    t1 = CURRENT_USER.set(acct["login"])
+    t2 = CURRENT_ACCOUNT.set(acct)
     try:
+        if path.startswith(ADMIN_PREFIXES) and not users.is_admin(acct):
+            if path.startswith("/api/") or request.method != "GET":
+                return JSONResponse({"ok": False, "error": "Admins only."}, status_code=403)
+            return forbidden("settings")
+        if path.startswith(ENRICH_PREFIXES) and not users.can_manage_enrichment(acct):
+            if request.method != "GET":
+                return JSONResponse({"ok": False, "error": "Admins and product owners only."},
+                                    status_code=403)
+            return forbidden("enrichment")
         return await call_next(request)
     finally:
-        CURRENT_USER.reset(token)
+        CURRENT_ACCOUNT.reset(t2)
+        CURRENT_USER.reset(t1)
 
 
 # --- sign-in throttling ----------------------------------------------------
@@ -951,7 +870,8 @@ def _clear_failures(ip: str, who: str) -> None:
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "connect-src 'self'; font-src 'self'; object-src 'none'; "
-       "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+       "base-uri 'none'; form-action 'self' https://login.microsoftonline.com; "
+       "frame-ancestors 'none'")
 SECURITY_HEADERS = {
     "Content-Security-Policy": CSP,
     "X-Frame-Options": "DENY",
@@ -966,38 +886,9 @@ SECURITY_HEADERS = {
 }
 
 
-def login_page(error: str = "", nxt: str = "/", status: int | None = None) -> HTMLResponse:
-    no_accounts = not auth.load_users()
-    err = f'<div class="err">{esc(error)}</div>' if error else ""
-    if no_accounts:
-        err = ('<div class="err">No accounts exist yet. On the server, run: '
-               'python -m scripts.manage_users add &lt;username&gt; '
-               '--name "Full Name"</div>')
-    return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in to {APP_NAME}</title>{FAVICON}
-<style>{PAGE_CSS}{LOGIN_CSS}body{{margin:0}}</style>
-<div class="signin">
-<div class="mk">B</div>
-<h1>{APP_NAME}</h1>
-<p class="sub">Who to call, why, and what to say</p>
-{err}
-<form method="post" action="/login">
-<input type="hidden" name="next" value="{esc(nxt)}">
-<label>Username<input type="text" name="username" autocomplete="username" autofocus
- required></label>
-<label>Password<input name="password" type="password"
- autocomplete="current-password" required></label>
-<button class="primary" type="submit">Sign in</button>
-</form>
-<p class="hint">Your name is what marks the firms you own and the reviews you
-clear, so a shared queue stays honest about who did what.</p>
-</div>""", status_code=status or (200 if not error else 401))
-
-
 @app.middleware("http")
 async def harden(request: Request, call_next):
-    """Outermost layer: upgrade plain HTTP, then stamp every response."""
+    """Upgrade plain HTTP, then stamp every response."""
     if SECURE_COOKIES and request.headers.get("x-forwarded-proto", "").lower() == "http":
         return RedirectResponse(str(request.url.replace(scheme="https")),
                                 status_code=308)
@@ -1007,11 +898,21 @@ async def harden(request: Request, call_next):
     if SECURE_COOKIES:
         resp.headers.setdefault("Strict-Transport-Security",
                                 "max-age=31536000; includeSubDomains")
-    # Pages carry client names, contacts and notes: never keep them in a
-    # shared or browser cache.
-    if request.url.path not in ("/healthz", "/favicon.ico", "/robots.txt"):
+    path = request.url.path
+    if path.startswith("/static/"):
+        # Versioned URLs (see asset()), so a year is safe: a changed file gets
+        # a new URL and the old one is simply never asked for again.
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path not in ("/healthz", "/favicon.ico", "/robots.txt"):
+        # Pages carry client names, contacts and notes: never keep them in a
+        # shared or browser cache.
         resp.headers.setdefault("Cache-Control", "no-store")
     return resp
+
+
+# Outermost: compress what everything inside produced. Pages are mostly
+# repeated markup and shrink four to six times.
+app.add_middleware(GZipMiddleware, minimum_size=800)
 
 
 @app.get("/robots.txt")
@@ -1019,32 +920,179 @@ def robots():
     return Response("User-agent: *\nDisallow: /\n", media_type="text/plain")
 
 
+@app.get("/healthz")
+def healthz():
+    """Unauthenticated liveness only, for the launcher and any load balancer.
+    Deliberately carries no data."""
+    return {"ok": True, "app": APP_NAME}
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
+
+
+# --- sign in ----------------------------------------------------------------
+
+MS_LOGO = ('<svg viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/>'
+           '<rect x="11" y="1" width="9" height="9" fill="#7fba00"/>'
+           '<rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>'
+           '<rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>')
+
+
+def password_login_allowed() -> bool:
+    """Passwords stay available until Microsoft sign-in is set up, whatever the
+    setting says: switching them off first would lock everyone out."""
+    from . import msauth
+    return settings.get_bool("auth.password_login") or not msauth.configured()
+
+
+def login_page(error: str = "", nxt: str = "/", status: int | None = None,
+               show_password: bool = False) -> HTMLResponse:
+    from . import msauth
+    ms = msauth.configured()
+    pw = password_login_allowed()
+    err = f'<div class="err">{esc(error)}</div>' if error else ""
+    if users.count() == 0 and not ms:
+        err = ('<div class="err">No accounts exist yet. On the server, run: '
+               'python -m scripts.manage_users add &lt;username&gt; --name "Full Name" '
+               '--role admin</div>')
+    ms_btn = ""
+    if ms:
+        ms_btn = (f'<a class="btn ms" href="/auth/microsoft?next={esc(urllib.parse.quote(nxt))}"'
+                  f' data-noprefetch>{MS_LOGO}Sign in with Microsoft</a>')
+    pw_form = ""
+    if pw:
+        form = (f'<form class="pw" method="post" action="/login">'
+                f'<input type="hidden" name="next" value="{esc(nxt)}">'
+                f'<label>Username<input type="text" name="username" autocomplete="username"'
+                f'{" autofocus" if not ms else ""} required></label>'
+                f'<label>Password<input name="password" type="password"'
+                f' autocomplete="current-password" required></label>'
+                f'<button class="{"primary" if not ms else ""}" type="submit">Sign in</button>'
+                f'</form>')
+        if ms:
+            pw_form = (f'<details class="alt"{" open" if show_password else ""}>'
+                       f'<summary>Use a Bellwether password instead</summary>{form}</details>')
+        else:
+            pw_form = form
+    hint = ("Use your Acumen Strategy Microsoft account. Your name marks the firms you "
+            "own and the reviews you clear." if ms else
+            "Your name marks the firms you own and the reviews you clear, so a shared "
+            "queue stays honest about who did what.")
+    return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in to {APP_NAME}</title>{FAVICON}
+<link rel="stylesheet" href="{asset('app.css')}"></head>
+<body class="signin-page"><main class="signin">
+<canvas data-orb="breathing" data-size="64" data-px="132" data-tint="#d9d4ca"
+ aria-label="Bellwether"></canvas>
+<h1>{APP_NAME}</h1>
+<p class="sub">Intelligence on every adviser firm, and who to call next</p>
+{err}{ms_btn}{pw_form}
+<p class="hint">{hint}</p>
+</main><script type="module" src="{asset('orb.js')}"></script></body></html>""",
+                        status_code=status or (200 if not error else 401))
+
+
 @app.get("/login", response_class=HTMLResponse)
-def login_form(next: str = Query("/")):
-    return login_page(nxt=safe_back(next))
+def login_form(next: str = Query("/"), pw: str = Query("")):
+    return login_page(nxt=safe_back(next), show_password=bool(pw))
+
+
+def _session_response(login: str, nxt: str) -> HTMLResponse:
+    """Set the session and move on with a page rather than a redirect.
+
+    The session cookie is SameSite=Strict. After a sign-in that began on
+    login.microsoftonline.com, browsers treat a redirect chain as cross-site
+    and leave a Strict cookie off the next request, which bounces straight back
+    to the sign-in page. A page that navigates by itself starts a fresh,
+    same-site navigation, so the cookie is sent."""
+    target = safe_back(nxt)
+    resp = HTMLResponse(f"""<!doctype html><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url={esc(target)}">
+<link rel="stylesheet" href="{asset('app.css')}">
+<body class="signin-page"><p class="muted">Signing you in</p></body>""")
+    resp.set_cookie(auth.COOKIE, auth.make_session(login),
+                    max_age=auth.SESSION_DAYS * 86400, httponly=True,
+                    samesite="strict", secure=SECURE_COOKIES, path="/")
+    return resp
 
 
 @app.post("/login", response_class=HTMLResponse)
 def login_submit(request: Request, username: str = Form(""),
                  password: str = Form(""), next: str = Form("/")):
+    if not password_login_allowed():
+        return login_page("Password sign-in is switched off. Use Microsoft.",
+                          nxt=safe_back(next), status=403)
     who = (username or "").strip().lower()
     ip = client_ip(request)
     wait = _throttled(ip, who)
     if wait:
         unit = "minute" if wait == 1 else "minutes"
         return login_page(f"Too many failed sign-ins. Try again in {wait} {unit}.",
-                          nxt=safe_back(next), status=429)
-    rec = auth.check_login(username, password)
-    if not rec:
+                          nxt=safe_back(next), status=429, show_password=True)
+    acct = users.check_password(username, password)
+    if not acct:
         _record_failure(ip, who)
-        return login_page("That username and password combination is not "
-                          "recognised.", nxt=safe_back(next))
+        return login_page("That username and password combination is not recognised.",
+                          nxt=safe_back(next), show_password=True)
     _clear_failures(ip, who)
-    # Only ever redirect somewhere inside the app.
     resp = RedirectResponse(safe_back(next), status_code=303)
-    resp.set_cookie(auth.COOKIE, auth.make_session(username.strip().lower()),
+    resp.set_cookie(auth.COOKIE, auth.make_session(acct["login"]),
                     max_age=auth.SESSION_DAYS * 86400, httponly=True,
                     samesite="strict", secure=SECURE_COOKIES, path="/")
+    return resp
+
+
+def public_base(request: Request) -> str:
+    """The address people reach Bellwether at, for the Microsoft redirect URI."""
+    fixed = settings.get("app.public_url").strip().rstrip("/")
+    if fixed:
+        return fixed
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    if SECURE_COOKIES:
+        proto = "https"
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host")
+            or request.url.netloc).split(",")[0].strip()
+    return f"{proto}://{host}"
+
+
+@app.get("/auth/microsoft")
+def ms_start(request: Request, next: str = Query("/")):
+    from . import msauth
+    if not msauth.configured():
+        return login_page("Microsoft sign-in is not set up yet. An admin can set it up in "
+                          "Settings, Sign-in.", status=503, show_password=True)
+    try:
+        url, cookie = msauth.start(public_base(request), safe_back(next))
+    except msauth.SignInError as e:
+        return login_page(str(e), status=503, show_password=True)
+    except Exception:
+        return login_page("Microsoft sign-in could not start. Check the settings in "
+                          "Settings, Sign-in.", status=503, show_password=True)
+    resp = RedirectResponse(url, status_code=303)
+    resp.set_cookie(msauth.FLOW_COOKIE, cookie, max_age=msauth.FLOW_TTL_S, httponly=True,
+                    samesite="lax", secure=SECURE_COOKIES, path="/auth/microsoft")
+    return resp
+
+
+@app.get("/auth/microsoft/callback", response_class=HTMLResponse)
+def ms_callback(request: Request):
+    from . import msauth
+    params = dict(request.query_params)
+    try:
+        claims, nxt = msauth.finish(request.cookies.get(msauth.FLOW_COOKIE), params)
+    except msauth.SignInError as e:
+        return login_page(str(e), status=401)
+    except Exception:
+        return login_page("Microsoft sign-in failed. Please try again.", status=401)
+    email = msauth.email_of(claims)
+    acct = users.from_microsoft(email, claims.get("name") or email, claims.get("oid"))
+    if not acct.get("active"):
+        return login_page("Your Bellwether account is switched off. Ask an admin.", status=403)
+    resp = _session_response(acct["login"], nxt)
+    resp.delete_cookie(msauth.FLOW_COOKIE, path="/auth/microsoft")
     return resp
 
 
@@ -1055,49 +1103,7 @@ def logout():
     return resp
 
 
-@app.get("/healthz")
-def healthz():
-    """Unauthenticated liveness only, for the launcher and any load balancer.
-    Deliberately carries no data."""
-    return {"ok": True, "app": APP_NAME}
-
-
-@app.get("/health.json")
-def health_json():
-    c = conn()
-    out = {
-        "snapshots": [dict(r) for r in c.execute(
-            "SELECT source_key,published_at,bytes,captured_at FROM snapshot ORDER BY id")],
-        "runs": [dict(r) for r in c.execute(
-            "SELECT source_key,stage,status,rows_out,flagged,message,finished_at"
-            " FROM run_log ORDER BY id DESC LIMIT 15")],
-    }
-    c.close()
-    return JSONResponse(out)
-
-
-@app.get("/api/search")
-def api_search(q: str = Query("", min_length=0)):
-    """Firm lookup for the palette. Read-only, tiny payload, best list shown."""
-    if len(q.strip()) < 2:
-        return JSONResponse([])
-    c = conn()
-    rows = c.execute("""
-        SELECT f.crd, f.legal_name, f.state, f.raum, s.best_product, s.best_tier
-        FROM firm_current f LEFT JOIN firm_scope s ON s.crd=f.crd
-        WHERE (f.legal_name ILIKE ? OR f.business_name ILIKE ? OR f.crd = ?)
-        ORDER BY (s.crd IS NULL), s.priority DESC, f.raum DESC NULLS LAST LIMIT 9""",
-        (f"%{q.strip()}%", f"%{q.strip()}%", q.strip())).fetchall()
-    c.close()
-    out = []
-    for r in rows:
-        best = ""
-        if r["best_product"]:
-            best = f"{products.product(r['best_product'])['name']} tier {r['best_tier']}"
-        out.append({"crd": r["crd"], "name": r["legal_name"], "state": r["state"],
-                    "raum": money(r["raum"]), "best": best})
-    return JSONResponse(out)
-
+# --- small shared actions --------------------------------------------------
 
 @app.post("/watch/{crd}")
 def watch_toggle(crd: str, back: str = Form("/")):
@@ -1116,7 +1122,7 @@ def watch_toggle(crd: str, back: str = Form("/")):
 
 @app.post("/views/save")
 def view_save(page: str = Form(...), qs: str = Form(""), name: str = Form(...)):
-    ok_page = page in ("signals", "firms") or (
+    ok_page = page in ("signals", "firms", "people") or (
         page.startswith("list:") and page[5:] in products.product_keys())
     if not ok_page or not name.strip():
         return RedirectResponse("/", status_code=303)
@@ -1144,68 +1150,15 @@ def saved_view_href(v) -> str:
         return f"/lists/{p[5:]}?{v['qs']}"
     if p in ("inbox", "signals"):
         return f"/signals?{v['qs']}"
+    if p == "people":
+        return f"/people?{v['qs']}"
     return f"/firms?{v['qs']}"
 
 
-@app.get("/favicon.ico")
-def favicon():
-    return Response(status_code=204)
-
-
-@app.post("/admin/run-weekly")
-def run_weekly_now():
-    """Kick the weekly cycle from the UI. One at a time; progress lands in
-    run_log within seconds and is visible on System."""
-    c = conn()
-    busy = c.execute("SELECT COUNT(*) n FROM run_log WHERE status='running'"
-                     " AND started_at::timestamptz > NOW() - INTERVAL '2 hours'").fetchone()["n"]
-    c.close()
-    if busy:
-        return RedirectResponse("/health?msg=already-running", status_code=303)
-    log = open(config.DATA_DIR / "weekly.log", "ab")
-    subprocess.Popen(
-        [sys.executable, "-m", "scripts.run_weekly", "--brochure-slice", "120"],
-        cwd=str(config.ROOT), stdout=log, stderr=log, creationflags=procs.SPAWN_FLAGS)
-    return RedirectResponse("/health?msg=started", status_code=303)
-
-
-@app.post("/admin/rescore")
-def rescore_now():
-    """Recompute every product list now, from what is already held. Seconds,
-    not minutes: useful right after a config change or a burst of reviews."""
-    log = open(config.DATA_DIR / "weekly.log", "ab")
-    subprocess.Popen([sys.executable, "-m", "scripts.score_products"],
-                     cwd=str(config.ROOT), stdout=log, stderr=log,
-                     creationflags=procs.SPAWN_FLAGS)
-    return RedirectResponse("/health?msg=rescoring", status_code=303)
-
-
-AUTOPILOT_KINDS = ("brochures", "brochure_retag", "firm_refresh", "contact_extract",
-                   "web_enrich", "mail_platform", "infer_emails", "email_verify",
-                   "cusip_verify")
-
-
-@app.post("/admin/task/{kind}/{action}")
-def task_control(kind: str, action: str):
-    """Start or pause an autopilot job. Start also launches the worker process
-    if none is alive; Pause takes effect within one slice."""
-    if kind not in AUTOPILOT_KINDS or action not in ("start", "pause"):
-        return RedirectResponse("/health", status_code=303)
-    c = conn()
-    c.execute("INSERT OR IGNORE INTO auto_task (kind) VALUES (?)", (kind,))
-    c.execute("UPDATE auto_task SET desired_state=?, updated_at=? WHERE kind=?",
-              ("running" if action == "start" else "paused",
-               datetime.now(timezone.utc).isoformat(timespec="seconds"), kind))
-    c.commit()
-    c.close()
-    if action == "start":
-        ensure_autopilot()
-    return RedirectResponse("/health#jobs", status_code=303)
-
-
 # --- quitting -------------------------------------------------------------
-# There is no stop script. The tool starts itself at logon and is stopped from
-# inside itself, so the only way to shut it down is a deliberate click.
+# There is no stop script. On a desktop the tool starts itself at logon and is
+# stopped from inside itself, so the only way to shut it down is a deliberate
+# click; on a server the orchestrator owns its lifetime and Quit is hidden.
 
 QUIT_CSS = """
 .quitbox{max-width:520px;margin:0 auto;padding:90px 30px 40px;text-align:center}
@@ -1228,23 +1181,11 @@ def quit_confirm():
 <p>This {APP_NAME} runs on a server that restarts it automatically, so quitting
 from inside would only bounce it.</p>
 <div class="acts"><a class="btn" href="/">Back</a></div></div>""", QUIT_CSS)
-    c = conn()
-    try:
-        jobs = c.execute("SELECT kind FROM auto_task WHERE desired_state='running'"
-                         ).fetchall()
-    except Exception:
-        jobs = []
-    c.close()
-    note = ""
-    if jobs:
-        names = ", ".join(j["kind"].replace("_", " ") for j in jobs)
-        note = (f'<p>Background work is running right now ({esc(names)}). It stops '
-                f'too, and picks up where it left off next time.</p>')
     return page(f"Quit {APP_NAME}", "quit", f"""<div class="quitbox">
 <div class="mk">B</div>
 <h1>Quit {APP_NAME}?</h1>
-<p>Everything is already saved. Nothing is lost by quitting.</p>
-{note}
+<p>Everything is already saved. Background jobs stop too and pick up where they
+left off next time.</p>
 <div class="acts">
 <form method="post" action="/admin/quit">
 <button type="submit" class="primary">Quit {APP_NAME}</button></form>
@@ -1264,8 +1205,7 @@ def quit_now():
     threading.Timer(0.8, stop_everything).start()
     return HTMLResponse(f"""<!doctype html><meta charset="utf-8">
 <title>{APP_NAME} has stopped</title>{FAVICON}
-<style>{PAGE_CSS}{QUIT_CSS}
-body{{margin:0}}</style>
+<link rel="stylesheet" href="{asset('app.css')}"><style>{QUIT_CSS}body{{margin:0}}</style>
 <div class="quitbox">
 <div class="mk">B</div>
 <h1>{APP_NAME} has stopped</h1>
@@ -1275,19 +1215,32 @@ To start it right now, open the {APP_NAME} shortcut on your desktop.</p>
 </div>""")
 
 
-from . import (firm_view, firms_view, home_view, list_view,  # noqa: E402
-               lists_view, review_view, signals_view)
+from . import (api_view, ask_view, enrich_view, firm_view, firms_view,  # noqa: E402
+               home_view, lists_view, people_view, settings_view, signals_view)
 
+app.include_router(api_view.router)       # /api/*
 app.include_router(home_view.router)      # /
+app.include_router(ask_view.router)       # /ask
 app.include_router(lists_view.router)     # /lists/{product}
 app.include_router(signals_view.router)   # /signals
 app.include_router(firms_view.router)     # /firms, /saved, exports
+app.include_router(people_view.router)    # /people
 app.include_router(firm_view.router)      # /firm/{crd}
-app.include_router(list_view.router)      # /health (System)
-app.include_router(review_view.router)    # /review
+app.include_router(enrich_view.router)    # /enrichment
+app.include_router(settings_view.router)  # /settings (admins)
 
 
 # Old URLs, redirected to their new home so bookmarks keep working.
+@app.get("/health")
+def _moved_health():
+    return RedirectResponse("/settings/system", status_code=307)
+
+
+@app.get("/review")
+def _moved_review():
+    return RedirectResponse("/settings/review", status_code=307)
+
+
 @app.get("/guide")
 def _moved_guide():
     return RedirectResponse("/", status_code=307)

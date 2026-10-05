@@ -7,7 +7,16 @@
 #   criteria      each earns 0-100 points, multiplied by its weight; weights add to 100
 #   penalties     points taken off the final score
 #   signals       never scored; shown as talking points or flags
-#   tiers         what a score means for the SDR, highest first
+#
+# There are no tiers. Each product is one list ranked by score. A criterion
+# whose data Bellwether does not have yet scores zero and is shown as missing,
+# with the share of the weight that rests on known data (coverage) beside the
+# score, so a firm never ranks high because something about it is unknown.
+#
+# Admins and each product's owner can change weights, levels and thresholds,
+# switch a criterion off (weight 0) and add data-field factors on the Scoring
+# screen. Those edits are stored in the database and overlay this file, which
+# stays the shipped default and the reset point.
 #
 # The logic that decides which level a firm reaches for each criterion lives in
 # prospect/products.py, one function per criterion key. The weights, the points
@@ -24,7 +33,7 @@
 # (RIA Fit, 1031 Partner and JV Mandate Fit scores, plan points rescaled to
 # 100), and Glynac/02_GLYNAC_GTM_Plan_v2.1.
 
-config_version: 1
+config_version: 2
 
 # The order products appear in the sidebar and on the home page.
 order: [phh_fund, phh_1031, phh_jv, acubooth, glynac]
@@ -113,7 +122,7 @@ products:
         levels:
           - [100, "Already holds private investments at a major custodian"]
           - [60, "Major custodian, no known blocker"]
-          - [30, "Unknown"]
+          - [30, "Custodian known, no private investments yet"]
           - [0, "Known blocker"]
       - key: relationship
         label: Relationship and triggers
@@ -137,11 +146,6 @@ products:
         label: Brochure language on alternatives or real estate; 13F holds O, NNN, WPC, ADC, EPRT, STAG
       - key: phh_1031_flag
         label: Serves business owners or real estate owners, so also a 1031 partner
-    tiers:
-      - [75, A, Pursue now]
-      - [60, B, Pursue on a trigger or strong reason]
-      - [45, C, Keep warm]
-      - [0, "-", Skip]
 
   phh_1031:
     name: PHH 1031
@@ -214,7 +218,7 @@ products:
         manual: true
         levels:
           - [100, "Strong"]
-          - [60, "Some, or PHH focus states not set"]
+          - [60, "Some"]
           - [0, "Little"]
     rules:
       - Never ask an exchange intermediary to recommend PHH. They facilitate the exchange; the investor and their advisers decide suitability.
@@ -222,11 +226,6 @@ products:
       Exchange intermediaries, CPAs, brokers and attorneys are not in adviser
       filings. Bellwether scores the RIA partners it can see; the others are
       scored by hand.
-    tiers:
-      - [75, A, Develop as a partner now]
-      - [60, B, Develop on a trigger]
-      - [45, C, Educate and keep warm]
-      - [0, "-", Low priority]
 
   phh_jv:
     name: PHH JV
@@ -283,7 +282,7 @@ products:
         manual: true
         levels:
           - [100, "Broad or strong overlap"]
-          - [50, "Some, or PHH focus states not set"]
+          - [50, "Some"]
           - [0, "Restricted outside PHH's areas"]
       - key: governance_fit
         label: Governance fit
@@ -291,7 +290,7 @@ products:
         manual: true
         levels:
           - [100, "Workable partnership model"]
-          - [50, "Negotiable, or not yet known"]
+          - [50, "Negotiable"]
           - [0, "Incompatible"]
       - key: decision_speed
         label: Decision speed
@@ -314,10 +313,6 @@ products:
     note: >
       Single-family offices do not file with the SEC. Bellwether finds the
       multi-family offices that do; the rest come from outside sources.
-    tiers:
-      - [75, A, Active mandate relationship]
-      - [60, B, Develop when a relevant deal exists]
-      - [0, "-", Send no live deals until the mandate changes]
 
   # ------------------------------------------------------------- AcuBooth
   acubooth:
@@ -420,13 +415,6 @@ products:
         label: Brochure mentions covered calls, options or concentrated stock; 13F shows JEPI, JEPQ, XYLD, QYLD, RYLD, DIVO, SPYI, QQQI
     rules:
       - Each position must hold at least 100 shares. One option contract covers 100 shares, so this is checked per holding inside a qualified firm's book.
-    # Not in the AcuBooth table; the same cut points as PHH so the lists read
-    # alike. Change here if AcuBooth wants different ones.
-    tiers:
-      - [75, A, Pursue now]
-      - [60, B, Pursue on a trigger]
-      - [45, C, Keep warm]
-      - [0, "-", Skip]
 
   # --------------------------------------------------------------- Glynac
   glynac:
@@ -451,14 +439,12 @@ products:
         weight: 15
         levels:
           - [100, "Confirmed"]
-          - [33, "Unknown"]
-          - [0, "Google"]
+          - [0, "Google Workspace or another provider"]
       - key: black_diamond
         label: Portfolio platform is Black Diamond
         weight: 15
         levels:
           - [100, "Confirmed"]
-          - [33, "Unknown"]
           - [0, "Orion, Tamarac, Addepar or Advyzon"]
       - key: best_trigger
         label: Best recent trigger
@@ -518,8 +504,3 @@ products:
       - key: glynac_competitor
         label: Already uses Hadrius or COMPLY
         points: 10
-    tiers:
-      - [80, A, Pursue now]
-      - [55, B, Pursue when a trigger fires]
-      - [30, C, Keep warm]
-      - [0, "-", Skip]

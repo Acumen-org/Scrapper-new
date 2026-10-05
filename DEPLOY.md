@@ -46,23 +46,49 @@ git ls-files | grep -E "\.db|^data/"   # expect NO output
 
 ---
 
-## 2. Create accounts
+## 2. Accounts, sign-in and the integrations
 
-Nobody can reach anything without signing in. On whichever machine runs
-Bellwether:
+Accounts live in the database. On a new server, create the first admin:
 
 ```bash
-python -m scripts.manage_users add rahul --name "Rahul Gopan"
-python -m scripts.manage_users add alisa --name "Alisa Chen"
-python -m scripts.manage_users list
+python -m scripts.manage_users add rahul --name "Rahul Gopan" --role admin
 ```
 
-Passwords are typed at a prompt, never passed on a command line, and only a
-PBKDF2-SHA256 hash is stored. `config/users.yml` is gitignored.
+On an existing server nothing is needed: the accounts in `users.yml` are
+imported at the first start, and Rahul Gopan's account (or, failing a match,
+every existing account) keeps full access so someone can reach Settings.
 
-Sign-in is not only a lock. The name on the account is what fills in who owns a
-firm and who cleared a review, so a shared queue stays honest about who did
-what.
+Everything else is set up from inside the app, in Settings, by an admin. No
+server access is needed for any of it:
+
+1. **Microsoft sign-in** (Settings, Sign-in). In Microsoft Entra: App
+   registrations, New registration, single tenant, redirect URI of type Web set
+   to the address the screen shows (`https://<your host>/auth/microsoft/callback`).
+   Copy the tenant ID and client ID into Settings, create a client secret and
+   paste its Value. rahul.gopan@acumen-strategy.com is an admin from his first
+   Microsoft sign-in. Turn password sign-in off once Microsoft works.
+2. **AI** (Settings, AI). Choose Anthropic, Eden AI or an OpenAI-compatible
+   endpoint and paste the key. Set the daily call limit. Optional: everything
+   else works without it.
+3. **Email verification** (Settings, Verification). Works out of the box when
+   the server can open outbound connections on port 25; the screen tests this.
+   For best results give the server a fixed IP whose reverse DNS matches the
+   HELO name, and an SPF record on the MAIL FROM domain that allows it. A
+   Reacher server can be used instead: `docker compose` starts one beside the
+   app, and on Nomad `nomad job run reacher.nomad.hcl` starts it as its own job
+   (then set its address in Settings).
+
+Secrets entered in Settings are encrypted in the database with a key derived
+from `BELLWETHER_SECRET`; rotating that secret means re-entering them. Any of
+them can instead be pinned by environment variable (`BELLWETHER_MS_TENANT`,
+`BELLWETHER_MS_CLIENT_ID`, `BELLWETHER_MS_CLIENT_SECRET`, `BELLWETHER_AI_KEY`,
+`BELLWETHER_REACHER_URL`, `BELLWETHER_ADMINS`, `BELLWETHER_PUBLIC_URL`), in which
+case the screen shows the field as fixed.
+
+The image now carries Scrapling and a headless Chromium for the few firm
+websites that only render with JavaScript (build with `--build-arg
+WITH_BROWSER=0` to leave the browser out). The app reserves 768MB on Nomad,
+up from 512MB, for the occasional page rendered in it.
 
 ---
 

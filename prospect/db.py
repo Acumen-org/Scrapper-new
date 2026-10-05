@@ -139,6 +139,23 @@ def init(conn: pg.Connection) -> None:
     conn.commit()
 
 
+def add_column(conn, table: str, column: str, decl: str) -> bool:
+    """Add a column only when it is really missing. Returns True if added.
+
+    `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` is not the harmless no-op it
+    looks like: Postgres takes the table's exclusive lock before it checks, so
+    run on every slice of a job it waits behind any open reader, and every page
+    that reads the table then queues behind it. Asking the catalogue first
+    costs nothing and takes no lock."""
+    have = conn.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_name=? AND column_name=?",
+        (table, column)).fetchone()
+    if have:
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {decl}")
+    return True
+
+
 FIRM_SCHEMA = """
 -- One row per firm per feed snapshot. Immutable: snapshots accumulate rather
 -- than update, so any past state is reconstructable and triggers are a diff

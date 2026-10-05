@@ -1,162 +1,163 @@
 # Bellwether
 
 A bellwether is a leading indicator. That is what every row in this tool is: a
-filing, a firm's own words or a change that says an investment adviser is worth
-calling before anyone else has noticed.
+filing, a hire, a firm's own words or a change that says an investment adviser
+is worth calling before anyone else has noticed.
 
-Bellwether reads the adviser universe from SEC sources, scores it against five
-product lists across PHH, AcuBooth and Glynac, and gives the team who to call,
-why, and what to say. One Python app on PostgreSQL, no paid or third-party
-enrichment service, and no data leaving the machine except requests to the
-SEC, to advisers' own public websites and to public DNS.
+Bellwether is the intelligence platform on US registered investment advisers
+behind go-to-market for Prairie Hill (PHH), AcuBooth and Glynac. It reads every
+adviser in the SEC and state feeds, every person registered at them, their
+brochures, their websites and public records, and turns that into ranked
+product lists, people and contacts, hiring signals, and a dossier on every
+firm, with Bellwether AI on top to ask questions in plain English.
 
 ## Signing in
 
-Everyone has a named account. Nothing is reachable without one, and the name on
-the account is what fills in who owns a firm and who cleared a review, so a
-shared queue stays honest about who did what.
+**Sign in with Microsoft** is the main way in, using your Acumen Strategy
+account. An admin sets it up once in Settings, Sign-in (the screen shows the
+exact redirect address to register in Microsoft Entra). Anyone on the
+always-admin list (rahul.gopan@acumen-strategy.com by default) is an admin the
+first time they sign in; everyone else arrives as a user.
 
-    python -m scripts.manage_users add alisa --name "Alisa Chen"
+Password accounts still exist for anyone without Microsoft sign-in, and stay
+switched on until Microsoft sign-in works, so nobody is locked out.
+
+    python -m scripts.manage_users add jane --name "Jane Doe" --role admin
+    python -m scripts.manage_users role jane owner --products PHH
     python -m scripts.manage_users list
 
-Passwords are typed at a prompt and stored only as PBKDF2-SHA256 hashes.
-`config/users.yml` is gitignored and never leaves the machine.
+## Seats
 
-To put this on a server for the team, see [DEPLOY.md](DEPLOY.md).
+| Seat | Can |
+| --- | --- |
+| Admin | Everything, including Settings, users, every product's scoring, enrichment sources |
+| Product owner | Change the scoring of the products they own (PHH, AcuBooth, Glynac); manage enrichment sources |
+| User | Work the lists: statuses, owners, notes, manual levels, saved lists, exports, Bellwether AI |
 
-## Starting and stopping
-
-There is nothing to start. Bellwether launches itself when you sign in to
-Windows, with no console window and no browser tab, so it is simply already
-running when you sit down.
-
-- **Open it**: the **Bellwether** shortcut on your desktop. If it is not running
-  for any reason, that shortcut starts it first.
-- **Stop it**: **Quit Bellwether** at the bottom of the sidebar. That is the only
-  way to stop it, and it is rarely needed. Quitting also stops background jobs,
-  which resume from where they left off.
-- **Turn off starting at sign in**: Task Manager, Startup apps, switch Bellwether
-  off. The entry is a shortcut in your own Startup folder, so deleting it works
-  too.
-
-There is deliberately no stop script. A second batch file for shutting something
-down is a thing to remember, and it does not belong in a tool people use daily.
-
-## What it does
-
-Bellwether is the data and intelligence layer for go-to-market across three
-businesses: Prairie Hill (PHH), AcuBooth and Glynac. It reads every adviser in
-the SEC and state feeds, adds what each firm says about itself (its Part 2A
-brochure, its website, its public mail records) and turns that into:
-
-- **Product lists**: one ranked list per product, each firm with a tier, a score
-  out of 100 and the reasons it earned it, in the firm's own words.
-- **Signals**: what changed this week at a firm on any list.
-- **Firm pages**: everything needed to decide whether to call and what to say.
+Settings is visible to admins only.
 
 ## The screens
 
-- **Home**: how every list stands (tier counts that open the list already
-  filtered), the best unclaimed firms to call first on each list with the reason
-  and the newest signal, your own firms, and firms you watch.
-- **Product lists** (sidebar): PHH Fund I, PHH 1031, PHH JV, AcuBooth and Glynac.
-  Each has three views: *Ranked* (filter by tier, state, owner, status, new
-  signal, reachability; sort; save the view; export the list or its contacts),
-  *Disqualified* (removed, with why) and *How it is scored* (the product's
-  scoring table, rendered from the config, so the rules on screen are the rules
-  in force).
-- **Signals**: every trigger at a firm on a list, newest first, with the firm's
-  best tier beside it. Done, Snooze, Dismiss; keyboard j/k, d, s, x, Enter.
-- **Firms**: every adviser, searchable by name, city or CRD and filterable by
-  size, registration, list and tier, with a Contacts view for mail merges.
-- **Saved lists**: firm lists you build by hand, and saved views.
-- **System**: data freshness, coverage of the lists by each enrichment,
-  background jobs with Start and Pause, run history and the review queue.
+- **Home**: the universe at a glance (firms, assets, people, reachable contacts,
+  signals), every product list with its score distribution and data coverage,
+  what moved (people joining and leaving firms, new registrations, asset
+  jumps), who is hiring, a map, how complete the data is, what is running now,
+  the team pipeline, your firms and the ones you watch.
+- **Bellwether AI**: ask anything about firms, people or the market. Questions
+  about the universe become a search Bellwether runs itself, so every firm in
+  an answer really matched; questions about one firm are answered from that
+  firm's full record.
+- **Product lists**: one ranked list per product, PHH Fund I, PHH 1031, PHH JV,
+  AcuBooth and Glynac. No tiers: firms are ranked by score. Every score shows
+  how much of it rests on data Bellwether holds; what is missing earns nothing
+  and is flagged, so a firm never ranks high because something about it is
+  unknown. The **Scoring** tab shows the rules in force and is an editor for
+  admins and the product's owner.
+- **Signals**: everything that changed at a firm on a list, newest first.
+- **Firms**: every adviser, searchable and filterable by size, registration,
+  list, hiring, reachability and more, with a contacts view for mail merges.
+- **People**: everyone registered at an adviser firm, with role, tenure, prior
+  firm, designations, disclosures, and the best email and direct line held.
+- **Firm page**: the dossier. Overview and AI brief, fit for each product with
+  every factor's evidence, the people (officers first) and how to reach each,
+  hiring and departures year by year, contacts and where each came from,
+  signals, assets, investments, technology, compliance. Status, owner, notes,
+  saved lists and Bellwether AI sit beside it.
+- **Enrichment** (admins and owners): every source Bellwether reads, the
+  directories and websites the team adds, firm website coverage, and email
+  verification.
+- **Settings** (admins): users and seats, Microsoft sign-in, the AI provider,
+  email verification, crawling, background jobs, system health, review queue.
 
-**Ctrl K** (or **/**) finds any firm or page from anywhere. Clicking any row
-opens the firm.
+**Ctrl K** (or **/**) finds any firm, person or page from anywhere.
 
 ## How firms are scored
 
-Every product is defined in `config/products.yml` in one format: gates a firm
-must pass, disqualifiers that remove it, criteria that each earn 0 to 100 points
-and count for a weight (weights add to 100), penalties, and tiers that say what
-a score means. The logic that decides each criterion's level is one small
-function per criterion in `prospect/products.py`, and every level it sets comes
-with the evidence that set it. The same breakdown appears on every firm page.
+Each product is defined in `config/products.yml`: gates a firm must pass,
+disqualifiers that remove it, factors that each earn 0 to 100 points and count
+for a weight (weights add to 100), and penalties. An admin or the product's
+owner can change weights, levels and thresholds, switch a factor off, and add
+a factor from any data field Bellwether holds, on the Scoring tab. Edits are
+validated, kept with their history, stored in the database over the shipped
+file, and the list is rescored within a minute.
 
-Criteria that a person can judge better than a filing (a warm introduction, an
-active manager search, governance fit) accept a manual level on the firm page.
-It replaces the computed level for that firm only, shows who set it and when,
-and keeps what the filings alone would have said. Status matters too: a
-meeting or a customer raises the relationship points on every list.
+Missing data never inflates a score. A factor whose data is not known yet
+earns zero and is listed as missing, and every score carries its coverage (the
+share of the weight resting on known data) and what it could reach. Lists rank
+by score, then by coverage.
 
-The sources behind the scores:
+Factors a person can judge better than a filing (a warm introduction, a
+manager search, governance fit) accept a manual level on the firm page, which
+shows who set it, when, and what the filings alone said.
+
+## Where the data comes from
 
 | Source | What it gives |
 | --- | --- |
-| SEC and state adviser feeds, weekly | size, client mix, advisors, custody, private funds, marketing answers (Item 5.L), services (5.G), related persons (7.A), social media listed (1.I) |
-| Schedule D archive and Schedule A | fund details, custodians, officers and their titles |
-| Part 2A brochures | the firm's own language: covered calls, alternatives, real estate, 1031, model portfolios, investment committee, reporting platform |
-| The firm's website | people and contacts, the client login that names its reporting platform, whether it publishes |
-| Public DNS mail records | Microsoft 365 or Google |
-| 13F filings | target holdings for talking points |
+| SEC and state adviser feeds, weekly | size, clients, advisors, custody, private funds, marketing, services, related persons, main phone, website |
+| SEC individual adviser feed, weekly | every registered rep: employer, start date, prior firms, exams, designations, disclosures; the roster and hiring |
+| Form ADV Schedule A and D archive | owners and officers with titles; custodians, private funds |
+| Part 2A brochures | the firm's own words; emails and phones it printed |
+| The firm's website (Scrapling) | team and bio pages, vCards, people, titles, emails, direct lines, reporting platform |
+| Directories and websites added on Enrichment | people, firms, emails and phones, matched to firms |
+| Public DNS | Microsoft 365 or Google; mail servers for verification |
+| 13F filings | holdings, for talking points |
 
-`python -m scripts.score_products` rescores everything in seconds; the weekly
-cycle runs it, and so does **Recompute scores** on System.
+## Contacts, and what is real
 
-## Working a firm
+Every email and phone carries its source and a confidence, and every email
+its verification result. Bellwether learns each firm's address pattern from
+addresses the firm published and builds a candidate for everyone else; a
+candidate is always labelled as a guess. Verification asks the firm's mail
+server whether it would accept that exact mailbox and a made-up one at the
+same domain, without sending anything (the method of check-if-email-exists,
+built in, or a Reacher server). Only a server that accepts the real address
+and refuses the made-up one counts as **verified**; accept-all domains are
+labelled as such and never shown as verified.
 
-On any firm page: set a **status** and **owner** (blank claims it for you), write
-**notes**, **watch** it (its signals then lead Home and Signals), add it to a
-saved list, and **Copy call prep** for a paste-ready summary carrying the tier,
-the reasons, what changed, the firm's own words and how to reach them.
+Checking mailboxes needs outbound port 25 and works best from a server with a
+fixed address and matching reverse DNS. Settings, Verification shows whether
+it can.
 
-## Weekly rhythm
+## Bellwether AI
 
-The weekly pull runs itself. A scheduler inside the app checks every half hour
-whether a new SEC feed file is due and runs the full cycle when it is: capture,
-ADV answers, triggers, 13F match, email platforms, scoring, a slice of brochures
-and websites, and a final rescore so what they read is already in the lists. It
-catches up the moment the machine comes back after a missed week. Longer work
-(brochure coverage, re-tagging, email platforms, websites, contacts) runs as
-background jobs on System, best-priority firms first: tier A on any list, then
-tier B, and so on.
+Optional. Connect a provider in Settings, AI: Anthropic (Claude, default model
+`claude-opus-5-5`), Eden AI (one key for many vendors), or any
+OpenAI-compatible endpoint. It answers questions, writes firm briefs, reads
+team pages the rules could not parse, and tidies titles. Everything it writes
+is labelled as AI and grounded in Bellwether's own data. A daily call limit
+caps the cost. Without a provider, everything else works and the AI box finds
+firms by name.
 
-## Contact data, and what is real
+## Background jobs
 
-Every firm has its **main office phone** as filed on Form ADV. The
-contact extraction job reads the first pages of each firm's own brochure for the
-**emails and phone numbers the firm itself printed there**; on the product lists
-roughly six firms in ten with a brochure have a filed email. Everything from a filing is
-marked **filed**. Pattern-guessed emails still exist as a labelled fallback,
-generated only against the firm's own mail domain (from its brochure when
-possible), never against social or freemail domains, and a guess on an
-accept-all domain can never show as verified.
+Everything runs by itself. The weekly SEC cycle starts as soon as a new feed is
+due; every other job (brochures, websites, directories, email patterns,
+verification, email platform, custodians, scores, AI briefs) works through its
+backlog in short slices, best firms first, then checks back on its own
+schedule. Settings, Jobs shows each one with Run now and Pause.
 
-Guessed addresses get a free local check: valid syntax, and whether the domain
-publishes a mail server (a DNS lookup done here, no account and no third party).
-That can prove an address is worthless; it never claims a mailbox exists, since
-only sending mail proves that. Nothing in Bellwether costs money to run.
+## Running it
 
-## Reading the numbers honestly
-
-Hover any dotted-underline figure for its caveat. The two that matter most:
-Schwab share is of REPORTED custodians only (10%+ holders), and it flags the
-late-2026 institutional opportunity, never accounts sellable today. Estimated
-client size is a client-level figure, biased high as an account proxy.
+One Python app on PostgreSQL (`BELLWETHER_DSN`). See [DEPLOY.md](DEPLOY.md) for
+servers and [ROLLOUT.md](ROLLOUT.md) for the Nomad path. On Windows it starts at
+sign-in from `Bellwether.bat /silent` and is stopped only from Quit in the app.
 
 ## Files worth knowing
 
 | Path | What it is |
 | --- | --- |
-| `Bellwether.bat` | The launcher. `/silent` starts it without opening a browser. |
-| `scripts/launch.vbs` | Runs the launcher with no window at all, even briefly. |
-| `assets/bellwether.ico` | App icon, regenerate with `python -m scripts.make_icon`. |
-| PostgreSQL (`BELLWETHER_DSN`) | Everything. Back this up. |
-| `data/snapshots/` | Immutable raw SEC captures, content addressed. |
-| `config/products.yml` | Every product list: gates, weights, levels, tiers. |
-| `config/*.yml` | The other tunables: triggers, tickers, brochure phrases. |
+| `prospect/webapp.py` | App shell: sign-in, seats, layout, scheduler |
+| `prospect/products.py` | Scoring engine; `config/products.yml` holds the default rules |
+| `prospect/people.py`, `scripts/ingest_people.py` | People, prior firms, hiring and departures |
+| `prospect/contacts.py` | Every email and phone, with source, confidence and verification |
+| `prospect/crawl.py`, `prospect/harvest.py`, `scripts/web_enrich.py` | Website reading on Scrapling |
+| `prospect/directory.py`, `scripts/crawl_directories.py` | Directories and websites added on Enrichment |
+| `prospect/verify.py`, `scripts/verify_emails.py` | Email verification (built-in SMTP check or Reacher) |
+| `prospect/ai.py`, `prospect/assistant.py` | Bellwether AI |
+| `prospect/jobs.py`, `scripts/autopilot.py` | Background jobs and the worker that runs them |
+| `prospect/static/` | Stylesheet, scripts, and the thinking-orbs engine (MIT) |
+| `data/snapshots/` | Immutable raw SEC captures, content addressed |
 
-The Python package is still named `prospect/` and the database `prospect.db`.
-Renaming those would be a data migration for no user-visible gain, so they stay.
+The Python package is still named `prospect/`. Renaming it would be churn for
+no visible gain.

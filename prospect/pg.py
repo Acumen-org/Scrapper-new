@@ -445,8 +445,10 @@ class Connection:
     here rather than edited out of 300 call sites.
     """
 
-    def __init__(self, conn: psycopg.Connection):
+    def __init__(self, conn: psycopg.Connection, pool=None):
         self._conn = conn
+        self._pool = pool
+        self._returned = False
         # Table shapes are read once per connection. They do not change while a
         # run is in flight, and the ingest loops upsert thousands of rows.
         self._shapes: dict = {}
@@ -475,11 +477,40 @@ class Connection:
         self._conn.rollback()
 
     def close(self) -> None:
-        self._conn.close()
+        """Hand a pooled connection back, or close a private one.
+
+        A pooled connection goes back clean: whatever transaction a reader left
+        open (psycopg opens one on the first SELECT) is rolled back first, so
+        the next request never inherits half of somebody else's work."""
+        if self._pool is None:
+            self._conn.close()
+            return
+        if self._returned:
+            return
+        self._returned = True
+        try:
+            if not self._conn.closed and self._conn.info.transaction_status != 0:
+                self._conn.rollback()
+        except Exception:
+            pass
+        try:
+            self._pool.putconn(self._conn)
+        except Exception:
+            pass
+
+    def __del__(self):
+        # A view that raised before reaching close() would otherwise keep its
+        # pooled connection forever, and a pool that leaks a connection per
+        # error eventually makes every page wait for one.
+        try:
+            if self._pool is not None and not self._returned:
+                self.close()
+        except Exception:
+            pass
 
     @property
     def closed(self) -> bool:
-        return self._conn.closed
+        return self._conn.closed or self._returned
 
     def __enter__(self):
         return self
@@ -492,7 +523,45 @@ class Connection:
         return False
 
 
+_POOL = None
+_POOL_PID = None
+
+
+def _pool():
+    """One small pool per process.
+
+    Opening a Postgres connection costs a TCP handshake, TLS when the database
+    is remote, and authentication: tens of milliseconds, paid on every request
+    and again for every helper that opened its own connection. A page that
+    opened three connections paid it three times. The pool pays it once.
+    Keyed on the process id, because a forked child must never share sockets
+    with its parent."""
+    global _POOL, _POOL_PID
+    if _POOL is not None and _POOL_PID == os.getpid():
+        return _POOL
+    from psycopg_pool import ConnectionPool
+    _POOL = ConnectionPool(
+        dsn(), min_size=1, max_size=int(os.environ.get("BELLWETHER_POOL_MAX", "10")),
+        kwargs={"row_factory": _row_factory}, open=True, timeout=30,
+        max_idle=300, check=ConnectionPool.check_connection)
+    _POOL_PID = os.getpid()
+    return _POOL
+
+
+def pooling_enabled() -> bool:
+    if os.environ.get("BELLWETHER_POOL", "1").lower() in ("0", "false", "no"):
+        return False
+    try:
+        import psycopg_pool  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def connect(url: str | None = None, *, autocommit: bool = False) -> Connection:
+    if url is None and not autocommit and pooling_enabled():
+        p = _pool()
+        return Connection(p.getconn(), pool=p)
     conn = psycopg.connect(url or dsn(), row_factory=_row_factory,
                            autocommit=autocommit)
     return Connection(conn)

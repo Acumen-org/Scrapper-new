@@ -1,20 +1,16 @@
-# Bellwether runtime dependencies. Deliberately small.
-#
-# No pandas (streaming CSV and iterparse handle files larger than memory),
-# no pypdf (pdfplumber is the one that actually extracts these layouts),
-# and no LLM or enrichment API client anywhere: every derived value in this
-# system has to trace back to a filing, which rules them out by design.
+# Bellwether runtime dependencies.
 #
 # Versions are the ones this has actually been run and QA-gated against, read
 # from the working environment rather than chosen from release notes.
+#
+# No pandas (streaming CSV and iterparse handle files larger than memory) and
+# no pypdf (pdfplumber is the one that actually extracts these layouts).
 
 fastapi==0.133.1
 uvicorn==0.41.0
 # FastAPI needs this to read a Form(...), which is every POST the app has,
 # starting with the login. Without it the app does not fail at the first login
-# attempt -- it refuses to import at all, so the server never starts. It was
-# absent here while still present in the Windows environment, which is exactly
-# why it went unnoticed until the image was run.
+# attempt -- it refuses to import at all, so the server never starts.
 python-multipart==0.0.32
 lxml==6.1.1
 pdfplumber==0.11.10
@@ -22,9 +18,25 @@ PyYAML==6.0.3
 requests==2.33.0
 
 # The database. [binary] ships the libpq wheel, so no system Postgres client is
-# needed in the image or on a developer's machine -- which matters here, since
-# one of the three of us is on Windows.
+# needed in the image or on a developer's machine. The pool keeps a few
+# connections open instead of paying a new handshake on every request.
 psycopg[binary]==3.2.3
+psycopg-pool==3.2.6
+
+# Sign in with Microsoft: Microsoft's own library for the OpenID Connect code
+# flow (PKCE, state and nonce checks). cryptography also encrypts the secrets
+# stored in Settings.
+msal==1.39.0
+cryptography==50.0.2
+
+# Reading firm websites and directories: browser TLS fingerprints for ordinary
+# pages, and Playwright for the pages that only render with JavaScript. The
+# browser itself is installed in the image separately (see the Dockerfile).
+scrapling[fetchers]==0.4.15
+
+# Bellwether AI with Claude, through Anthropic's SDK. Eden AI and other
+# OpenAI-compatible providers are called over plain HTTP with requests.
+anthropic==1.11.0
 
 # NOTE: scripts/make_icon.py (local Windows desktop icon) needs Pillow, which is
 # deliberately NOT a runtime dependency and not installed in the Docker image.

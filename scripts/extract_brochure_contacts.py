@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prospect import db, runlog, config  # noqa: E402
+from prospect import config, contacts, db, runlog  # noqa: E402
 
 PAGES = 3  # cover page, table of contents, and one page of slack
 
@@ -100,6 +100,7 @@ def main() -> int:
     cfg = config.load()
     conn = db.connect()
     conn.executescript(SCAN_SCHEMA)
+    contacts.init(conn)
 
     with runlog.Run(conn, "brochure_contacts", "extract", cfg.stamp) as run:
         rows = conn.execute(todo_query(args.limit)).fetchall()
@@ -121,11 +122,13 @@ def main() -> int:
                     (crd, kind, value, source, context, found_at)
                     VALUES (?,?,?,?,?,?)""",
                              (r["crd"], "email", val, "brochure", ctx, now))
+                contacts.upsert(conn, r["crd"], "email", val, "brochure", source_ref=ctx)
             for val, ctx in phones:
                 conn.execute("""INSERT OR IGNORE INTO firm_contact_info
                     (crd, kind, value, source, context, found_at)
                     VALUES (?,?,?,?,?,?)""",
                              (r["crd"], "phone", val, "brochure", ctx, now))
+                contacts.upsert(conn, r["crd"], "phone", val, "brochure", source_ref=ctx)
             conn.execute("INSERT OR REPLACE INTO contact_scan VALUES (?,?,?,?,?)",
                          (r["crd"], now, len(emails), len(phones), status))
             got_e += bool(emails)

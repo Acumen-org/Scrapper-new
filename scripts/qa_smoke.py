@@ -44,8 +44,9 @@ def ok(msg: str) -> None:
 # Every route is behind a login, so the harness holds a session cookie like a
 # real browser. A dedicated QA account is created if absent: signing in as a
 # real person would attribute test writes to them.
-QA_USER = "qa"
+QA_USER = "qa-harness"
 QA_PASS = "qa-test-password-1234"
+QA_PLAIN = "qa-harness-user"     # a plain user seat, for the role checks
 
 _OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
 
@@ -62,24 +63,29 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def ensure_qa_account() -> bool:
-    """Create the harness account if absent. Returns True if we created it, so
-    it can be removed afterwards: an account with a password written in this
-    file must never be left sitting on a reachable deployment."""
-    from prospect import auth
-    users = auth.load_users()
-    if QA_USER in users:
-        return False
-    users[QA_USER] = {"name": "QA Harness",
-                      "password_hash": auth.hash_password(QA_PASS)}
-    auth.save_users(users)
-    return True
+    """Create the harness accounts if absent: an admin for the routes and a
+    plain user for the role checks. Returns True if we created them, so they
+    can be removed afterwards: an account with a password written in this file
+    must never be left sitting on a reachable deployment."""
+    from prospect import auth, db, users
+    c = db.connect()
+    users.init(c)
+    c.close()
+    created = False
+    for login, role in ((QA_USER, "admin"), (QA_PLAIN, "user")):
+        if users.get(login):
+            continue
+        users.create(login, "QA Harness", role=role,
+                     password_hash=auth.hash_password(QA_PASS))
+        created = True
+    return created
 
 
 def remove_qa_account() -> None:
-    from prospect import auth
-    users = auth.load_users()
-    if users.pop(QA_USER, None) is not None:
-        auth.save_users(users)
+    from prospect import users
+    for login in (QA_USER, QA_PLAIN):
+        if users.get(login):
+            users.delete(login)
 
 
 def sign_in(base: str) -> bool:
@@ -118,20 +124,22 @@ def post(base: str, path: str, data: dict, timeout: float = 30.0) -> int:
 
 ROUTES: list[tuple[str, str]] = [
     ("/", "Product lists"),
-    ("/", "Call first"),
+    ("/", "What moved"),
+    ("/", "How complete the data is"),
+    ("/ask", "Bellwether AI"),
     ("/lists/phh_fund", "PHH Fund I"),
-    ("/lists/phh_fund?tier=B", "Why it scores"),
-    ("/lists/phh_fund?view=rules", "Scored criteria"),
+    ("/lists/phh_fund?cov=full", "Why it scores"),
+    ("/lists/phh_fund?view=scoring", "Scored factors"),
     ("/lists/phh_fund?view=disqualified", "Disqualified"),
     ("/lists/phh_1031", "PHH 1031"),
-    ("/lists/phh_jv", "PHH JV"),
+    ("/lists/phh_jv?cov=gaps", "PHH JV"),
     ("/lists/acubooth", "AcuBooth"),
-    ("/lists/acubooth?sort=signal", "AcuBooth"),
+    ("/lists/acubooth?sort=potential", "AcuBooth"),
     ("/lists/acubooth?sig=1&reach=email", "AcuBooth"),
     ("/lists/glynac", "Glynac"),
     ("/lists/glynac?q=capital&owner=none", "Glynac"),
     ("/lists/glynac/export.csv", "rank"),
-    ("/lists/acubooth/export.xlsx?tier=A", "PK"),
+    ("/lists/acubooth/export.xlsx?cov=full", "PK"),
     ("/signals", "Signals"),
     ("/signals?state=", "Signals"),
     ("/signals?type=first_real_estate_fund", "First real estate fund"),
@@ -139,28 +147,42 @@ ROUTES: list[tuple[str, str]] = [
     ("/signals?product=acubooth&window=365", "Signals"),
     ("/signals?page=2", "Signals"),
     ("/firms", "Firms"),
-    ("/firms?on=phh_fund&tier=B", "Firms"),
+    ("/firms?on=phh_fund&sort=hires", "Firms"),
     ("/firms?size=1-5b&reg=SEC", "Firms"),
     ("/firms?on=none", "Firms"),
     ("/firms?trig=open", "Firms"),
     ("/firms?q=WEALTH", "Firms"),
     ("/firms?stat=working", "Firms"),
+    ("/firms?reach=verified", "Firms"),
     ("/firms?view=contacts", "Contacts"),
-    ("/firms?view=contacts&on=acubooth&tier=A", "Contacts"),
+    ("/firms?view=contacts&on=acubooth", "Contacts"),
     ("/firms/export.csv?on=phh_fund", "crd"),
     ("/firms/export.xlsx?on=phh_fund", "PK"),
+    ("/people", "People"),
+    ("/people?joined=365&on=any", "People"),
+    ("/people?officers=1&reach=email", "People"),
+    ("/people/export.csv?on=acubooth", "name"),
     ("/saved", "Saved lists"),
-    ("/review", "Review queue"),
-    ("/review?kind=match_13f", "Review queue"),
-    ("/review?kind=brochure_negation", "Review queue"),
-    ("/review?kind=brochure_negation&page=2", "Review queue"),
-    ("/health", "Background jobs"),
-    ("/health", "Coverage of the product lists"),
-    ("/health.json", "snapshots"),
-    ("/api/search?q=capital", "crd"),
+    ("/enrichment", "What Bellwether already reads"),
+    ("/enrichment/websites", "Firm websites"),
+    ("/enrichment/verify", "Check addresses now"),
+    ("/settings", "Settings"),
+    ("/settings/users", "Users and roles"),
+    ("/settings/signin", "Microsoft"),
+    ("/settings/ai", "What it may do"),
+    ("/settings/verify", "Right now"),
+    ("/settings/crawl", "Crawling"),
+    ("/settings/jobs", "Weekly SEC cycle"),
+    ("/settings/system", "Recent runs"),
+    ("/settings/system.json", "snapshots"),
+    ("/settings/review", "Review queue"),
+    ("/settings/review?kind=match_13f", "Review queue"),
+    ("/settings/review?kind=brochure_negation&page=2", "Review queue"),
+    ("/api/search?q=capital", "href"),
+    ("/api/jobs", "kind"),
     # The confirmation page only. POST /admin/quit is never exercised here for
     # the obvious reason that it would stop the server the tests are hitting.
-    ("/quit", "Quit Bellwether?"),
+    ("/quit", "Bellwether"),
 ]
 
 
@@ -183,19 +205,23 @@ def pass_auth(base: str) -> None:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.headers.get("Location")
 
-    for path in ("/", "/firms", "/lists/acubooth", "/signals", "/saved", "/review",
-                 "/health", "/firms/export.csv", "/lists/glynac/export.csv",
-                 "/api/search?q=x", "/health.json"):
+    for path in ("/", "/firms", "/lists/acubooth", "/signals", "/saved", "/people",
+                 "/settings", "/settings/review", "/enrichment", "/firms/export.csv",
+                 "/lists/glynac/export.csv", "/settings/system.json", "/ask"):
         code, loc = raw(path)
         (ok if code == 303 and (loc or "").startswith("/login")
          else fail)(f"GET {path} blocked without a session (got {code})")
 
-    for path in ("/admin/quit", "/admin/run-weekly", "/admin/rescore",
-                 "/admin/task/brochures/start", "/signals/action", "/views/save",
-                 "/firm/1/level"):
+    for path in ("/admin/quit", "/settings/jobs/rescore/run", "/settings/save",
+                 "/settings/users/add", "/lists/glynac/scoring", "/signals/action",
+                 "/views/save", "/firm/1/level", "/enrichment/add"):
         code, _ = raw(path, "POST")
         (ok if code == 303 else fail)(
             f"POST {path} refused without a session (got {code})")
+    for path in ("/api/ai/ask", "/api/firm/1/verify", "/api/firm/1/crawl"):
+        code, _ = raw(path, "POST")
+        (ok if code == 401 else fail)(
+            f"POST {path} answers 401 without a session (got {code})")
 
     # The one route that must stay open, and must leak nothing.
     try:
@@ -255,11 +281,42 @@ def pass_auth(base: str) -> None:
         "login next rejects an off-site target")
 
 
+def pass_roles(base: str) -> None:
+    """Seats: a plain user works the lists and is refused everything that
+    configures Bellwether, whatever the URL."""
+    print("\n[0b] seats (a plain user)")
+    jar = urllib.request.HTTPCookieProcessor()
+    op = urllib.request.build_opener(jar, _NoRedirect)
+    body = urllib.parse.urlencode({"username": QA_PLAIN, "password": QA_PASS,
+                                   "next": "/"}).encode()
+    try:
+        op.open(urllib.request.Request(base + "/login", data=body), timeout=20)
+    except urllib.error.HTTPError:
+        pass
+
+    def code(path, data=None):
+        try:
+            r = op.open(urllib.request.Request(base + path, data=data), timeout=20)
+            return r.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    for path in ("/", "/lists/acubooth", "/people", "/ask"):
+        (ok if code(path) == 200 else fail)(f"user can open {path}")
+    for path in ("/settings", "/settings/users", "/settings/jobs", "/enrichment"):
+        (ok if code(path) == 403 else fail)(f"user is refused {path}")
+    (ok if code("/settings/save", b"_group=ai&ai.provider=none") == 403 else fail)(
+        "user cannot change settings")
+    st = code("/lists/glynac/scoring", b"note=x")
+    (ok if st == 303 else fail)(f"user cannot save scoring (got {st}, bounced)")
+
+
 def pass_routes(base: str, detail_crd: str) -> None:
     print("\n[1] route matrix")
     routes = ROUTES + [(f"/firm/{detail_crd}", "Status and owner"),
-                       (f"/firm/{detail_crd}", "People and how to reach them"),
-                       (f"/firm/{detail_crd}", "Assets over time"),
+                       (f"/firm/{detail_crd}", "Hiring and departures"),
+                       (f"/firm/{detail_crd}", "Contacts and sources"),
+                       (f"/firm/{detail_crd}", "Ask about this firm"),
                        (f"/firm/{detail_crd}?p=phh_fund", "Gates passed")]
     for path, marker in routes:
         try:
@@ -389,12 +446,42 @@ def pass_writes(base: str) -> None:
                          ).fetchone()["n"] == 0
         (ok if gone else fail)("saved view deleted")
 
-    # autopilot control writes desired_state (job stays paused)
-    post(base, "/admin/task/cusip_verify/pause", {})
+    # job control: pause writes desired_state, resume puts it back
+    post(base, "/settings/jobs/cusip_verify/pause", {})
     c.commit()
     stt = c.execute("SELECT desired_state FROM auto_task WHERE kind='cusip_verify'"
                     ).fetchone()
-    (ok if stt and stt["desired_state"] == "paused" else fail)("autopilot control")
+    (ok if stt and stt["desired_state"] == "paused" else fail)("job pause")
+    post(base, "/settings/jobs/cusip_verify/resume", {})
+    c.commit()
+    stt = c.execute("SELECT desired_state FROM auto_task WHERE kind='cusip_verify'"
+                    ).fetchone()
+    (ok if stt and stt["desired_state"] == "running" else fail)("job resume")
+
+    # scoring editor: a total that is not 100 is refused and stores nothing;
+    # a valid edit is stored with its author, then reset to the defaults
+    from prospect import products
+    products.reload()
+    p0 = products.product("glynac")
+    form = {f"c-{i}-weight": str(cr["weight"]) for i, cr in enumerate(p0["criteria"])}
+    form.update({f"c-{i}-label": cr["label"] for i, cr in enumerate(p0["criteria"])})
+    bad = dict(form, **{"c-0-weight": str(float(p0["criteria"][0]["weight"]) + 5)})
+    post(base, "/lists/glynac/scoring", bad)
+    c.commit()
+    stored = c.execute("SELECT COUNT(*) n FROM scoring_config WHERE product='glynac'").fetchone()["n"]
+    (ok if stored == 0 else fail)("scoring edit totalling 105 refused")
+    good = dict(form, note="qa", **{"c-0-label": "QA label"})
+    post(base, "/lists/glynac/scoring", good)
+    c.commit()
+    row = c.execute("SELECT body, updated_by FROM scoring_config WHERE product='glynac'").fetchone()
+    (ok if row and "QA label" in row["body"] else fail)("scoring edit stored")
+    post(base, "/lists/glynac/scoring/reset", {})
+    c.commit()
+    gone = c.execute("SELECT COUNT(*) n FROM scoring_config WHERE product='glynac'").fetchone()["n"]
+    (ok if gone == 0 else fail)("scoring reset to defaults")
+    c.execute("DELETE FROM scoring_history WHERE note IN ('qa','reset to defaults')"
+              " AND updated_by='QA Harness'")
+    c.commit()
 
     t = c.execute("""SELECT t.id FROM trigger_event t LEFT JOIN trigger_action a
         ON a.trigger_id=t.id WHERE a.state IS NULL AND t.suppressed=0
@@ -417,7 +504,7 @@ def pass_latency(base: str, detail_crd: str) -> None:
     for path, _ in ROUTES[:0] or []:
         pass
     sample = ["/", "/lists/phh_fund", "/lists/acubooth", "/lists/glynac", "/signals",
-              "/firms", "/review", "/health", f"/firm/{detail_crd}"]
+              "/firms", "/people", "/settings/jobs", "/settings/review", f"/firm/{detail_crd}"]
     for path in sample:
         times = []
         for _ in range(3):
@@ -437,8 +524,8 @@ def pass_latency(base: str, detail_crd: str) -> None:
 
 def pass_concurrency(base: str, detail_crd: str) -> None:
     print("\n[4] concurrency: 8 clients x 25 requests while ingest writes")
-    paths = ["/", "/lists/phh_fund", "/lists/acubooth?tier=A", "/signals", "/firms",
-             "/review", "/health", f"/firm/{detail_crd}", "/firms?on=glynac"]
+    paths = ["/", "/lists/phh_fund", "/lists/acubooth?cov=full", "/signals", "/firms",
+             "/people", "/settings/jobs", f"/firm/{detail_crd}", "/firms?on=glynac"]
     errors: list[str] = []
     times: list[float] = []
     lock = threading.Lock()
@@ -490,6 +577,7 @@ def main() -> int:
     pass_auth(args.base)
     created = sign_in(args.base)
     try:
+        pass_roles(args.base)
         pass_routes(args.base, detail_crd)
         pass_markup(args.base)
         pass_writes(args.base)

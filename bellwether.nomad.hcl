@@ -229,12 +229,15 @@ job "bellwether" {
 
       # Measured, not guessed, in DEPLOY.md: the supervisor plus two workers sit
       # near 105MB together, and the heaviest background job -- brochure parsing
-      # under pdfplumber -- peaks near 250MB. memory_max leaves room for that
-      # peak without reserving it against every other job on the client.
+      # under pdfplumber -- peaks near 250MB. Website reading now renders the
+      # occasional JavaScript-only page in a headless browser (one at a time,
+      # about 250MB while it runs), so the reservation rose from 512MB.
+      # memory_max leaves room for the peaks without reserving them against
+      # every other job on the client.
       resources {
         cpu        = 1000
-        memory     = 512
-        memory_max = 1024
+        memory     = 768
+        memory_max = 1536
       }
 
       # SIGTERM, then time to finish the transaction in flight. Killing a writer
