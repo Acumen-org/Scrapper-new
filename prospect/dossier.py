@@ -157,7 +157,7 @@ def build(c, crd: str, max_people: int = 40) -> str:
 
     # Contacts
     cps = _rows(c, """SELECT person_name, title, kind, value, label, is_role, source,
-                             confidence, verify_status FROM contact_point WHERE crd=?
+                             confidence, verify_status FROM usable_contact_point WHERE crd=?
                       ORDER BY (person_key=''), confidence DESC LIMIT 60""", (crd,))
     if cps:
         L.append("")

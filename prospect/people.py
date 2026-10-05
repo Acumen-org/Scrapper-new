@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS firm_people_stats{s} (
 # serves every lookup by person; a separate index on indvl_pk alone would only
 # duplicate it and slow the load.
 _INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS ix_person_name{s} ON person{s} (last_name, first_name, indvl_pk);
+CREATE INDEX IF NOT EXISTS ix_person_current{s} ON person_employment{s} (indvl_pk, org_pk, start_date) WHERE kind='current';
 CREATE INDEX IF NOT EXISTS ix_person_employment_org{s} ON person_employment{s} (org_pk, kind);
 CREATE INDEX IF NOT EXISTS ix_people_event_crd{s} ON people_event{s} (crd, event_date);
 CREATE INDEX IF NOT EXISTS ix_people_event_date{s} ON people_event{s} (event_date);

@@ -110,6 +110,14 @@ def _merge(base: dict, over: dict) -> dict:
     for key, body in over.items():
         if key in merged["products"]:
             merged["products"][key] = body
+    # Preserve edited weights and points while expanding the legacy criterion.
+    for cr in merged['products']['glynac']['criteria']:
+        if cr['key'] == 'black_diamond':
+            if cr.get('label') == 'Portfolio platform is Black Diamond':
+                cr['label'] = 'Black Diamond, Salesforce or Redtail'
+            for lv in cr.get('levels', []):
+                if lv[1] == 'Orion, Tamarac, Addepar or Advyzon':
+                    lv[1] = 'No confirmed supported portfolio or CRM system'
     return merged
 
 
@@ -455,7 +463,7 @@ def load_features(conn, crds: list[str] | None = None) -> dict[str, dict]:
                      AND verify_status NOT IN ('invalid','no_mail_server')
                      AND (confidence >= 60 OR verify_status='valid')) AS personal,
                COUNT(*) FILTER (WHERE verify_status='valid') AS verified
-             FROM contact_point WHERE kind='email'{only('crd')} GROUP BY crd""",
+             FROM usable_contact_point WHERE kind='email'{only('crd')} GROUP BY crd""",
          lambda d, r: d.__setitem__("reach", {"personal": r["personal"] or 0,
                                               "verified": r["verified"] or 0}))
     each(f"SELECT crd FROM web_enrich_state WHERE status='ok'{only('crd')}",
@@ -592,7 +600,8 @@ CIO_RE = re.compile(r"CHIEF INVESTMENT|\bCIO\b", re.I)
 
 PLATFORMS = {"platform_black_diamond": "Black Diamond", "platform_orion": "Orion",
              "platform_tamarac": "Tamarac", "platform_addepar": "Addepar",
-             "platform_advyzon": "Advyzon"}
+             "platform_advyzon": "Advyzon", "platform_salesforce": "Salesforce",
+             "platform_redtail": "Redtail"}
 
 
 def platform_evidence(d) -> dict[str, str]:
@@ -676,10 +685,14 @@ def g_independent(d, g, key):
 def g_supported_system(d, g, key):
     mail = (d["mail"] or {}).get("platform")
     plats = platform_evidence(d)
-    other = [p for p in plats if p != "Black Diamond"]
-    if mail == "google" and other and "Black Diamond" not in plats:
-        return False, f"Google email and {other[0]} for portfolios"
-    return True, "At least one system Glynac can work with, or not yet ruled out"
+    supported = [p for p in plats if p in ("Black Diamond", "Salesforce", "Redtail")]
+    if mail == "m365":
+        supported.insert(0, "Microsoft 365")
+    if supported:
+        return True, "Compatible: " + ", ".join(supported)
+    # A portfolio or email vendor does not establish which CRM a firm uses.
+    # Keep unknown compatibility eligible, with missing factors worth zero.
+    return True, "Compatibility unconfirmed; Microsoft, Salesforce, Redtail and Black Diamond are supported"
 
 
 def g_no_private_funds(d, g, key):
@@ -1082,12 +1095,10 @@ def c_m365(d, c, key):
 
 def c_black_diamond(d, c, key):
     plats = platform_evidence(d)
-    if "Black Diamond" in plats:
-        return 100, plats["Black Diamond"]
-    if plats:
-        name = next(iter(plats))
-        return 0, f"{name}: {plats[name]}"
-    return unknown(33, "Portfolio platform not found in the brochure or website")
+    supported = [f"{name}: {plats[name]}" for name in ("Black Diamond", "Salesforce", "Redtail") if name in plats]
+    if supported:
+        return 100, "; ".join(supported)
+    return unknown(0, "No confirmed Black Diamond, Salesforce or Redtail evidence")
 
 
 GLYNAC_TRIGGER_POINTS = {"aum_jump": 80, "iar_growth": 65,

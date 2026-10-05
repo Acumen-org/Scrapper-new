@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS auto_task (
     message       TEXT,
     updated_at    TEXT
 );
+CREATE TABLE IF NOT EXISTS firm_refresh_request (
+    crd TEXT PRIMARY KEY,
+    requested_at TEXT NOT NULL
+);
 """
 
 EXTRA_COLUMNS = (("last_run_at", "TEXT"), ("next_run_at", "TEXT"), ("last_status", "TEXT"),
@@ -84,9 +88,9 @@ JOBS: list[Job] = [
         "people who work there, their titles, emails and direct lines. Re-reads a site "
         "after the interval set in Settings.",
         "scripts.web_enrich", ("--limit", "6"), every_hours=6, timeout_s=2400,
-        backlog_sql="SELECT COUNT(*) n FROM firm_scope s JOIN firm_current f ON f.crd=s.crd WHERE f.website IS NOT NULL AND f.website != '' AND NOT EXISTS (SELECT 1 FROM web_enrich_state w WHERE w.crd=s.crd AND w.scanned_at >= '{recrawl_cutoff}')",
-        done_sql="SELECT COUNT(*) n FROM web_enrich_state w JOIN firm_scope s ON s.crd=w.crd",
-        total_sql="SELECT COUNT(*) n FROM firm_scope s JOIN firm_current f ON f.crd=s.crd WHERE f.website IS NOT NULL AND f.website != ''",
+        backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN web_enrich_state w ON w.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE f.website IS NOT NULL AND f.website != '' AND (w.crd IS NULL OR w.scanned_at < '{recrawl_cutoff}' OR r.requested_at > w.scanned_at)",
+        done_sql="SELECT COUNT(*) n FROM web_enrich_state",
+        total_sql="SELECT COUNT(*) n FROM firm_current WHERE website IS NOT NULL AND website != ''",
         group="contacts"),
     Job("directories", "Directories and sources",
         "Crawls the directories and websites added on the Enrichment screen, each on its "
@@ -97,22 +101,22 @@ JOBS: list[Job] = [
     Job("infer_emails", "Email patterns",
         "Works out each firm's email pattern from addresses it has published and writes "
         "a candidate address for every person who still has none. Candidates stay "
-        "labelled as guesses until verification confirms them.",
-        "scripts.infer_emails", ("--limit", "150"), every_hours=12,
-        backlog_sql="SELECT COUNT(*) n FROM firm_scope s LEFT JOIN email_guess_state g ON g.crd=s.crd WHERE g.crd IS NULL",
+        "internal until verification confirms them.",
+        "scripts.infer_emails", ("--limit", "150"), every_hours=1,
+        backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN email_guess_state g ON g.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE f.website IS NOT NULL AND f.website != '' AND (g.crd IS NULL OR r.requested_at > g.checked_at)",
         done_sql="SELECT COUNT(*) n FROM email_guess_state g JOIN firm_scope s ON s.crd=g.crd",
         total_sql="SELECT COUNT(*) n FROM firm_scope", group="contacts"),
     Job("email_verify", "Email verification",
         "Checks every address with the mail server that would receive it, without "
         "sending anything, and re-checks after 90 days. Personal addresses first.",
-        "scripts.verify_emails", ("--limit", "60"), every_hours=6, timeout_s=1800,
+        "scripts.verify_emails", ("--limit", "60"), every_hours=1, timeout_s=1800,
         backlog_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND verify_status IN ('unverified','queued')",
         done_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND verify_status NOT IN ('unverified','queued')",
         total_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email'", group="contacts"),
     Job("mail_platform", "Email platform",
         "Tells Microsoft 365 from Google from public mail records, re-checked every 90 days.",
         "scripts.mail_platform", ("--limit", "400"), every_hours=24,
-        backlog_sql="SELECT COUNT(*) n FROM firm_scope s WHERE NOT EXISTS (SELECT 1 FROM firm_mail_platform m WHERE m.crd=s.crd)",
+        backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN firm_mail_platform m ON m.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE m.crd IS NULL OR r.requested_at > m.checked_at",
         done_sql="SELECT COUNT(*) n FROM firm_mail_platform m JOIN firm_scope s ON s.crd=m.crd",
         total_sql="SELECT COUNT(*) n FROM firm_scope", group="filings"),
     Job("firm_refresh", "Custodian refresh",
@@ -255,6 +259,19 @@ def request_run(conn, kind: str) -> None:
     conn.execute("UPDATE auto_task SET force=1, next_run_at=? WHERE kind=?",
                  (now_iso(), kind))
     conn.commit()
+
+
+def request_full_refresh(conn) -> int:
+    """Refresh all firms without falsifying their previous observation dates."""
+    conn.execute("INSERT INTO firm_refresh_request (crd, requested_at)"
+                 " SELECT crd, ? FROM firm_current WHERE true"
+                 " ON CONFLICT(crd) DO UPDATE SET requested_at=excluded.requested_at",
+                 (now_iso(),))
+    conn.commit()
+    for kind in ('web_enrich', 'mail_platform', 'infer_emails', 'email_verify',
+                 'brochure_retag', 'rescore'):
+        request_run(conn, kind)
+    return conn.execute('SELECT COUNT(*) n FROM firm_current').fetchone()['n']
 
 
 def set_paused(conn, kind: str, paused: bool) -> None:

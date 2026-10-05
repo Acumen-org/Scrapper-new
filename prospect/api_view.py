@@ -155,7 +155,7 @@ def api_verify_one(cid: int):
         pass
     return _j(True, message=f"{r['value']}: {contacts.VERIFY_LABEL.get(status, status)}"
               + (f". {reason}" if reason else ""), replace=_verify_status_html(status),
-              counts=counts)
+              counts=counts, reload=status != 'valid')
 
 
 def _bg(cmd: list[str], log: str) -> None:
@@ -224,9 +224,13 @@ def api_add_contact(crd: str, name: str = Form(""), title: str = Form(""),
                                      person_name=name or None, title=title or None,
                                      source_ref=ref)
         c.commit()
+        if email:
+            from . import jobs
+            jobs.request_run(c, 'email_verify')
     finally:
         c.close()
-    return _j(True, message="Saved" if added else "Already on file", reload=True)
+    return _j(True, message=("Saved. Email queued for verification." if email else "Saved")
+              if added else "Already on file", reload=True)
 
 
 _JOB_LOCK = threading.Lock()

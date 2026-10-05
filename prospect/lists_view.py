@@ -75,14 +75,14 @@ def _where(key, q, st, owner, stat, sig, reach, cov, status="scored"):
                      " AND a.state IS NULL AND t.detected_date >= ?)")
         args.append(signal_cutoff())
     if reach == "email":
-        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=p.crd AND x.kind='email'"
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'"
                      " AND x.person_key != '' AND x.is_role=0 AND x.source != 'pattern'"
                      " AND x.verify_status NOT IN ('invalid','no_mail_server'))")
     elif reach == "verified":
-        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=p.crd AND x.kind='email'"
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'"
                      " AND x.verify_status='valid')")
     elif reach == "phone":
-        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=p.crd AND x.kind='phone'"
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='phone'"
                      " AND x.person_key != '')")
     if cov == "full":
         where.append("p.coverage >= 90")
@@ -261,16 +261,16 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
                f'<option value="__new">New list...</option></select></form>')
         body.append(
             f'<tr class="go" data-href="/firm/{esc(r["crd"])}?p={key}">'
-            f'<td class="rank">{r["rank"] or ""}</td>'
-            f'<td><div class="firm"><a href="/firm/{esc(r["crd"])}?p={key}">'
+            f'<td><div class="firm"><span class="row-rank">{r["rank"] or ""}</span><a href="/firm/{esc(r["crd"])}?p={key}">'
             f'{escn(r["legal_name"] or "(unnamed)")}</a></div>'
             f'<div class="meta">{ui.firm_meta(r)}</div></td>'
             f'<td>{score_cell(r["score"], r["coverage"], r["potential"])}'
-            f'<div style="margin-top:5px">{missing_chip(r["missing"], 2)}</div></td>'
+            f'</td>'
             f'<td class="why">{ui.why_line(r["detail_json"])}</td>'
-            f'<td>{tcell}</td><td>{ui.contact_cell(flags[r["crd"]])}</td>'
-            f'<td>{who}</td><td>{add}</td></tr>')
-    empty = ('<tr><td colspan="8" class="empty">No firms match. Clear a filter, or open '
+            f'<td>{ui.contact_cell(flags[r["crd"]])}</td>'
+            f'<td>{tcell or "<span class=muted>No new signal</span>"}</td>'
+            f'<td><details class="row-actions"><summary>Manage</summary>{who}{add}</details></td></tr>')
+    empty = ('<tr><td colspan="6" class="empty">No firms match. Clear a filter, or open '
              f'<a href="/lists/{key}?view=scoring">Scoring</a> to see what this list requires.</td></tr>')
     states = _states(c, key)
     stat_opts = "".join(ui.opt(s, stat, s.capitalize()) for s in ui.STATUS_OPTIONS)
@@ -299,8 +299,8 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
 <input type="text" name="name" placeholder="Name this view to save it" style="min-width:210px">
 <button type="submit" class="sm">Save view</button></form>
 </div>
-<table><thead><tr><th>#</th><th>Firm</th><th>Score</th><th>Why it scores</th>
-<th>New signal</th><th>Reach</th><th>Owner</th><th></th></tr></thead>
+<table class="ranked-table"><thead><tr><th>Firm</th><th>Fit score</th><th>Key evidence</th>
+<th>Contacts</th><th>Activity</th><th></th></tr></thead>
 <tbody>{"".join(body) or empty}</tbody></table>
 <div class="pager">{prev} Page {page_n} of {pages} {nxt}</div>"""
 
@@ -447,6 +447,7 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
     add = ""
     hist = ""
     actions = ""
+    extra_actions = ""
     if edit:
         fopts = "".join(f'<option value="field:{k}">{esc(v[0])} (number)</option>'
                         for k, v in products.FIELDS.items())
@@ -475,12 +476,17 @@ other factors so the total stays 100.</p>
 <button type="button" class="ghost sm" onclick="spread()">Scale to 100</button>
 <span class="spacer"></span>
 <input type="text" name="note" placeholder="What changed and why" style="min-width:300px">
-<button type="submit" class="primary">Save and rescore</button></div>"""
+<label class="small"><input type="checkbox" name="refresh_all" value="1"> Refresh all firm websites and email platforms</label>
+<button type="submit" class="primary">Save and rescore all firms</button></div>"""
         reset = (f'<form method="post" action="/lists/{key}/scoring/reset" style="margin-top:10px" '
                  f'onsubmit="return confirm(\'Put this product back to the shipped defaults?\')">'
                  f'<button type="submit" class="ghost sm">Reset to the shipped defaults</button></form>'
                  if ed else "")
-        actions += reset
+        extra_actions = reset
+        extra_actions += (f'<form method="post" action="/lists/{key}/rescore" class="rescore-all">'
+                    '<p class="meta">Recheck every firm against every product, including firms currently outside the lists.</p>'
+                    '<label class="small"><input type="checkbox" name="refresh_all" value="1"> Refresh all firm websites and email platforms</label>'
+                    '<button type="submit">Rescore all firms now</button></form>')
     else:
         who += ('<p class="meta">Only admins and this product&rsquo;s owner can change these rules.</p>')
 
@@ -493,7 +499,7 @@ other factors so the total stays 100.</p>
 {f"<h3 style='margin-top:22px'>Penalties</h3>{pens}" if pens else ""}
 {glob}
 {actions}
-</form>{add}{hist}</div>"""
+</form>{extra_actions}{add}{hist}</div>"""
 
 
 def _float(form, name, default=None):
@@ -510,10 +516,27 @@ def _clean(v: float):
     return int(v) if float(v) == int(v) else v
 
 
-def _rescore() -> None:
-    log = open(config.DATA_DIR / "weekly.log", "ab")
-    subprocess.Popen([sys.executable, "-m", "scripts.score_products"], cwd=str(config.ROOT),
-                     stdout=log, stderr=log, creationflags=procs.SPAWN_FLAGS)
+def _rescore(refresh_all: bool = False) -> None:
+    from . import jobs
+    c = conn()
+    try:
+        jobs.init(c)
+        if refresh_all:
+            jobs.request_full_refresh(c)
+        jobs.request_run(c, 'rescore')
+    finally:
+        c.close()
+
+
+@router.post('/lists/{key}/rescore')
+def rescore_all(key: str, refresh_all: str = Form("")):
+    if _key_or_none(key) is None or not can_edit(key):
+        return RedirectResponse('/', status_code=303)
+    _rescore(bool(refresh_all))
+    message = 'All firms and products queued for rescoring.'
+    if refresh_all:
+        message += ' Website and email-platform refreshes queued for every firm.'
+    return RedirectResponse(f'/lists/{key}?view=scoring&{qs_join(msg=message)}', status_code=303)
 
 
 @router.post("/lists/{key}/scoring")
@@ -586,8 +609,11 @@ async def scoring_save(key: str, request: Request):
     except ValueError as e:
         return RedirectResponse(f"/lists/{key}?view=scoring&{qs_join(err=str(e))}",
                                 status_code=303)
-    _rescore()
-    return RedirectResponse(f"/lists/{key}?view=scoring&{qs_join(msg='Saved. The list is being rescored now; it takes under a minute.')}",
+    _rescore(bool(form.get('refresh_all')))
+    message = 'Saved. Every firm and product is queued for rescoring.'
+    if form.get('refresh_all'):
+        message += ' All firm websites and email platforms will be refreshed.'
+    return RedirectResponse(f"/lists/{key}?view=scoring&{qs_join(msg=message)}",
                             status_code=303)
 
 

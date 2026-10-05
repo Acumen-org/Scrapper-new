@@ -124,11 +124,11 @@ def post(base: str, path: str, data: dict, timeout: float = 30.0) -> int:
 
 ROUTES: list[tuple[str, str]] = [
     ("/", "Product lists"),
-    ("/", "Recent activity"),
+    ("/", "Latest intelligence"),
     ("/", "Data coverage"),
     ("/ask", "Bellwether AI"),
     ("/lists/phh_fund", "PHH Fund I"),
-    ("/lists/phh_fund?cov=full", "Why it scores"),
+    ("/lists/phh_fund?cov=full", "Key evidence"),
     ("/lists/phh_fund?view=scoring", "Scored factors"),
     ("/lists/phh_fund?view=disqualified", "Disqualified"),
     ("/lists/phh_1031", "PHH 1031"),

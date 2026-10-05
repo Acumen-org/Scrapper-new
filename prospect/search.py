@@ -153,12 +153,12 @@ def run(c, spec: dict, sort: str = "score", limit: int = 25,
         args.append(tag)
         said.append(f"brochure mentions {products.tag_label(tag).lower()}")
     if spec.get("has_personal_email"):
-        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=f.crd AND x.kind='email'"
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=f.crd AND x.kind='email'"
                      " AND x.person_key != '' AND x.is_role=0 AND x.confidence >= 60"
                      " AND x.verify_status NOT IN ('invalid','no_mail_server'))")
         said.append("with a named person's email")
     if spec.get("has_verified_email"):
-        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=f.crd AND x.kind='email'"
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=f.crd AND x.kind='email'"
                      " AND x.verify_status='valid')")
         said.append("with a verified email")
     if people and spec.get("min_hires_12m") is not None:

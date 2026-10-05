@@ -225,6 +225,7 @@
     }
     function ask(q) {
       if (!q || pending) return;
+      panel.classList.add("is-chatting");
       pending = true;
       panel.setAttribute("aria-busy", "true");
       panel.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
@@ -300,8 +301,71 @@
     b.addEventListener("click", function () {
       var chat = document.getElementById("firm-ai");
       if (!chat) return;
-      chat.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+      var drawer = document.getElementById("firm-ai-drawer");
+      if (drawer && !drawer.open) drawer.showModal();
       chat.querySelector("textarea").focus({ preventScroll: true });
     });
+  });
+  document.querySelectorAll("[data-close-ai]").forEach(function (b) {
+    b.addEventListener("click", function () { b.closest("dialog").close(); });
+  });
+
+  // Keep primary search visible; advanced controls stay available on demand.
+  document.querySelectorAll("form.filters").forEach(function (form) {
+    var labels = Array.from(form.children).filter(function (e) { return e.tagName === "LABEL"; });
+    if (labels.length < 4) return;
+    var details = document.createElement("details");
+    details.className = "filter-details";
+    var summary = document.createElement("summary");
+    summary.textContent = "More filters";
+    var fields = document.createElement("div");
+    fields.className = "filter-fields";
+    var active = 0;
+    labels.slice(2).forEach(function (label) {
+      var input = label.querySelector("input,select");
+      var defaults = input && input.name === "sort" ? ["", "score", "name"] : ["", "ready"];
+      if (input && (input.type === "checkbox" ? input.checked : defaults.indexOf(input.value) === -1)) active++;
+      fields.appendChild(label);
+    });
+    if (active) { summary.textContent += " (" + active + " active)"; details.open = true; }
+    details.append(summary, fields);
+    form.appendChild(details);
+  });
+  document.querySelectorAll('form[action="/views/save"]').forEach(function (form) {
+    var details = document.createElement("details");
+    details.className = "save-view";
+    var summary = document.createElement("summary");
+    summary.textContent = "Save view";
+    form.before(details);
+    details.append(summary, form);
+  });
+
+  document.querySelectorAll("[data-workspace-tabs]").forEach(function (nav) {
+    var tabs = Array.from(nav.querySelectorAll("button"));
+    nav.setAttribute("role", "tablist");
+    function select(tab) {
+      tabs.forEach(function (button) {
+        var selected = button === tab;
+        button.setAttribute("role", "tab");
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = selected ? 0 : -1;
+        var section = document.getElementById(button.dataset.panel);
+        section.hidden = !selected;
+        section.setAttribute("role", "tabpanel");
+        section.setAttribute("aria-labelledby", button.id);
+        button.setAttribute("aria-controls", section.id);
+      });
+    }
+    tabs.forEach(function (tab, i) {
+      tab.id = "workspace-tab-" + tab.dataset.panel;
+      tab.addEventListener("click", function () { select(tab); });
+      tab.addEventListener("keydown", function (e) {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+        e.preventDefault();
+        var next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length-1 : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        select(tabs[next]); tabs[next].focus();
+      });
+    });
+    select(tabs[0]);
   });
 })();

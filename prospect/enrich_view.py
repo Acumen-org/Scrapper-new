@@ -290,10 +290,10 @@ def websites(msg: str = Query(""), err: str = Query("")):
             c.rollback()
             return 0
 
-    total = one("""SELECT COUNT(*) FROM firm_scope s JOIN firm_current f ON f.crd=s.crd
+    total = one("""SELECT COUNT(*) FROM firm_current f
                    WHERE f.website IS NOT NULL AND f.website != ''""")
-    read = one("SELECT COUNT(*) FROM web_enrich_state w JOIN firm_scope s ON s.crd=w.crd")
-    ok = one("SELECT COUNT(*) FROM web_enrich_state w JOIN firm_scope s ON s.crd=w.crd WHERE w.status='ok'")
+    read = one("SELECT COUNT(*) FROM web_enrich_state w")
+    ok = one("SELECT COUNT(*) FROM web_enrich_state w WHERE w.status='ok'")
     pages = one("SELECT COUNT(*) FROM web_page")
     people = one("""SELECT COUNT(DISTINCT crd || person_key) FROM contact_point
                     WHERE source IN ('website','vcard','ai') AND person_key != ''""")
@@ -316,16 +316,12 @@ def websites(msg: str = Query(""), err: str = Query("")):
         f'<td class="small">{esc(ui.ago(r["scanned_at"]))}</td></tr>' for r in recent)
     pct = (read / total * 100) if total else 0
     inner = f"""<div class="kpis" style="margin-bottom:18px">
-<div class="kpi"><div class="n">{pct:.0f}%</div><div class="l">Of list firms with a website read</div><div class="d">{read:,} of {total:,}; {ok:,} answered</div></div>
+<div class="kpi"><div class="n">{pct:.0f}%</div><div class="l">Firm websites read</div><div class="d">{read:,} of {total:,}; {ok:,} answered</div></div>
 <div class="kpi"><div class="n">{pages:,}</div><div class="l">Pages read</div></div>
 <div class="kpi"><div class="n">{people:,}</div><div class="l">People found on sites</div></div>
 <div class="kpi"><div class="n">{emails:,}</div><div class="l">Personal emails found</div></div>
 <div class="kpi"><div class="n">{phones:,}</div><div class="l">Direct lines found</div></div></div>
-<p class="lede">Each firm&rsquo;s site is read with Scrapling: the home page, then team, people,
-leadership, advisor, bio and contact pages first, every vCard, and the site map. People are matched
-to the SEC roster; personal emails teach Bellwether the firm&rsquo;s address pattern, which fills in
-everyone else as candidates for verification. Sites are re-read on the interval in Settings,
-Crawling, and the job runs by itself.</p>
+<p class="lede">Websites, team pages and vCards supply sourced contacts. Only verified emails appear in the directory. Firms with missing contacts are revisited automatically.</p>
 <form class="row" method="post" action="/enrichment/websites/read" style="margin:12px 0 20px">
 <input type="text" name="crd" placeholder="CRD of a firm" style="min-width:160px">
 <input type="url" name="url" placeholder="Website, if different (optional)" style="min-width:300px">

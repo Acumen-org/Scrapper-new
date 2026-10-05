@@ -49,7 +49,7 @@ def contact_flags(c, crds: list[str]) -> dict[str, dict]:
                 AND verify_status NOT IN ('valid','invalid','no_mail_server')) AS guess,
           COUNT(*) FILTER (WHERE kind='phone' AND person_key != '') AS direct,
           COUNT(*) FILTER (WHERE kind='phone') AS phones
-        FROM contact_point WHERE crd IN ({ph}) GROUP BY crd""", put)
+        FROM usable_contact_point WHERE crd IN ({ph}) GROUP BY crd""", put)
     each(f"SELECT crd, headcount FROM firm_people_stats WHERE crd IN ({ph})",
          lambda d, r: d.__setitem__("people", r["headcount"] or 0))
     missing = [k for k, v in out.items() if not v["people"]]
@@ -104,8 +104,11 @@ def why_line(detail_json: str | None, n: int = 2) -> str:
         ev = c["evidence"] or c["level"]
         if len(ev) > 90:
             ev = ev[:87].rstrip() + "..."
-        parts.append(f'<b>{esc(c["label"])}</b> {esc(ev)}')
-    return "<br>".join(parts)
+        parts.append(f'<div class="evidence-item"><strong>{esc(c["label"])}</strong><p>{esc(ev)}</p></div>')
+    if not parts:
+        return '<span class="muted">Evidence pending</span>'
+    labels = [esc(c['label']) for c in comps if c['contrib'] > 0]
+    return f'<details class="evidence"><summary>{labels[0]}<span>{" + " + str(len(labels)-1) + " factors" if len(labels)>1 else "View evidence"}</span></summary><div>{"".join(parts)}</div></details>'
 
 
 def pitch_of(detail_json: str | None) -> str:

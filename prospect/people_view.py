@@ -12,6 +12,8 @@ filter away.
 from __future__ import annotations
 
 import json
+import time
+from functools import lru_cache
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Query
@@ -22,7 +24,7 @@ from .webapp import conn, esc, escn, money, page, qs_join
 
 router = APIRouter()
 
-REACH = {"": "Any", "email": "Has an email", "verified": "Verified email",
+REACH = {"ready": "Ready to contact", "": "Full directory", "email": "Verified email", "verified": "Verified email",
          "phone": "Has a direct line", "none": "No email yet"}
 JOINED = {"": "Any time", "90": "Joined in 90 days", "365": "Joined in 12 months",
           "1095": "Joined in 3 years"}
@@ -55,14 +57,16 @@ def _where(q, st, on, officers, reach, joined, cfp, disc):
         where.append("sc.crd IS NOT NULL")
     if officers:
         where.append("sa.title IS NOT NULL")
+    if reach == 'ready':
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=e.org_pk AND c.person_key='i:'||p.indvl_pk)")
     if reach in ("email", "verified", "none"):
-        cond = ("EXISTS (SELECT 1 FROM contact_point c WHERE c.crd=e.org_pk"
+        cond = ("EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=e.org_pk"
                 " AND c.person_key='i:'||p.indvl_pk AND c.kind='email'"
                 " AND c.verify_status NOT IN ('invalid','no_mail_server')"
                 + (" AND c.verify_status='valid'" if reach == "verified" else "") + ")")
         where.append(f"NOT {cond}" if reach == "none" else cond)
     elif reach == "phone":
-        where.append("EXISTS (SELECT 1 FROM contact_point c WHERE c.crd=e.org_pk"
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=e.org_pk"
                      " AND c.person_key='i:'||p.indvl_pk AND c.kind='phone')")
     if joined in JOINED and joined:
         where.append("e.start_date >= ?")
@@ -95,12 +99,21 @@ ORDER = {"": "sc.priority DESC NULLS LAST, f.raum DESC NULLS LAST, p.name",
          "name": "p.last_name, p.first_name", "firm": "f.legal_name, p.last_name"}
 
 
+@lru_cache(maxsize=128)
+def _count_people(where, args, officers, minute):
+    c = conn()
+    try:
+        return c.execute(f"SELECT COUNT(*) n {BASE.format(where=where, sa=SA_JOIN if officers else '')}", args).fetchone()['n']
+    finally:
+        c.close()
+
+
 @router.get("/people", response_class=HTMLResponse)
 def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
-                officers: str = Query(""), reach: str = Query(""), joined: str = Query(""),
-                cfp: str = Query(""), disc: str = Query(""), sort: str = Query(""),
+                officers: str = Query(""), reach: str = Query("ready"), joined: str = Query(""),
+                cfp: str = Query(""), disc: str = Query(""), sort: str = Query("name"),
                 page_n: int = Query(1, ge=1, alias="page"),
-                per: int = Query(50, ge=10, le=200)):
+                per: int = Query(25, ge=10, le=200)):
     c = conn()
     if not _have_people(c):
         c.close()
@@ -110,7 +123,7 @@ individual feed. It runs by itself; this page fills in as soon as it has.</p></d
     sort = sort if sort in ORDER else ""
     where, args = _where(q, st, on, officers, reach, joined, cfp, disc)
     filt = BASE.format(where=where, sa=SA_JOIN if officers else "")
-    total = c.execute(f"SELECT COUNT(*) n {filt}", args).fetchone()["n"]
+    total = _count_people(where, tuple(args), bool(officers), int(time.monotonic() // 60))
     rows = c.execute(f"""
         WITH pg AS (SELECT p.indvl_pk, e.org_pk, e.start_date, e.city, e.state,
                            sc.priority, f.raum, f.legal_name, p.last_name, p.first_name, p.name
@@ -133,7 +146,7 @@ individual feed. It runs by itself; this page fills in as soon as it has.</p></d
         pks = sorted({k[1] for k in keys})
         for r in c.execute(
                 f"""SELECT crd, person_key, kind, value, verify_status, source, title
-                    FROM contact_point WHERE crd IN ({','.join('?' * len(crds))})
+                    FROM usable_contact_point WHERE crd IN ({','.join('?' * len(crds))})
                     AND person_key IN ({','.join('?' * len(pks))})
                     AND verify_status NOT IN ('invalid','no_mail_server')
                     ORDER BY (verify_status='valid') DESC, confidence DESC""",
@@ -178,11 +191,10 @@ individual feed. It runs by itself; this page fills in as soon as it has.</p></d
             f'<td><a href="/firm/{esc(r["crd"])}">{escn(r["legal_name"])}</a>'
             f'<div class="meta">{esc(" ".join(x for x in ((r["city"] or "").title(), r["state"] or "") if x))}'
             f' . {money(r["raum"])}</div></td>'
-            f'<td class="nowrap">{esc(since[:7])}<div class="meta">{esc(ui.ago(since))}</div></td>'
-            f'<td class="small">{escn(r["prior"]) if r["prior"] else "<span class=muted>-</span>"}</td>'
-            f'<td class="small">{esc(des_s) or "<span class=muted>-</span>"}</td>'
             f'<td class="small">{email_html or "<span class=muted>-</span>"}'
-            f'{"<div class=meta>" + esc(ph["value"]) + "</div>" if ph else ""}</td></tr>')
+            f'{"<div class=meta>" + esc(ph["value"]) + "</div>" if ph else ""}</td>'
+            f'<td><details class="person-extra"><summary>Background</summary><p>At the firm since {esc(since[:7]) or "Not recorded"}</p>'
+            f'<p>Previously: {escn(r["prior"]) if r["prior"] else "Not recorded"}</p><p>{esc(des_s) or "No designations recorded"}</p></details></td></tr>')
     qs = qs_join(q=q, st=st, on=on, officers=officers, reach=reach, joined=joined, cfp=cfp,
                  disc=disc, sort=sort)
     pages = max(1, -(-total // per))
@@ -194,6 +206,7 @@ individual feed. It runs by itself; this page fills in as soon as it has.</p></d
 <div class="head"><div><h1>People</h1>
 </div>
 <div class="acts"><a class="btn" href="/people/export.csv?{qs}" data-noprefetch>Export</a></div></div>
+<nav class="seg"><a href="/people" class="{'on' if reach == 'ready' else ''}">Ready to contact</a><a href="/people?reach=&amp;sort=name" class="{'on' if reach == '' else ''}">Full directory</a><a href="/people?reach=none&amp;sort=name" class="{'on' if reach == 'none' else ''}">Contact discovery</a></nav>
 <form class="filters" method="get" action="/people">
 <label>Search<input type="search" name="q" value="{esc(q)}" placeholder="Person or firm"></label>
 <label>State<select name="st">{ui.opt("", st, "All states")}{"".join(ui.opt(s, st, s) for s in states)}</select></label>
@@ -211,9 +224,8 @@ individual feed. It runs by itself; this page fills in as soon as it has.</p></d
 <form method="post" action="/views/save" class="acts"><input type="hidden" name="page" value="people">
 <input type="hidden" name="qs" value="{esc(qs)}"><input type="text" name="name" placeholder="Name this view to save it" style="min-width:200px">
 <button type="submit" class="sm">Save view</button></form></div>
-<table><thead><tr><th>Person</th><th>Firm</th><th>At the firm since</th><th>Before</th>
-<th>Designations</th><th>Reach</th></tr></thead>
-<tbody>{"".join(body) or '<tr><td colspan="6" class="empty">Nobody matches these filters.</td></tr>'}</tbody></table>
+<table class="people-table"><thead><tr><th>Person</th><th>Firm</th><th>Verified contact</th><th></th></tr></thead>
+<tbody>{"".join(body) or '<tr><td colspan="4" class="empty">No contacts ready yet. Follow progress in Contact discovery.</td></tr>'}</tbody></table>
 <div class="pager">{prev} Page {page_n} of {pages} {nxt}</div></div>"""
     return page("People", "people", body_html)
 
@@ -233,15 +245,15 @@ def people_export(q: str = "", st: str = "", on: str = "", officers: str = "",
     rows = c.execute(f"""
         SELECT p.name, sa.title, f.legal_name AS firm, e.org_pk AS crd, f.state,
                e.start_date AS at_firm_since, p.designations, p.has_disclosure,
-               (SELECT value FROM contact_point x WHERE x.crd=e.org_pk
+               (SELECT value FROM usable_contact_point x WHERE x.crd=e.org_pk
                   AND x.person_key='i:'||p.indvl_pk AND x.kind='email'
                   AND x.verify_status NOT IN ('invalid','no_mail_server')
                   ORDER BY (x.verify_status='valid') DESC, x.confidence DESC LIMIT 1) AS email,
-               (SELECT verify_status FROM contact_point x WHERE x.crd=e.org_pk
+               (SELECT verify_status FROM usable_contact_point x WHERE x.crd=e.org_pk
                   AND x.person_key='i:'||p.indvl_pk AND x.kind='email'
                   AND x.verify_status NOT IN ('invalid','no_mail_server')
                   ORDER BY (x.verify_status='valid') DESC, x.confidence DESC LIMIT 1) AS email_status,
-               (SELECT value FROM contact_point x WHERE x.crd=e.org_pk
+               (SELECT value FROM usable_contact_point x WHERE x.crd=e.org_pk
                   AND x.person_key='i:'||p.indvl_pk AND x.kind='phone'
                   ORDER BY x.confidence DESC LIMIT 1) AS direct_phone,
                p.iapd_link

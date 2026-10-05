@@ -41,7 +41,7 @@ def contacts_rows(c, crds: list[str]) -> list[dict]:
             SELECT cp.crd, f.legal_name AS firm, f.state, f.phone AS firm_phone,
                    cp.person_key, cp.person_name AS person, cp.title, cp.kind, cp.value,
                    cp.verify_status, cp.source, cp.confidence, cp.is_role
-            FROM contact_point cp JOIN firm_current f ON f.crd = cp.crd
+            FROM usable_contact_point cp JOIN firm_current f ON f.crd = cp.crd
             WHERE cp.crd IN ({ph}) AND cp.verify_status NOT IN ('invalid','no_mail_server')
             ORDER BY f.legal_name, cp.crd, (cp.person_key = ''), cp.is_role,
                      cp.confidence DESC""", tuple(chunk)).fetchall()
@@ -160,14 +160,14 @@ def _where(q, st, size, reg, lst, stat, owner, trig, list_id, hires="", reach=""
         where.append("ps.hires_12m >= ?")
         args.append(int(hires))
     if reach == "email":
-        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=f.crd AND x.kind='email'"
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=f.crd AND x.kind='email'"
                      " AND x.person_key != '' AND x.is_role=0 AND x.source != 'pattern'"
                      " AND x.verify_status NOT IN ('invalid','no_mail_server'))")
     elif reach == "verified":
-        where.append("EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=f.crd AND x.kind='email'"
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=f.crd AND x.kind='email'"
                      " AND x.verify_status='valid')")
     elif reach == "none":
-        where.append("NOT EXISTS (SELECT 1 FROM contact_point x WHERE x.crd=f.crd"
+        where.append("NOT EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=f.crd"
                      " AND x.kind='email' AND x.verify_status NOT IN ('invalid','no_mail_server'))")
     return " AND ".join(where) or "1=1", args
 
@@ -330,11 +330,11 @@ def _firms(c, where, args, page_n, per, qs, sort=""):
             f'<td class="num">{money(r["raum"])}<div class="meta">HNW {hs:.0f}%</div></td>'
             f'<td class="num">{team}{moves}</td>'
             f'<td>{best or "<span class=muted>-</span>"}</td>'
-            f'<td>{ui.contact_cell(flags[r["crd"]])}</td><td>{who}</td><td>{add}</td></tr>')
-    empty = '<tr><td colspan="7" class="empty">No firms match these filters.</td></tr>'
+            f'<td>{ui.contact_cell(flags[r["crd"]])}</td><td><details class="row-actions"><summary>Manage</summary>{who}{add}</details></td></tr>')
+    empty = '<tr><td colspan="6" class="empty">No firms match these filters.</td></tr>'
     return (f'<table><thead><tr><th>Firm</th><th class="num">AUM</th>'
             f'<th class="num" title="People registered at the firm now, and job moves in 12 months">Team</th>'
-            f'<th>Best list</th><th>Reach</th><th>Owner</th><th></th></tr></thead>'
+            f'<th>Product fit</th><th>Contacts</th><th></th></tr></thead>'
             f'<tbody>{"".join(body) or empty}</tbody></table>'), total
 
 

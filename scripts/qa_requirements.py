@@ -7,7 +7,50 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
-from prospect import ai, assistant, contacts, directory, harvest, jobs, msauth, products, users, verify
+from prospect import ai, assistant, contacts, directory, emailguess, harvest, jobs, msauth, products, users, verify
+
+
+class ContactDiscoveryChecks(unittest.TestCase):
+    def test_rejected_pattern_advances_without_recycling(self):
+        first = emailguess.next_candidate('Jane Smith', 'qa.invalid', 'first.last', set())
+        self.assertEqual(first[0], 'jane.smith@qa.invalid')
+        second = emailguess.next_candidate('Jane Smith', 'qa.invalid', 'first.last', {first[0]})
+        self.assertEqual(second[0], 'jsmith@qa.invalid')
+        tried = {fn('jane','smith')+'@qa.invalid' for fn in emailguess.PATTERNS.values()}
+        self.assertIsNone(emailguess.next_candidate('Jane Smith', 'qa.invalid', 'first.last', tried))
+
+    def test_incomplete_person_name_is_not_guessed(self):
+        self.assertIsNone(emailguess.next_candidate('Jane', 'qa.invalid', 'first', set()))
+
+
+class GlynacCompatibilityChecks(unittest.TestCase):
+    def test_migration_preserves_admin_weights_and_custom_labels(self):
+        import copy
+        base = products.base_cfg()
+        edited = copy.deepcopy(base['products']['glynac'])
+        criterion = next(c for c in edited['criteria'] if c['key']=='black_diamond')
+        criterion.update(label='Our supported CRM evidence', weight=27)
+        merged = products._merge(base, {'glynac':edited})
+        current = next(c for c in merged['products']['glynac']['criteria'] if c['key']=='black_diamond')
+        self.assertEqual((current['label'], current['weight']), ('Our supported CRM evidence', 27))
+
+    def test_crm_supported_even_with_google_and_orion(self):
+        for platform in ('Salesforce', 'Redtail', 'Black Diamond'):
+            with patch.object(products, 'platform_evidence', return_value={platform:'website evidence', 'Orion':'portfolio'}):
+                data = {'mail':{'platform':'google'}}
+                self.assertTrue(products.g_supported_system(data, {}, 'glynac')[0])
+                self.assertEqual(products.c_black_diamond(data, {}, 'glynac')[0], 100)
+
+    def test_microsoft_is_supported(self):
+        with patch.object(products, 'platform_evidence', return_value={}):
+            self.assertIn('Microsoft', products.g_supported_system({'mail':{'platform':'m365'}}, {}, 'glynac')[1])
+
+    def test_unknown_crm_does_not_exclude_google_firm(self):
+        with patch.object(products, 'platform_evidence', return_value={'Orion':'website'}):
+            self.assertTrue(products.g_supported_system({'mail':{'platform':'google'}}, {}, 'glynac')[0])
+            result = products.c_black_diamond({}, {}, 'glynac')
+            self.assertEqual(result[0], 0)
+            self.assertFalse(result[2])
 
 
 class FirmChatChecks(unittest.TestCase):

@@ -441,11 +441,11 @@ products:
           - [100, "Confirmed"]
           - [0, "Google Workspace or another provider"]
       - key: black_diamond
-        label: Portfolio platform is Black Diamond
+        label: Black Diamond, Salesforce or Redtail
         weight: 15
         levels:
           - [100, "Confirmed"]
-          - [0, "Orion, Tamarac, Addepar or Advyzon"]
+          - [0, "No confirmed supported portfolio or CRM system"]
       - key: best_trigger
         label: Best recent trigger
         weight: 15

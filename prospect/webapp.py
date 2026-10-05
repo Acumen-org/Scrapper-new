@@ -575,11 +575,7 @@ def asset(path: str) -> str:
     return f"/static/{path}?v={v}"
 
 
-FAVICON = ('<link rel="icon" href="data:image/svg+xml,'
-           '%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E'
-           '%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23a63232%27/%3E'
-           '%3Ctext x=%2716%27 y=%2722%27 font-family=%27Georgia%27 font-size=%2718%27 '
-           'fill=%27white%27 text-anchor=%27middle%27%3EB%3C/text%3E%3C/svg%3E">')
+FAVICON = '<link rel="icon" type="image/svg+xml" href="/static/mark.svg">'
 
 # Pages render before the click lands: hovering a link for a moment starts
 # loading the next page in the background (Chrome and Edge), so moving around
@@ -723,18 +719,16 @@ def nav(active: str) -> str:
             '<header class="mobile-nav"><a href="/">Bellwether</a>'
             '<button type="button" data-nav-toggle aria-controls="main-nav" aria-expanded="false">Menu</button></header>'
             '<nav class="side" id="main-nav" aria-label="Main navigation">'
-            f'<a class="brand" href="/"><div class="mark">B</div><div class="t">{APP_NAME}'
-            '<small>Adviser intelligence</small></div></a>'
+            f'<a class="brand" href="/"><img src="/static/mark.svg" width="30" height="30" alt=""><div class="t">{APP_NAME}</div></a>'
             f'<button class="find" type="button" onclick="palShow()">{ICONS["search"]}'
             'Find anything<kbd>Ctrl K</kbd></button>'
             + item("home", "/", "Home")
-            + item("ask", "/ask", "Bellwether AI")
-            + '<div class="grp">Product lists</div>' + plist
-            + '<div class="grp">Work</div>'
-            + item("signals", "/signals", "Signals", n.get("signals"), hot=True)
             + item("firms", "/firms", "Firms")
             + item("people", "/people", "People")
+            + item("signals", "/signals", "Signals", n.get("signals"), hot=True)
+            + item("ask", "/ask", "Bellwether AI")
             + item("saved", "/saved", "Saved lists")
+            + f'<details class="nav-products"{" open" if active.startswith("list:") else ""}><summary>Product lists</summary>{plist}</details>'
             + data
             + f'<div class="foot">{who}<div class="fresh">{quit_link}SEC feed of {feed}</div></div>'
             + '</nav>')
@@ -749,6 +743,7 @@ def page(title: str, active: str, body: str, css: str = "", js: str = "",
         f'<meta name="viewport" content="width=device-width,initial-scale=1">'
         f'<title>{esc(title)} . {APP_NAME}</title>{FAVICON}'
         f'<link rel="stylesheet" href="{asset("app.css")}">'
+        f'<link rel="stylesheet" href="{asset("workspace.css")}">'
         f'{("<style>" + css + "</style>") if css else ""}{SPECULATION}</head>'
         f'<body>{nav(active)}<main id="main-content">{body}</main>'
         f'<script src="{asset("app.js")}" defer></script>{orb}'
@@ -982,18 +977,15 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
     return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to {APP_NAME}</title>{FAVICON}
-<link rel="stylesheet" href="{asset('app.css')}"></head>
+<link rel="stylesheet" href="{asset('app.css')}"><link rel="stylesheet" href="{asset('workspace.css')}"></head>
 <body class="signin-page">
-<div class="signin-scene" aria-hidden="true"><div class="signin-orbit"></div></div>
-<div class="signin-brand"><span>B</span> Bellwether</div>
 <main class="signin">
-<div class="signin-emblem"><canvas data-orb="weaving" data-size="64" data-px="188" data-tint="#ef7e89"
- aria-label="Bellwether intelligence orb"></canvas></div>
-<h1>{APP_NAME}</h1>
-<p class="sub">Adviser intelligence</p>
+<a class="signin-wordmark" href="/login"><img src="/static/mark.svg" width="36" height="36" alt="">{APP_NAME}</a>
+<h1>Welcome back</h1>
+<p class="sub">Sign in to your intelligence workspace.</p>
 {err}{ms_btn}{pw_form}
 {hint}
-</main><footer class="signin-owner">Acumen Strategy</footer>
+</main><footer class="signin-owner">Bellwether by Acumen Strategy</footer>
 <script type="module" src="{asset('orb.js')}"></script></body></html>""",
                         status_code=status or (200 if not error else 401))
 

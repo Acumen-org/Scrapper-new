@@ -34,6 +34,20 @@ PATTERNS = {
 }
 
 
+def next_candidate(full_name: str, domain: str, preferred: str, tried: set[str]) -> tuple[str, str] | None:
+    """One new internal candidate; rejected addresses are never recycled."""
+    parts = name_parts(full_name)
+    if not parts or not domain:
+        return None
+    for pattern in dict.fromkeys([preferred] + list(PATTERNS)):
+        if pattern not in PATTERNS:
+            continue
+        address = f'{PATTERNS[pattern](*parts)}@{domain}'.lower()
+        if address not in tried:
+            return address, pattern
+    return None
+
+
 def name_parts(full: str) -> tuple[str, str] | None:
     parts = [x for x in re.sub(r"[^a-z ]", "", (full or "").lower()).split() if x]
     if len(parts) < 2:

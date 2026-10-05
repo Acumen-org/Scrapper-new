@@ -53,6 +53,10 @@ CREATE INDEX IF NOT EXISTS ix_cp_crd ON contact_point (crd);
 CREATE INDEX IF NOT EXISTS ix_cp_verify ON contact_point (kind, verify_status);
 CREATE INDEX IF NOT EXISTS ix_cp_value ON contact_point (value);
 CREATE INDEX IF NOT EXISTS ix_cp_person ON contact_point (crd, person_key);
+CREATE INDEX IF NOT EXISTS ix_cp_usable ON contact_point (crd, person_key, kind)
+    WHERE kind='phone' OR (kind='email' AND verify_status='valid');
+CREATE OR REPLACE VIEW usable_contact_point AS
+    SELECT * FROM contact_point WHERE kind='phone' OR (kind='email' AND verify_status='valid');
 """
 
 # How much a source is trusted before any verification. Verification overrides:

@@ -85,3 +85,26 @@ jobs:
           NOMAD_VAR_harbor_username: ${{ secrets.HARBOR_USERNAME }}
           NOMAD_VAR_harbor_password: ${{ secrets.HARBOR_PASSWORD }}
         run: nomad job run nomad/bellwether.nomad.hcl
+
+      - name: Configure Microsoft sign-in
+        env:
+          NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
+          NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
+          BELLWETHER_MS_CONFIG: ${{ secrets.BELLWETHER_MS_CONFIG }}
+        shell: bash
+        run: |
+          if [ -n "$BELLWETHER_MS_CONFIG" ]; then
+            allocation=$(nomad job allocs -json bellwether | jq -r '[.[] | select(.ClientStatus == "running")] | sort_by(.CreateIndex) | last | .ID')
+            test -n "$allocation" && test "$allocation" != "null"
+            printf '%s' "$BELLWETHER_MS_CONFIG" | nomad alloc exec -i -t=false -task app "$allocation" python -m scripts.configure_microsoft
+          fi
+
+      - name: Apply workspace release and validate data
+        env:
+          NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
+          NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
+        shell: bash
+        run: |
+          allocation=$(nomad job allocs -json bellwether | jq -r '[.[] | select(.ClientStatus == "running")] | sort_by(.CreateIndex) | last | .ID')
+          test -n "$allocation" && test "$allocation" != "null"
+          nomad alloc exec -t=false -task app "$allocation" python -m scripts.release_workspace

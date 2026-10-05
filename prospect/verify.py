@@ -1115,4 +1115,8 @@ def verify_contacts(conn, ids: list[int], engine: str | None = None) -> dict:
         conn.commit()
     counts["checked"] = len(rows)
     counts["engine"] = "+".join(e for e, _ in ran.most_common()) or eng
+    if counts.get('invalid'):
+        from . import jobs
+        jobs.init(conn)
+        jobs.request_run(conn, 'infer_emails')
     return counts

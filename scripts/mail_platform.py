@@ -39,24 +39,15 @@ CREATE INDEX IF NOT EXISTS ix_mailplat ON firm_mail_platform (platform);
 def todo(conn, limit: int, max_age_days: int) -> list[str]:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)
               ).isoformat(timespec="seconds")
-    # Firms on a product list first, best score first; then everything else
-    # registered, so a partial run always covers who gets called.
-    try:
-        rows = conn.execute("""
-            SELECT f.crd FROM firm_current f
-            LEFT JOIN firm_scope s ON s.crd = f.crd
-            LEFT JOIN firm_mail_platform m ON m.crd = f.crd
-            WHERE f.is_era = 0 AND (m.crd IS NULL OR m.checked_at < ?)
-            ORDER BY (s.crd IS NULL), s.priority DESC, f.raum DESC
-            LIMIT ?""", (cutoff, limit)).fetchall()
-    except Exception:
-        conn.rollback()
-        rows = conn.execute("""
-            SELECT f.crd FROM firm_current f
-            LEFT JOIN firm_mail_platform m ON m.crd = f.crd
-            WHERE f.is_era = 0 AND (m.crd IS NULL OR m.checked_at < ?)
-            ORDER BY f.raum DESC LIMIT ?""", (cutoff, limit)).fetchall()
-    return [r["crd"] for r in rows]
+    rows = conn.execute("""
+        SELECT f.crd FROM firm_current f
+        LEFT JOIN firm_scope s ON s.crd=f.crd
+        LEFT JOIN firm_mail_platform m ON m.crd=f.crd
+        LEFT JOIN firm_refresh_request r ON r.crd=f.crd
+        WHERE m.crd IS NULL OR m.checked_at < ? OR r.requested_at > m.checked_at
+        ORDER BY COALESCE(m.checked_at, '1970-01-01'), s.priority DESC NULLS LAST
+        LIMIT ?""", (cutoff, limit)).fetchall()
+    return [r['crd'] for r in rows]
 
 
 def main() -> int:
@@ -71,6 +62,8 @@ def main() -> int:
     conn.executescript(SCHEMA)
     conn.commit()
 
+    from prospect import jobs
+    jobs.init(conn)
     crds = todo(conn, args.limit, args.max_age)
     domains = {crd: emailguess.domain_for(conn, crd) for crd in crds}
     # Firms sharing a domain (affiliated advisers) need one lookup, not several.
@@ -102,6 +95,7 @@ def main() -> int:
                          " checked_at=excluded.checked_at",
                          (crd, dom, plat, why, now))
         conn.commit()
+        jobs.request_run(conn, 'rescore')
         run.rows_out = sum(counts.values())
         note = "  ".join(f"{k}={v:,}" for k, v in sorted(counts.items()))
         run.note(note)

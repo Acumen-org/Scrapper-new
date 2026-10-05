@@ -82,15 +82,15 @@ def _gather() -> dict:
     d["hires_12m"] = _one(c, "SELECT COUNT(*) FROM people_event WHERE kind='joined'"
                              " AND event_date >= ?", ((date.today() - timedelta(days=365)).isoformat(),))
     d["named_email"] = _one(c, """SELECT COUNT(*) FROM (SELECT DISTINCT crd, person_key FROM
-        contact_point WHERE kind='email' AND person_key != '' AND is_role=0 AND source != 'pattern'
+        usable_contact_point WHERE kind='email' AND person_key != '' AND is_role=0 AND source != 'pattern'
         AND verify_status NOT IN ('invalid','no_mail_server')) x""") or 0
-    d["verified"] = _one(c, "SELECT COUNT(*) FROM contact_point WHERE kind='email'"
+    d["verified"] = _one(c, "SELECT COUNT(*) FROM usable_contact_point WHERE kind='email'"
                             " AND verify_status='valid'") or 0
     d["candidates"] = _one(c, "SELECT COUNT(*) FROM contact_point WHERE kind='email'"
                               " AND source='pattern' AND verify_status IN ('unverified','queued')") or 0
-    d["direct"] = _one(c, "SELECT COUNT(*) FROM contact_point WHERE kind='phone'"
+    d["direct"] = _one(c, "SELECT COUNT(*) FROM usable_contact_point WHERE kind='phone'"
                           " AND person_key != ''") or 0
-    d["phones"] = _one(c, "SELECT COUNT(*) FROM contact_point WHERE kind='phone'") or 0
+    d["phones"] = _one(c, "SELECT COUNT(*) FROM usable_contact_point WHERE kind='phone'") or 0
     d["sites"] = _one(c, "SELECT COUNT(*) FROM web_enrich_state WHERE status='ok'") or 0
     d["brochures"] = _one(c, "SELECT COUNT(*) FROM brochure WHERE status='ok'") or 0
     d["signals_30"] = _one(c, "SELECT COUNT(*) FROM trigger_event WHERE suppressed=0"
@@ -150,11 +150,11 @@ def _gather() -> dict:
         ("Brochure read", _one(c, "SELECT COUNT(*) FROM brochure b JOIN firm_scope s ON s.crd=b.crd WHERE b.status='ok'") or 0, sc),
         ("Website read", _one(c, "SELECT COUNT(*) FROM web_enrich_state w JOIN firm_scope s ON s.crd=w.crd WHERE w.status='ok'") or 0, sc),
         ("People roster", _one(c, "SELECT COUNT(*) FROM firm_people_stats p JOIN firm_scope s ON s.crd=p.crd WHERE p.headcount > 0") or 0, sc),
-        ("A named person's email", _one(c, """SELECT COUNT(DISTINCT c.crd) FROM contact_point c
+        ("A named person's email", _one(c, """SELECT COUNT(DISTINCT c.crd) FROM usable_contact_point c
             JOIN firm_scope s ON s.crd=c.crd WHERE c.kind='email' AND c.person_key != ''
             AND c.is_role=0 AND c.source != 'pattern'
             AND c.verify_status NOT IN ('invalid','no_mail_server')""") or 0, sc),
-        ("A verified email", _one(c, """SELECT COUNT(DISTINCT c.crd) FROM contact_point c
+        ("A verified email", _one(c, """SELECT COUNT(DISTINCT c.crd) FROM usable_contact_point c
             JOIN firm_scope s ON s.crd=c.crd WHERE c.kind='email' AND c.verify_status='valid'""") or 0, sc),
         ("Email platform known", _one(c, """SELECT COUNT(*) FROM firm_mail_platform m
             JOIN firm_scope s ON s.crd=m.crd WHERE m.platform IN ('m365','google','other')""") or 0, sc),
@@ -369,31 +369,19 @@ def home(type: str = "", product: str = "", state: str = ""):
         fresh.append(f"scores computed {esc(ui.ago(d['scored_at']))}")
 
     body = f"""<div class="pg wide dashboard">
-<div class="head dashboard-head"><h1 class="hello">Intelligence overview</h1>{askbar}</div>
-<section class="s" style="margin-top:22px;padding-top:0;border-top:0"><div class="kpis">{kpis}</div></section>
-<section class="s"><div class="s-head"><h2>Product lists</h2>
-<span class="more">Amber marks incomplete data</span></div>
-<div class="prodrow product-head" aria-hidden="true"><div>Product</div><div>Firms</div><div>Scores</div><div>Coverage</div><div class="top-firms">Top firms</div></div>
-{lists_html}</section>
-<section class="s"><div class="cols-21">
-<div><div class="s-head"><h2>Recent activity</h2><a class="more" href="/signals">All signals</a></div>
-<div class="feed">{feed_html}</div></div>
-<div><div class="s-head"><h2>Hiring activity</h2><a class="more" href="/firms?sort=hires&on=any">View firms</a></div>
-<div class="hbars">{hire_rows or '<p class="empty">Hiring data appears after the people feed loads.</p>'}</div>
-</div>
-</div></section>
-<section class="s"><div class="cols-21">
-<div><div class="s-head"><h2>Data coverage</h2>
-<span class="more">Across the {d["scope"]:,} firms on a list</span></div>{cov_rows}
-<p class="meta" style="margin-top:10px">{d["candidates"]:,} inferred emails awaiting verification.</p></div>
-<div><div class="s-head"><h2>Background jobs</h2></div><div class="live">{live_html}</div>
-<div class="s-head" style="margin-top:26px"><h2>Team pipeline</h2></div><div class="funnel">{funnel}</div></div>
-</div></section>
-<section class="s"><div class="cols-2">
-<div><div class="s-head"><h2>Your firms</h2><a class="more" href="/firms?owner=me">View all</a></div>{mine_html}</div>
-<div><div class="s-head"><h2>Watching</h2></div>{watch_html}</div>
-</div></section>
-<details class="geography"><summary>Firms by state <span>Explore locations</span></summary>{_map(d["by_state"])}</details>
-<p class="meta" style="margin-top:34px">{" . ".join(fresh)}</p>
+<div class="head dashboard-head"><h1>GTM intelligence</h1>{askbar}</div>
+<nav class="workspace-tabs" data-workspace-tabs aria-label="Intelligence views"><button type="button" data-panel="home-overview">Overview</button><button type="button" data-panel="home-products">Product lists</button><button type="button" data-panel="home-coverage">Data coverage</button></nav>
+<section id="home-overview">
+<div class="home-metrics"><a href="/firms"><strong>{d['firms']:,}</strong><span>Adviser firms</span></a><a href="/people"><strong>{d['people']:,}</strong><span>People tracked</span></a><a href="/signals"><strong>{d['signals_30']:,}</strong><span>Signals in 30 days</span></a></div>
+<div class="home-overview"><div><section class="home-block"><div class="s-head"><h2>Latest intelligence</h2><a href="/signals" class="more">All activity</a></div><div class="feed">{feed_html}</div></section>
+<section class="home-block"><div class="s-head"><h2>Hiring activity</h2><a href="/firms?sort=hires&on=any" class="more">View firms</a></div><div class="hbars">{hire_rows or '<p class="empty">No recorded hiring activity.</p>'}</div></section></div>
+<div><section class="home-block"><div class="s-head"><h2>Your firms</h2><a href="/firms?owner=me" class="more">View all</a></div>{mine_html}</section>
+<section class="home-block"><div class="s-head"><h2>Watching</h2><a href="/firms" class="more">Find firms</a></div>{watch_html}</section>
+<section class="home-block"><div class="s-head"><h2>Team pipeline</h2></div><div class="funnel">{funnel}</div></section></div></div>
+</section>
+<section id="home-products"><div class="s-head"><h2>Product performance</h2><span class="more">Scores retain missing-data penalties</span></div><div class="prodrow product-head" aria-hidden="true"><div>Product</div><div>Firms</div><div>Scores</div><div>Coverage</div><div class="top-firms">Top firms</div></div>{lists_html}
+<details class="geography"><summary>Firms by state <span>Explore locations</span></summary>{_map(d['by_state'])}</details></section>
+<section id="home-coverage"><div class="kpis">{kpis}</div><div class="workspace-section"><div class="home-overview"><div><h2>Coverage across {d['scope']:,} ranked firms</h2>{cov_rows}<p class="meta">{d['candidates']:,} internal email candidates awaiting verification.</p></div><div><h2>Background discovery</h2><div class="live">{live_html}</div></div></div></div></section>
+<p class="meta" style="margin-top:32px">{' &middot; '.join(fresh)}</p>
 </div>"""
     return page("Home", "home", body, orbs=True)

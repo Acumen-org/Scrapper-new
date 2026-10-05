@@ -750,26 +750,25 @@ def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
 # ------------------------------------------------------------------ schedule
 
 def todo(conn, limit: int) -> list[dict]:
-    """Firms on a product list with a website: never read first (best score
-    first), then those read longer ago than crawl.recrawl_days."""
-    rows = conn.execute(f"""
+    """All firm websites, including explicit refresh requests and contact gaps."""
+    days = settings.get_int("crawl.recrawl_days", 90) or 90
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    retry = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(timespec="seconds")
+    return conn.execute("""
         SELECT f.crd, f.website FROM firm_current f
-        JOIN firm_scope s ON s.crd = f.crd
-        WHERE f.website IS NOT NULL AND f.website != ''
-          AND NOT EXISTS (SELECT 1 FROM web_enrich_state w WHERE w.crd = f.crd)
-        ORDER BY s.priority DESC, f.raum DESC
-        LIMIT {int(limit)}""").fetchall()
-    if len(rows) < limit:
-        days = settings.get_int("crawl.recrawl_days", 90) or 90
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
-        rows += conn.execute(f"""
-            SELECT f.crd, f.website FROM firm_current f
-            JOIN firm_scope s ON s.crd = f.crd
-            JOIN web_enrich_state w ON w.crd = f.crd
-            WHERE f.website IS NOT NULL AND f.website != '' AND w.scanned_at < ?
-            ORDER BY s.priority DESC, w.scanned_at
-            LIMIT {int(limit) - len(rows)}""", (cutoff,)).fetchall()
-    return rows
+        LEFT JOIN firm_scope s ON s.crd=f.crd
+        LEFT JOIN web_enrich_state w ON w.crd=f.crd
+        LEFT JOIN firm_refresh_request r ON r.crd=f.crd
+        WHERE f.website IS NOT NULL AND f.website != '' AND
+          (w.crd IS NULL OR w.scanned_at < ? OR r.requested_at > w.scanned_at OR
+           (w.scanned_at < ? AND EXISTS (SELECT 1 FROM person_employment pe
+            WHERE pe.org_pk=f.crd AND pe.kind='current' AND (
+             NOT EXISTS (SELECT 1 FROM usable_contact_point cp WHERE cp.crd=f.crd
+               AND cp.person_key='i:'||pe.indvl_pk AND cp.kind='email') OR
+             NOT EXISTS (SELECT 1 FROM usable_contact_point cp WHERE cp.crd=f.crd
+               AND cp.person_key='i:'||pe.indvl_pk AND cp.kind='phone')))))
+        ORDER BY COALESCE(w.scanned_at, '1970-01-01'), s.priority DESC NULLS LAST
+        LIMIT ?""", (cutoff, retry, limit)).fetchall()
 
 
 def save_state(conn, crd: str, res: dict) -> None:
@@ -801,6 +800,8 @@ def main() -> int:
         db.add_column(conn, "web_enrich_state", col, decl)
     conn.commit()
     contacts.init(conn)
+    from prospect import jobs
+    jobs.init(conn)
 
     with runlog.Run(conn, "web_enrich", "scrape", cfg.stamp) as run:
         if args.crd:
@@ -843,6 +844,8 @@ def main() -> int:
                       f" {res['people']} people, {res['personal']} personal emails,"
                       f" {res['phones']} direct phones, {res['guesses']} guesses"
                       f" [{time.monotonic() - t0:.0f}s]", flush=True)
+        jobs.request_run(conn, 'email_verify')
+        jobs.request_run(conn, 'rescore')
         run.rows_out = len(rows)
         run.note(f"{len(rows)} firms, {tot['pages']} pages, {tot['people']} people,"
                  f" {tot['personal']} personal emails, {tot['phones']} direct phones,"

@@ -35,15 +35,17 @@ def ask_page(q: str = Query("")):
         sub = 'Name search only. <a href="/settings/ai">Connect AI</a>.'
     else:
         sub = "Name search only. Ask an admin to connect AI."
-    sugs = "".join(f"<button type='button'>{esc(s)}</button>" for s in SUGGESTIONS)
-    body = f"""<div class="pg narrow">
+    prompts = [('Find firms', SUGGESTIONS[0]), ('Compare product fit', SUGGESTIONS[2]), ('Track changes', SUGGESTIONS[3])]
+    sugs = "".join(f'<button type="button" data-question="{esc(question)}">{label}</button>' for label, question in prompts)
+    body = f"""<div class="ai-workspace">
+<header class="ai-page-head"><span>Bellwether AI</span><a href="/ask" class="btn ghost">New conversation</a></header>
 <div class="aipanel aiwide" data-scope="global" data-ask="{esc(q)}">
-<div class="aihead"><canvas data-orb="breathing" data-size="64" data-px="72" data-tint="#d9d4ca"
- aria-label="Bellwether AI"></canvas><div><h1>Bellwether AI</h1>
-<div class="s">{sub}</div></div></div>
-<div class="aisugs">{sugs}</div>
-<div class="aimsgs"></div>
-<form class="aiform"><input type="text" aria-label="Ask Bellwether" placeholder="Ask about firms, people or product fit" autocomplete="off" autofocus>
-<button class="primary" type="submit">Ask</button></form>
+<div class="ai-welcome"><img src="/static/mark.svg" width="48" height="48" alt="">
+<h1>What would you like to know?</h1></div>
+<div class="aimsgs" role="log" aria-live="polite"></div>
+<form class="aiform ai-composer"><label class="sr-only" for="global-question">Ask Bellwether</label>
+<textarea id="global-question" aria-label="Ask Bellwether" placeholder="Ask about firms, people, or opportunities..." rows="2" maxlength="1500" required autofocus></textarea>
+<div class="ai-compose-foot"><span><canvas data-orb="breathing" data-size="20" data-px="20" data-tint="#c9c9c9" aria-label="AI status"></canvas> Bellwether AI</span><button class="primary" type="submit">Ask</button></div></form>
+<div class="aisugs">{sugs}</div><p class="ai-availability">{sub}</p>
 </div></div>"""
     return page("Bellwether AI", "ask", body, orbs=True)

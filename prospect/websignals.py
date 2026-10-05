@@ -4,8 +4,8 @@ Two kinds of evidence the product scores need and no filing carries:
 
   - the reporting platform behind the client login. Firms link their client
     portal from the homepage, and the link names the vendor: Black Diamond,
-    Orion, Tamarac, Addepar or Advyzon. Glynac's portfolio work needs Black
-    Diamond today.
+    Orion, Tamarac, Addepar or Advyzon. CRM links can also identify Salesforce
+    and Redtail, which Glynac supports alongside Microsoft and Black Diamond.
   - whether the firm publishes: a blog, insights page or newsletter. Glynac's
     marketing compliance work is worth more where there is outbound content.
 
@@ -24,6 +24,8 @@ TAGS = re.compile(r"<[^>]+>")
 
 # (signal, pattern matched against link targets and link text)
 PLATFORM_PATTERNS = [
+    ("platform_salesforce", re.compile(r"salesforce\.com|force\.com|\bsalesforce\b", re.I)),
+    ("platform_redtail", re.compile(r"redtailtechnology|redtail\s*(crm|technology)|redtail\.com", re.I)),
     ("platform_black_diamond", re.compile(r"black\s*diamond|blackdiamond|bdportal"
                                           r"|advent\.com", re.I)),
     ("platform_orion", re.compile(r"orionadvisor|orion\s*(connect|client|portal|login)"
