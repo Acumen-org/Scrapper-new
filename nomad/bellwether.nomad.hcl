@@ -108,10 +108,14 @@ job "bellwether" {
         change_mode = "restart"
       }
 
+      # memory_max rose from 1024: website reading renders the occasional
+      # JavaScript-only page in a headless browser (one at a time, about 250MB
+      # while it runs) beside the app and its background jobs. The reservation
+      # is unchanged, so placement on worker-5 is unaffected.
       resources {
         cpu        = 1000
         memory     = 512
-        memory_max = 1024
+        memory_max = 1536
       }
 
       kill_timeout = "30s"

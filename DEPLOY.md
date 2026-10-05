@@ -186,6 +186,16 @@ it.
 Use this if you already run a Nomad cluster. If you do not, Option A is the same
 two containers with less to learn, and nothing here is better for three people.
 
+**How the live copy deploys today.** A push to `main` runs
+`.github/workflows/ci.yml` on the self-hosted runner: it builds the image, pushes
+it to Harbor as `bellwether/app:YYYY-MM-DD-<sha7>`, and runs
+`nomad job run nomad/bellwether.nomad.hcl` with that tag. That jobspec reads
+`secret`, `contact` and `dsn` from the Nomad variable `nomad/jobs/bellwether`.
+There is no test step in that workflow, so run `python -m scripts.qa_style`,
+`python -m scripts.qa_pg` and `python -m scripts.qa_smoke` before pushing.
+The root `bellwether.nomad.hcl` described below is the older, self-contained
+form of the job.
+
 The job is [`bellwether.nomad.hcl`](bellwether.nomad.hcl), and its header carries
 the full prerequisites: CNI plugins on the client, two host volumes declared in
 `client.hcl`, and the secrets stored as Nomad variables. The short version:
