@@ -36,17 +36,22 @@ CREATE INDEX IF NOT EXISTS ix_mailplat ON firm_mail_platform (platform);
 """
 
 
+DNS_RETRY_DAYS = 7      # a domain whose own DNS does not answer is asked again after this
+
+
 def todo(conn, limit: int, max_age_days: int) -> list[str]:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)
               ).isoformat(timespec="seconds")
+    week = (datetime.now(timezone.utc) - timedelta(days=DNS_RETRY_DAYS)).isoformat(timespec="seconds")
     rows = conn.execute("""
         SELECT f.crd FROM firm_current f
         LEFT JOIN firm_scope s ON s.crd=f.crd
         LEFT JOIN firm_mail_platform m ON m.crd=f.crd
         LEFT JOIN firm_refresh_request r ON r.crd=f.crd
         WHERE m.crd IS NULL OR m.checked_at < ? OR r.requested_at > m.checked_at
+           OR (m.platform='unknown' AND m.evidence LIKE 'DNS for this domain%' AND m.checked_at < ?)
         ORDER BY COALESCE(m.checked_at, '1970-01-01'), s.priority DESC NULLS LAST
-        LIMIT ?""", (cutoff, limit)).fetchall()
+        LIMIT ?""", (cutoff, week, limit)).fetchall()
     return [r['crd'] for r in rows]
 
 
@@ -77,6 +82,10 @@ def main() -> int:
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     counts: dict[str, int] = {}
+    # A resolver outage is not a finding, but a domain whose own DNS never
+    # answers is one. Asking about a domain that always resolves tells the two
+    # apart; without this, those firms were "retried" on every slice for ever.
+    resolver_ok = mailcheck.records("gmail.com", mailcheck.QTYPE_MX) is not None
     with runlog.Run(conn, "mail_platform", "derive", cfg.stamp) as run:
         for crd in crds:
             dom = domains[crd]
@@ -84,9 +93,10 @@ def main() -> int:
                 plat, why = "no_domain", "no usable domain on file"
             else:
                 plat, why = answers.get(dom, ("unknown", "not checked"))
-            # A resolver outage is not a finding: leave the firm to be retried.
             if plat == "unknown" and why == "DNS unreachable":
-                continue
+                if not resolver_ok:
+                    continue            # our resolver is down: leave the firm for next time
+                why = f"DNS for this domain did not answer; asked again in {DNS_RETRY_DAYS} days"
             counts[plat] = counts.get(plat, 0) + 1
             conn.execute("INSERT INTO firm_mail_platform (crd, domain, platform,"
                          " evidence, checked_at) VALUES (?,?,?,?,?)"
