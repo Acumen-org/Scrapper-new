@@ -13,6 +13,37 @@ def _scrub(text):
     return re.sub(r'[\w.+-]+@[\w-]+(\.[\w-]+)+', '[address]', text)[:300]
 
 
+def _health(conn):
+    """What each job last said, how the email hunt is moving, and whether the
+    weekly SEC pull and the scheduler are alive. Counts and job summaries only."""
+    def q(sql, args=()):
+        try:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+        except Exception as exc:
+            conn.rollback()
+            return [{'unavailable': type(exc).__name__}]
+    for row in q("SELECT kind, last_output FROM auto_task WHERE last_output IS NOT NULL ORDER BY kind"):
+        print('Runtime job output:', row.get('kind'), _scrub(row.get('last_output')))
+    for row in q("""SELECT started_at, finished_at, status, rows_in, rows_out, message FROM run_log
+            WHERE source_key='email_hunt' ORDER BY started_at DESC LIMIT 6"""):
+        print('Runtime hunt run:', json.dumps({k: (_scrub(v) if k == 'message' else v)
+                                               for k, v in row.items()}, default=str))
+    print('Runtime hunt states:', json.dumps(q(
+        "SELECT state, COUNT(*) n FROM email_hunt GROUP BY 1 ORDER BY 2 DESC"), default=str))
+    print('Runtime hunt firms:', json.dumps(q("""SELECT state, COUNT(*) n,
+            SUM(CASE WHEN next_try_at <= to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS') THEN 1 ELSE 0 END) due
+            FROM email_hunt_firm GROUP BY 1 ORDER BY 2 DESC"""), default=str))
+    print('Runtime hunt found:', json.dumps(q("""SELECT
+            SUM(CASE WHEN checked_at >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD') THEN 1 ELSE 0 END) day,
+            COUNT(*) total FROM email_attempt WHERE status='valid'"""), default=str))
+    print('Runtime scheduler:', json.dumps(q("SELECT * FROM scheduler_state"), default=str))
+    print('Runtime feeds:', json.dumps(q("""SELECT source_key, MAX(captured_at) latest FROM snapshot
+            GROUP BY 1 ORDER BY 1"""), default=str))
+    print('Runtime runs:', json.dumps(q("""SELECT source_key, status, COUNT(*) n, MAX(started_at) latest
+            FROM run_log WHERE started_at >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD')
+            GROUP BY 1, 2 ORDER BY 1, 2"""), default=str))
+
+
 def _ai(conn):
     """Which model is connected and how its calls went: counts, times and the
     latest errors. The key is reported only as set or not, the base URL only
@@ -54,6 +85,7 @@ def main():
         releases = conn.execute("""SELECT version, applied_at, evaluated_firms
             FROM app_release ORDER BY applied_at DESC LIMIT 1""").fetchall()
         print('Runtime release:', json.dumps([dict(row) for row in releases]))
+        _health(conn)
         _ai(conn)
         ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='firm_refresh'
