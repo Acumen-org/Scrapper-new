@@ -1,4 +1,4 @@
-﻿"""Read-only deployment diagnostics. Never print task config, env or credentials."""
+"""Read-only deployment diagnostics. Never print task config, env or credentials."""
 import json
 import re
 import subprocess
@@ -36,8 +36,7 @@ if running:
         print('Runtime diagnostics unavailable; exit:', runtime.returncode)
     else:
         for line in runtime.stdout.splitlines():
-            if line.startswith(('Runtime jobs:', 'Runtime release:', 'Runtime custodians:',
-                                'Runtime custodian retries:', 'Runtime ai')):
+            if line.startswith('Runtime '):
                 print(line)
     if os.environ.get('AI_CHECK') == 'true':
         # Opt in only: this one calls the model (two calls at most).
@@ -58,6 +57,18 @@ for row in sorted(allocations, key=lambda x:x.get('CreateIndex',0), reverse=True
         print('Task:', task, state.get('State'), 'failed:', state.get('Failed'))
         for event in state.get('Events', [])[-4:]:
             print('Event:', task, event.get('Type'), safe(event.get('DisplayMessage') or event.get('Message')))
+# What the cluster can offer a job: CPU, memory and any GPUs per ready node.
+for node in (command('node', 'status', '-json') or [])[:12]:
+    if node.get('Status') != 'ready':
+        continue
+    detail = command('node', 'status', '-json', node['ID']) or {}
+    res = detail.get('NodeResources') or {}
+    gpus = [f"{d.get('Vendor')}/{d.get('Name')} x{len(d.get('Instances') or [])}"
+            for d in (res.get('Devices') or []) if d.get('Type') == 'gpu']
+    print('Cluster node:', json.dumps({
+        'name': node.get('Name'), 'class': node.get('NodeClass'),
+        'cpu_mhz': (res.get('Cpu') or {}).get('CpuShares'),
+        'memory_mb': (res.get('Memory') or {}).get('MemoryMB'), 'gpus': gpus}))
 request = urllib.request.Request(os.environ['NOMAD_ADDR'].rstrip('/') + '/v1/job/bellwether/evaluations',
                                  headers={'X-Nomad-Token':os.environ['NOMAD_TOKEN']})
 with urllib.request.urlopen(request, timeout=20) as response:
