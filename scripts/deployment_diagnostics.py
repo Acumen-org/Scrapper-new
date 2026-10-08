@@ -44,7 +44,7 @@ if running:
         check = subprocess.run(['nomad', 'alloc', 'exec', '-i', '-t=false', '-task', 'app',
                                 latest['ID'], 'python', '-'],
                                input=Path(__file__).with_name('ai_live_check.py').read_text(),
-                               capture_output=True, text=True, timeout=240)
+                               capture_output=True, text=True, timeout=420)
         for line in check.stdout.splitlines():
             if line.startswith('Runtime ai check'):
                 print(line)

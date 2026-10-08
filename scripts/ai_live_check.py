@@ -42,5 +42,51 @@ def main():
             'ok': False, 'seconds': round(time.monotonic() - t0, 1), 'error': str(e)}))
 
 
+def variants():
+    """How the connected OpenAI-compatible model answers the planning prompt
+    with less thinking: the same request with each way of asking for it.
+    Prints status, time, finish reason and token counts, never the reply."""
+    import requests
+    if ai.provider() not in ('edenai', 'openai'):
+        return
+    msgs = [{'role': 'user', 'content': (
+        f"{assistant._vocab()}\n\nFILTERS: {assistant._fields_doc()}.\n\nTurn the QUESTION into "
+        "a Bellwether search. Reply with one JSON object with keys mode, firm_name, filters, "
+        "sort, limit, title; put only the filters the question implies.\n\n"
+        f"QUESTION: {QUESTION}")}]
+    base = ai._base()
+    tries = [('baseline', {}), ('reasoning_effort low', {'reasoning_effort': 'low'}),
+             ('reasoning_effort none', {'reasoning_effort': 'none'}),
+             ('template no thinking', {'chat_template_kwargs': {'enable_thinking': False}}),
+             ('reasoning disabled', {'reasoning': {'enabled': False}})]
+    for name, extra in tries:
+        headers, body = ai._openai_request(assistant.PLAN_SYSTEM, msgs, ai.model('smart'), 3000,
+                                           {'type': 'object'}, base, False)
+        body.update(extra)
+        t0 = time.monotonic()
+        try:
+            r = requests.post(base.rstrip('/') + '/chat/completions', json=body, headers=headers,
+                              timeout=90)
+        except requests.RequestException as e:
+            print('Runtime ai check variant:', json.dumps({'name': name, 'error': type(e).__name__}))
+            continue
+        out = {'name': name, 'status': r.status_code, 'seconds': round(time.monotonic() - t0, 1)}
+        try:
+            d = r.json()
+            ch = (d.get('choices') or [{}])[0]
+            msg = ch.get('message') or {}
+            u = d.get('usage') or {}
+            out.update(finish=ch.get('finish_reason'), content_chars=len(msg.get('content') or ''),
+                       reasoning_chars=len(msg.get('reasoning_content') or msg.get('reasoning') or ''),
+                       out_tokens=u.get('completion_tokens'),
+                       reasoning_tokens=(u.get('completion_tokens_details') or {}).get('reasoning_tokens'))
+            if r.status_code >= 400:
+                out['error'] = ai._provider_message(r)[:160]
+        except ValueError:
+            out['unreadable'] = True
+        print('Runtime ai check variant:', json.dumps(out))
+
+
 if __name__ == '__main__':
     main()
+    variants()
