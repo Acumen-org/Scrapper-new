@@ -218,10 +218,19 @@
     function add(kind, html) {
       var d = document.createElement("div");
       d.className = "aimsg " + kind;
-      d.innerHTML = html;
       box.appendChild(d);
-      box.scrollTop = box.scrollHeight;
-      return d;
+      // Bellwether's answers sit beside its mark, so their content goes in
+      // a body cell; the user's own words are a plain bubble.
+      var body = d;
+      if (kind === "bot") { body = document.createElement("div"); body.className = "body"; d.appendChild(body); }
+      body.innerHTML = html;
+      scrollEnd();
+      return body;
+    }
+    // The full-page conversation scrolls the window; side panels scroll their box.
+    function scrollEnd() {
+      if (panel.classList.contains("ai-stage")) window.scrollTo(0, document.body.scrollHeight);
+      else box.scrollTop = box.scrollHeight;
     }
     function ask(q) {
       if (!q || pending) return;
@@ -254,7 +263,7 @@
         history.push({ role: "user", content: q });
         history.push({ role: "assistant", content: d.text || "" });
         setTimeout(function () { setOrb("breathing"); }, 900);
-        box.scrollTop = box.scrollHeight;
+        scrollEnd();
       }).catch(function (error) {
         var message = error.name === "AbortError" ? "The answer took too long. Try again." :
           error.message === "Failed to fetch" ? "Could not reach Bellwether. Try again." : error.message;
@@ -263,7 +272,7 @@
         retry.type = "button";
         retry.className = "sm ai-retry";
         retry.textContent = "Retry";
-        retry.addEventListener("click", function () { if (!pending) { wait.remove(); ask(q); } });
+        retry.addEventListener("click", function () { if (!pending) { wait.closest(".aimsg").remove(); ask(q); } });
         wait.appendChild(document.createElement("br"));
         wait.appendChild(retry);
         if (inp) inp.value = q;
@@ -274,7 +283,7 @@
         panel.setAttribute("aria-busy", "false");
         panel.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
         if (inp) inp.readOnly = false;
-        box.scrollTop = box.scrollHeight;
+        scrollEnd();
       });
     }
     if (form) {
@@ -302,7 +311,8 @@
       var chat = document.getElementById("firm-ai");
       if (!chat) return;
       var drawer = document.getElementById("firm-ai-drawer");
-      if (drawer && !drawer.open) drawer.showModal();
+      if (drawer && drawer.contains(chat) && !drawer.open) drawer.showModal();
+      else chat.scrollIntoView({ block: "center", behavior: "smooth" });
       chat.querySelector("textarea").focus({ preventScroll: true });
     });
   });
@@ -310,26 +320,27 @@
     b.addEventListener("click", function () { b.closest("dialog").close(); });
   });
 
-  // Keep primary search visible; advanced controls stay available on demand.
-  document.querySelectorAll("form.filters").forEach(function (form) {
-    var labels = Array.from(form.children).filter(function (e) { return e.tagName === "LABEL"; });
-    if (labels.length < 4) return;
-    var details = document.createElement("details");
-    details.className = "filter-details";
-    var summary = document.createElement("summary");
-    summary.textContent = "More filters";
-    var fields = document.createElement("div");
-    fields.className = "filter-fields";
-    var active = 0;
-    labels.slice(2).forEach(function (label) {
-      var input = label.querySelector("input,select");
-      var defaults = input && input.name === "sort" ? ["", "score", "name"] : ["", "ready"];
-      if (input && (input.type === "checkbox" ? input.checked : defaults.indexOf(input.value) === -1)) active++;
-      fields.appendChild(label);
+  /* ------------------------------------------------------------ filter bar
+     Quick filters apply the moment they change; the More filters panel waits
+     for its Apply button so several can be set at once. */
+  document.querySelectorAll("form.fbar").forEach(function (form) {
+    form.addEventListener("change", function (e) {
+      if (e.target.closest(".fpanel")) return;
+      if (e.target.matches("select,input[type=checkbox]")) form.requestSubmit();
     });
-    if (active) { summary.textContent += " (" + active + " active)"; details.open = true; }
-    details.append(summary, fields);
-    form.appendChild(details);
+  });
+  document.addEventListener("click", function (e) {
+    document.querySelectorAll("details.fmore[open],details.save-view[open]").forEach(function (d) {
+      if (!d.contains(e.target)) d.open = false;
+    });
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    document.querySelectorAll("details.fmore[open],details.save-view[open]").forEach(function (d) { d.open = false; });
+  });
+  document.querySelectorAll(".composer textarea").forEach(function (t) {
+    function fit() { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 240) + "px"; }
+    t.addEventListener("input", fit);
   });
   document.querySelectorAll('form[action="/views/save"]').forEach(function (form) {
     var details = document.createElement("details");

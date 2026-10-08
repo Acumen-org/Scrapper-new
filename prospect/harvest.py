@@ -793,6 +793,209 @@ def match_known(name: str, known_names: list[str]) -> str | None:
     return hits[0] if len(uniq) == 1 else None
 
 
+def name_fit(shown: str, filed: str) -> str | None:
+    """How well a name shown somewhere (a card, a search result title) fits a
+    filed roster name. 'strong': same surname, and the given name is the filed
+    one or a common nickname of it (Bob for Robert). 'weak': same surname, and
+    the given name fits only loosely (a shared prefix, or the middle name the
+    person goes by). None otherwise, including a different surname."""
+    p, q = _parts(shown or ""), _parts(filed or "")
+    if not p or not q or not _same_last(p[2], q[2]):
+        return None
+    pf, qf = p[0].strip("."), q[0]
+    if len(pf) > 1 and (pf == qf or pf in NICKNAMES.get(qf, ()) or qf in NICKNAMES.get(pf, ())):
+        return "strong"
+    givens = ([pf] + [m for m in p[1] if len(m) > 1]) if len(pf) <= 1 else [pf]
+    if any(_given_ok(g, [q[0]] + q[1]) for g in givens if len(g) > 1):
+        return "weak"
+    return None
+
+
+# ---------------------------------------------------------------- LinkedIn
+
+def _slug_words(url: str) -> list[str] | None:
+    """The name-like words of a profile slug: 'steve-troutman-cfp-48478b186'
+    gives ['steve', 'troutman']. Numeric ids LinkedIn appends and trailing
+    credentials are dropped. None when the URL is not a profile."""
+    n = contacts.norm_linkedin(url)
+    if not n or "/in/" not in n:
+        return None
+    slug = n.rsplit("/", 1)[-1]
+    out = []
+    for t in re.split(r"[-_.~]+", slug):
+        if re.fullmatch(r"[0-9a-f]+", t) and re.search(r"\d", t):
+            continue          # 48478b186, 044700b: the id LinkedIn appends
+        t2 = re.sub(r"[^a-z]", "", t)       # jdoe77 -> jdoe, cfp(R) -> cfp
+        if not t2:
+            continue
+        if t2 in CREDENTIALS:
+            continue
+        out.append(t2)
+    return out
+
+
+def linkedin_slug_fit(url: str, name: str) -> str | None:
+    """Does a profile URL's slug spell this person's name? 'strong' for the
+    given name (or a nickname) and the surname (jane-doe-12ab, janedoe,
+    doejane), 'weak' for an initial or middle name with the surname (jdoe,
+    j-doe), else None. Many slugs are opaque handles; None is not evidence
+    against a match, only the absence of evidence for one."""
+    words = _slug_words(url)
+    q = _parts(name or "")
+    if not words or not q:
+        return None
+    first, middles, last = q
+    last = last.replace("'", "")
+    lasts = {last, last.replace("-", "")} | {x for x in last.split("-") if len(x) > 1}
+    givens = {first} | NICKNAMES.get(first, set())
+    if len(words) >= 2:
+        # dave-d-arcangelo: D'Arcangelo's apostrophe became a hyphen
+        pairs = set(words) | {a + b for a, b in zip(words, words[1:])}
+        if pairs & lasts:
+            if any(w in givens for w in words):
+                return "strong"
+            if any(w in middles or w == first[:1] for w in words):
+                return "weak"
+        return None
+    joined = words[0]
+    for la in lasts:
+        if any(joined in (g + la, la + g) for g in givens if len(g) > 1):
+            return "strong"
+        # laurenchristinefrahn: given, middle name, surname run together
+        if any(joined.startswith(g) and joined.endswith(la)
+               and len(joined) <= len(g) + len(la) + 12 for g in givens if len(g) > 1):
+            return "strong"
+        if joined in (first[:1] + la, la + first[:1]) or any(
+                joined == m[:1] + la or joined == m + la for m in middles if m):
+            return "weak"
+    return None
+
+
+def slug_names_other(url: str, name: str) -> bool:
+    """A profile whose slug reads as some other person's name (two or more
+    name-like words, none of them this person's given name or surname). A
+    card linking to its assistant's or its founder's profile must not hand
+    that profile to the card's own person."""
+    words = _slug_words(url)
+    q = _parts(name or "")
+    if not words or not q or len(words) < 2:
+        return False
+    first, middles, last = q
+    mine = {first, last.replace("'", ""), last.replace("-", "").replace("'", "")}
+    mine |= set(middles) | NICKNAMES.get(first, set()) | set(last.split("-"))
+    return linkedin_slug_fit(url, name) is None and not any(w in mine for w in words)
+
+
+def _profiles(urls) -> list[str]:
+    out: list[str] = []
+    for u in urls:
+        n = contacts.norm_linkedin(u)
+        if n and "/in/" in n and n not in out:
+            out.append(n)
+    return out
+
+
+def _card_linkedin(links: list[tuple[str, str]], name: str) -> str | None:
+    """The person's own profile among the links in their card: the one whose
+    slug spells their name, else the only profile in the card unless its slug
+    names somebody else."""
+    profiles = _profiles(h for h, _ in links)
+    if not profiles:
+        return None
+    fits = [p for p in profiles if linkedin_slug_fit(p, name)]
+    if len(fits) == 1:
+        return fits[0]
+    if len(profiles) == 1 and not fits and not slug_names_other(profiles[0], name):
+        return profiles[0]
+    return None
+
+
+def linkedin_links(html: str, url: str = "") -> dict:
+    """LinkedIn links on one page, split for the caller:
+        company        company pages anywhere on the page (usually the footer)
+        company_chrome the subset of those in the header, footer or menus
+        people         profile links in the page body
+        chrome_people  profile links in the header, footer or menus, which on
+                       a one-adviser site are often the founder's own
+    All canonical (contacts.norm_linkedin)."""
+    out: dict = {"company": [], "company_chrome": [], "people": [], "chrome_people": []}
+    if not html or "linkedin" not in html.lower():
+        return out
+    doc = _Doc(html, url)
+    if doc.root is None:
+        return out
+    for p, _el, href, _ in doc.anchors:
+        n = contacts.norm_linkedin(urljoin(url, href) if url else href)
+        if not n:
+            continue
+        bucket = ("company" if "/company/" in n
+                  else "chrome_people" if p in doc.chrome else "people")
+        if n not in out[bucket]:
+            out[bucket].append(n)
+        if bucket == "company" and p in doc.chrome and n not in out["company_chrome"]:
+            out["company_chrome"].append(n)
+    return out
+
+
+# Words a firm name shares with thousands of others. What is left once they
+# go ("Aptus" in Aptus Capital Advisors) is what identifies the firm in a
+# search result or a company page slug.
+FIRM_STOPWORDS = set("""
+llc l.l.c inc incorporated co company corp corporation ltd lp llp pllc pc pa plc
+the and of & a an for at in group partners partner capital management managers
+manager wealth advisors advisor advisers adviser advisory financial finance
+investment investments investors investor invest asset assets services service
+planning planners planner securities associates trust trusts holdings private
+consulting consultants consultant global international national american america
+us usa fund funds strategies strategic solutions retirement family office offices
+counsel company's firm associates fiduciary independent registered network
+""".split())
+_LEGAL_TAIL = re.compile(r"[,\s]+(?:llc|l\.l\.c\.?|inc\.?|incorporated|corp\.?|corporation"
+                         r"|co\.?|company|ltd\.?|limited|l\.?p\.?|llp|pllc|p\.?c\.?|p\.?a\.?"
+                         r"|n\.?a\.?)\s*$", re.I)
+
+
+def firm_short_name(name: str | None) -> str:
+    """'APTUS CAPITAL ADVISORS, LLC' -> 'Aptus Capital Advisors': legal
+    suffixes off, as a person would type it into a search box."""
+    s = " ".join((name or "").replace("\u00a0", " ").split())
+    prev = None
+    while s and s != prev:
+        prev = s
+        s = _LEGAL_TAIL.sub("", s).strip(" ,.&")
+        s = re.sub(r"\s+(?:and|&)$", "", s, flags=re.I)
+    s = re.sub(r"\s*\((?:the|formerly)[^)]*\)\s*$", "", s, flags=re.I)
+    if s and s == s.upper():
+        s = _title_case(s)
+    return s
+
+
+def firm_words(name: str | None) -> list[str]:
+    """The distinctive lowercase words of a firm name, in order."""
+    toks = re.findall(r"[a-z0-9]+", firm_short_name(name).lower().replace("'", ""))
+    return [t for t in toks if t not in FIRM_STOPWORDS and len(t) > 1]
+
+
+def company_slug_fits(url: str, names: list[str], domain: str = "") -> bool:
+    """Is this LinkedIn company page the firm's own? Its slug carries the
+    firm's distinctive words or its domain label. Used when a site links to
+    more than one company page (its own and a custodian's, say)."""
+    n = contacts.norm_linkedin(url)
+    if not n or "/company/" not in n:
+        return False
+    slug = n.rsplit("/", 1)[-1]
+    words = set(re.split(r"[-_.]+", slug))
+    flat = re.sub(r"[^a-z0-9]", "", slug)
+    label = (domain or "").split(".")[0].lower()
+    if label and len(label) >= 4 and len(flat) >= 4 and (label in flat or flat in label):
+        return True
+    for nm in names:
+        fw = firm_words(nm)
+        if fw and (all(w in words or w in flat for w in fw[:2])):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------- phones
 
 PHONE_RE = re.compile(
@@ -1229,6 +1432,7 @@ class PersonHit:
     other_phones: list = field(default_factory=list)   # [{phone, label}]
     known: str | None = None      # the roster name this matched, if any
     bio_url: str | None = None
+    linkedin: str | None = None   # their own profile, canonical, when the card or bio links it
 
     def has_data(self) -> bool:
         return bool(self.title or self.email or self.phone)
@@ -1306,9 +1510,13 @@ def _jsonld_people(html_text: str, url: str) -> list[PersonHit]:
                 tel = node.get("telephone")
                 tel = tel[0] if isinstance(tel, list) and tel else tel
                 phone = _norm_phone(tel) if isinstance(tel, str) else None
+                same = node.get("sameAs")
+                same = same if isinstance(same, list) else [same]
+                li = _profiles(s for s in same if isinstance(s, str))
                 if name:
                     out.append(PersonHit(name=name, title=title, email=email, phone=phone,
-                                         method="jsonld", source_url=url))
+                                         method="jsonld", source_url=url,
+                                         linkedin=li[0] if len(li) == 1 else None))
             for k in ("@graph", "employee", "employees", "member", "members", "founder",
                       "founders", "author", "mainEntity", "itemListElement", "item",
                       "worksFor", "about"):
@@ -1559,7 +1767,8 @@ def _person_from_region(doc: _Doc, el, name: str, inline: str | None, start: int
             bio = href
             break
     return PersonHit(name=name, title=title, email=email, phone=phone, method=method,
-                     source_url=url, phone_label=label, other_phones=more_phones, bio_url=bio)
+                     source_url=url, phone_label=label, other_phones=more_phones, bio_url=bio,
+                     linkedin=_card_linkedin(links, name))
 
 
 def _card_people(doc: _Doc, site_domain: str, url: str, known_names: list[str]) -> tuple[list[PersonHit], set]:
@@ -1605,7 +1814,8 @@ def _card_people(doc: _Doc, site_domain: str, url: str, known_names: list[str]) 
         # is often reused for "Proven Track Record" right next to the people.
         for h, c in zip(hits, ordered):
             if not (h.title or h.email or h.phone or match_known(h.name, known_names)
-                    or _bio_slug_fits(h.bio_url, h.name)):
+                    or _bio_slug_fits(h.bio_url, h.name)
+                    or (h.linkedin and linkedin_slug_fit(h.linkedin, h.name))):
                 continue
             out.append(h)
             used.add(c.el)
@@ -1649,6 +1859,15 @@ def _bio_person(doc: _Doc, site_domain: str, url: str, known_names: list[str],
         h = _person_from_region(doc, el, name, inline, start, end, site_domain, url,
                                 "card", known_names)
         if h.title or h.email or match_known(name, known_names):
+            if not h.linkedin:
+                # A bio page's LinkedIn icon often sits outside the text
+                # block (a sidebar, a social row under the photo). One
+                # profile anywhere in the page body is this person's, unless
+                # its slug names someone else.
+                body = _profiles(href for p, _e, href, _ in doc.anchors
+                                 if p not in doc.chrome)
+                if len(body) == 1 and not slug_names_other(body[0], name):
+                    h.linkedin = body[0]
             return h
     return None
 
@@ -1664,6 +1883,13 @@ def _variant_regex(full: str) -> re.Pattern | None:
     mid = r"(?:\s+[A-Za-z]\.?|\s+[A-Za-z][a-z]+\.?|\s+[\"'(][A-Za-z]+[\"')]){0,2}"
     return re.compile(rf"(?<![A-Za-z])(?:{giv}){mid}\s+{la}(?![a-z])"
                       rf"|(?<![A-Za-z]){la},\s*(?:{giv})(?![a-z])", re.I)
+
+
+def name_regex(full: str) -> re.Pattern | None:
+    """A pattern that finds this person's name in running text: given name,
+    nickname or middle name, optional initials, then the surname; or
+    'Surname, Given'."""
+    return _variant_regex(full)
 
 
 def _known_people(doc: _Doc, site_domain: str, url: str, known_names: list[str],
@@ -1728,9 +1954,11 @@ def _vcard_hit(text: str, url: str, known_names: list[str]) -> list[PersonHit]:
             email = e
             break
     phone, label, others = _pick_phone(v["phones"])
+    li = _profiles(re.findall(r"(?:https?://)?[\w.]*linkedin\.com/in/[^\s;,\\]+", text, re.I))
     return [PersonHit(name=name, title=clean_title(v["title"], name) if v["title"] else None,
                       email=email, phone=phone, phone_label=label, other_phones=others,
-                      method="vcard", source_url=url, known=match_known(name, known_names))]
+                      method="vcard", source_url=url, known=match_known(name, known_names),
+                      linkedin=li[0] if len(li) == 1 else None)]
 
 
 def extract_people(html: str, url: str, known_names: list[str] | None = None,
@@ -1781,6 +2009,7 @@ def extract_people(html: str, url: str, known_names: list[str] | None = None,
         elif h.phone and h.phone != cur.phone and h.phone not in [o["phone"] for o in cur.other_phones]:
             cur.other_phones.append({"phone": h.phone, "label": h.phone_label})
         cur.bio_url = cur.bio_url or h.bio_url
+        cur.linkedin = cur.linkedin or h.linkedin
 
     # Personal addresses nobody has claimed: attribute by name pattern.
     emails = extract_emails(html, site_domain, _text=doc.text() if doc.root is not None else None)

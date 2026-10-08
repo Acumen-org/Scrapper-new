@@ -1,0 +1,513 @@
+# Industry knowledge: what Bellwether knows about the adviser industry and
+# about Acumen's own purpose, beyond what any one filing says.
+#
+# This file seeds the knowledge base (table knowledge_item) the first time
+# Bellwether starts, and again whenever an item here changes, but it never
+# overwrites an item an admin has edited in Settings, Industry knowledge. From
+# then on the database copy is the one in force; this file stays the shipped
+# default and the reset point.
+#
+# Four readers use it:
+#   - the firm-type classifier (prospect/firmtype.py) reads the categories and
+#     the known entities: a firm whose name, or whose controlling owner's name,
+#     matches a known entity's pattern is placed in that entity's category;
+#   - the product scores read each firm's category (config/products.yml says
+#     which categories each product sells to);
+#   - Bellwether AI reads a compact digest of all of it (prospect/knowledge.py)
+#     before answering, so it knows a custodian from a wealth manager and what
+#     Acumen sells to whom;
+#   - admins read and edit it in Settings.
+#
+# Patterns: plain words match whole words in the name, ignoring case and
+# punctuation ("Charles Schwab" matches "THE CHARLES SCHWAB CORPORATION" but
+# "Pershing LLC" does not match "Pershing Square Capital"). A pattern that
+# starts with "re:" is a regular expression over the name in capitals with
+# punctuation turned into spaces. When several entities match one name, the
+# longest pattern wins, so "Morgan Stanley Investment Management" (an asset
+# manager) beats "Morgan Stanley". `patterns` are matched against the firm's
+# own legal and business names; `parents` against the names of companies that
+# own 50% or more of it (Schedule A).
+
+version: 1
+
+# ------------------------------------------------------------- firm types
+# The keys are fixed (the classifier's rules produce them); labels, the
+# description and how Bellwether treats each type can be edited in Settings.
+categories:
+  - key: independent_ria
+    label: Independent RIA
+    short: Independent RIA
+    description: A registered adviser that manages money and plans for individuals and families, owned by its people or an RIA group rather than by a bank, insurer, broker-dealer or custodian.
+    treatment: The core market. Eligible for every product list.
+  - key: hybrid_ria
+    label: Hybrid RIA
+    short: Hybrid RIA
+    description: A wealth manager for individuals whose advisors are also registered reps of a broker-dealer, or that has an affiliated broker-dealer. Independent, with part of its business on commission.
+    treatment: Core market, eligible for every product list. Brokerage oversight adds compliance work Glynac can take on.
+  - key: multi_family_office
+    label: Multi-family office
+    short: Family office
+    description: Serves a small number of very wealthy families (HNW clients averaging $20M or more, or calls itself a family office), usually with investment, tax, trust and estate work under one roof.
+    treatment: Core market for PHH JV and Glynac, eligible for every list. Single-family offices do not file with the SEC.
+  - key: consultant_ocio
+    label: Institutional consultant or OCIO
+    short: Consultant / OCIO
+    description: Advises pension plans, endowments, foundations and other institutions on asset allocation and manager selection, or runs their portfolio as an outsourced chief investment officer.
+    treatment: Not a Glynac or AcuBooth buyer. A possible PHH JV allocator.
+  - key: tamp
+    label: TAMP or model provider
+    short: TAMP / platform
+    description: A turnkey asset management platform, model portfolio provider, sub-adviser or RIA platform that runs money other advisers bring, often through wrap programs with thousands of accounts per employee.
+    treatment: A distribution partner, not a buyer. Excluded from every list.
+  - key: robo
+    label: Digital adviser
+    short: Robo-adviser
+    description: An internet-based adviser serving very many small accounts through an app or website (a robo-adviser).
+    treatment: Excluded from every list.
+  - key: asset_manager
+    label: Asset manager
+    short: Asset manager
+    description: Manages mutual funds, ETFs or institutional separate accounts. Its clients are funds and institutions, not families.
+    treatment: Excluded from every list. Never a Glynac buyer.
+  - key: private_fund
+    label: Private fund manager
+    short: Private funds
+    description: A hedge fund, private equity, venture, private credit or real estate fund manager. Most of its assets sit in pooled vehicles it sponsors.
+    treatment: Excluded from every list. Real estate fund managers are PHH competitors.
+  - key: custodian
+    label: Custodian or clearing firm
+    short: Custodian
+    description: Holds client assets or clears trades for advisers (Schwab, Fidelity, BNY Pershing, Apex, Interactive Brokers and the like), including the advisory arms of those groups.
+    treatment: Infrastructure, not a buyer. Excluded from every list; AcuBooth reads which custodian each firm uses.
+  - key: wirehouse
+    label: Wirehouse or national broker-dealer
+    short: Wirehouse
+    description: A national full-service brokerage with employee advisors (Morgan Stanley, Merrill, UBS, Wells Fargo, J.P. Morgan, Goldman Sachs, Edward Jones, Raymond James, Ameriprise, RBC and similar), and the advisers they control.
+    treatment: Excluded. Their advisors buy through the home office, not on their own.
+  - key: independent_bd
+    label: Independent broker-dealer
+    short: Broker-dealer
+    description: A broker-dealer that is also a registered adviser, whose reps are mostly independent contractors (LPL, Commonwealth, Osaic, Cetera, Cambridge), or a regional or boutique broker-dealer.
+    treatment: Excluded from the lists. A platform sale through the home office.
+  - key: bank_trust
+    label: Bank or trust company
+    short: Bank / trust
+    description: A bank or trust company, or an adviser controlled by one.
+    treatment: Excluded, except PHH JV, where trust companies serving wealthy families can be partners.
+  - key: insurance
+    label: Insurance-affiliated adviser
+    short: Insurer-owned
+    description: An adviser owned by or built around an insurance company (Northwestern Mutual, MassMutual, New York Life and the like).
+    treatment: Excluded from every list.
+  - key: era
+    label: Exempt reporting adviser
+    short: Exempt (ERA)
+    description: Files a short Form ADV but is not registered. Advises only venture funds, or private funds under $150M in the US.
+    treatment: Excluded from every list; it is not a registered adviser.
+  - key: unknown
+    label: Not classified
+    short: Unclassified
+    description: Not enough on file yet to tell what kind of firm it is.
+    treatment: Never excluded. Missing data never disqualifies a firm.
+
+# ---------------------------------------------------------- known entities
+# category: one of the keys above. confidence: how sure a match makes the
+# classifier (default 95; generic patterns are lower).
+entities:
+  # Custodians and clearing firms
+  - key: schwab
+    title: Charles Schwab
+    category: custodian
+    patterns: [Charles Schwab, Schwab Wealth, Schwab Private Client, Schwab Intelligent, TD Ameritrade]
+    parents: [Charles Schwab]
+    note: The largest custodian for independent RIAs; absorbed TD Ameritrade's adviser custody.
+  - key: fidelity
+    title: Fidelity Investments (custody and brokerage)
+    category: custodian
+    patterns: [Fidelity Brokerage Services, National Financial Services LLC, Fidelity Institutional, Fidelity Personal and Workplace, Strategic Advisers LLC, Fidelity Investments, FMR LLC]
+    parents: [FMR LLC, FMR Co, Fidelity Global Brokerage]
+    note: Custodian and clearing firm (Fidelity Institutional, National Financial). Its fund manager, Fidelity Management & Research, is classed by what it does.
+  - key: bny_pershing
+    title: BNY and Pershing
+    category: custodian
+    patterns: [Pershing LLC, Pershing Advisor Solutions, BNY Pershing, BNY Mellon Advisors, BNY Mellon N A, BNY Mellon Securities, Bank of New York Mellon]
+    parents: [Bank of New York Mellon]
+    note: Custody bank and clearing firm. Pershing Square Capital is an unrelated hedge fund.
+  - key: apex
+    title: Apex Fintech (Apex Clearing)
+    category: custodian
+    patterns: [Apex Clearing, Apex Fintech]
+    parents: [Apex Clearing, Apex Fintech]
+    note: Clearing and custody for digital advisers and brokers. Firms merely named Apex are unrelated.
+  - key: interactive_brokers
+    title: Interactive Brokers
+    category: custodian
+    patterns: [Interactive Brokers]
+    parents: [Interactive Brokers]
+  - key: altruist
+    title: Altruist
+    category: custodian
+    patterns: [Altruist Corp, Altruist Financial]
+    parents: [Altruist Corp]
+  - key: etrade
+    title: E*Trade (Morgan Stanley)
+    category: custodian
+    patterns: [E Trade, ETrade]
+  - key: state_street
+    title: State Street
+    category: custodian
+    patterns: [State Street Bank, State Street Corporation]
+    parents: [State Street Corporation, State Street Bank]
+    note: Custody bank. State Street Global Advisors is its asset manager.
+  - key: other_custodians
+    title: Other RIA custodians
+    category: custodian
+    patterns: [TradePMR, Trade PMR, Axos Advisor, Axos Clearing, Shareholders Service Group, Folio Investments, SEI Private Trust, Millennium Trust, Inspira Financial, Equity Trust Company]
+    note: Smaller custodians and trust companies that hold assets for independent advisers.
+
+  # Wirehouses and national broker-dealers
+  - key: morgan_stanley
+    title: Morgan Stanley
+    category: wirehouse
+    patterns: [Morgan Stanley Smith Barney, Morgan Stanley and Co, Graystone Consulting]
+    parents: [Morgan Stanley]
+  - key: merrill
+    title: Merrill (Bank of America)
+    category: wirehouse
+    patterns: [Merrill Lynch, Merrill Edge, Managed Account Advisors]
+    parents: [Merrill Lynch]
+  - key: ubs
+    title: UBS
+    category: wirehouse
+    patterns: [UBS Financial Services, UBS Securities, UBS Wealth]
+    parents: [UBS Group, UBS Americas, UBS AG]
+  - key: wells_fargo
+    title: Wells Fargo Advisors
+    category: wirehouse
+    patterns: [Wells Fargo Clearing, Wells Fargo Advisors, Wells Fargo Securities, Wells Fargo Investment Institute]
+    parents: [Wells Fargo]
+  - key: jpm_securities
+    title: J.P. Morgan Securities
+    category: wirehouse
+    patterns: [J P Morgan Securities, JPMorgan Securities, Chase Investment Services]
+  - key: goldman
+    title: Goldman Sachs (wealth)
+    category: wirehouse
+    patterns: [Goldman Sachs and Co, Goldman Sachs Wealth, Goldman Sachs Private Wealth, Ayco]
+    parents: [Goldman Sachs Group]
+  - key: edward_jones
+    title: Edward Jones
+    category: wirehouse
+    patterns: [Edward D Jones, Edward Jones]
+    parents: [Jones Financial Companies]
+  - key: raymond_james
+    title: Raymond James
+    category: wirehouse
+    patterns: [Raymond James]
+    parents: [Raymond James Financial]
+  - key: ameriprise
+    title: Ameriprise
+    category: wirehouse
+    patterns: [Ameriprise]
+    parents: [Ameriprise Financial]
+  - key: rbc
+    title: RBC Wealth Management
+    category: wirehouse
+    patterns: [RBC Capital Markets, RBC Wealth]
+    parents: [Royal Bank of Canada, RBC USA Holdco]
+  - key: stifel
+    title: Stifel
+    category: wirehouse
+    patterns: [Stifel Nicolaus, Stifel Independent]
+    parents: [Stifel Financial]
+  - key: baird
+    title: Baird
+    category: wirehouse
+    patterns: [Robert W Baird]
+    parents: [Baird Financial]
+  - key: regional_bds
+    title: Other national and regional brokerages
+    category: wirehouse
+    patterns: [Janney Montgomery Scott, Oppenheimer and Co, D A Davidson, Piper Sandler, Hilliard Lyons, Benjamin F Edwards]
+
+  # Independent broker-dealers
+  - key: lpl
+    title: LPL Financial
+    category: independent_bd
+    patterns: [LPL Financial]
+    parents: [LPL Financial, LPL Holdings]
+  - key: commonwealth
+    title: Commonwealth Financial Network
+    category: independent_bd
+    patterns: [Commonwealth Equity Services, Commonwealth Financial Network]
+    parents: [Commonwealth Equity Services]
+    note: Not to be confused with small firms that merely carry the word Commonwealth.
+  - key: osaic
+    title: Osaic (formerly Advisor Group)
+    category: independent_bd
+    patterns: [Osaic, Royal Alliance Associates, SagePoint Financial, FSC Securities, Woodbury Financial, American Portfolios, Securities America, Triad Advisors, CUSO Financial, Infinex, Investacorp]
+    parents: [Osaic Holdings, Advisor Group Holdings]
+  - key: cetera
+    title: Cetera
+    category: independent_bd
+    patterns: [Cetera]
+    parents: [Cetera Financial]
+  - key: other_ibds
+    title: Other independent broker-dealers
+    category: independent_bd
+    patterns: [Cambridge Investment Research, Kestra Investment, Kestra Advisory, Avantax, Lincoln Investment Planning, Ladenburg Thalmann, Cadaret Grant, Kingswood, Geneos Wealth, Mutual Securities, United Planners]
+    parents: [Kestra Holdings]
+
+  # Banks
+  - key: jpmorgan_bank
+    title: JPMorgan Chase (bank and private bank)
+    category: bank_trust
+    patterns: [JPMorgan Chase Bank, J P Morgan Private, J P Morgan Trust, Chase Bank]
+    parents: [JPMorgan Chase]
+  - key: bank_of_america
+    title: Bank of America
+    category: bank_trust
+    patterns: [Bank of America, U S Trust]
+    parents: [Bank of America]
+  - key: citi
+    title: Citi
+    category: bank_trust
+    patterns: [Citibank, Citigroup, Citi Private]
+    parents: [Citigroup]
+  - key: northern_trust
+    title: Northern Trust
+    category: bank_trust
+    patterns: [Northern Trust]
+    parents: [Northern Trust]
+  - key: regional_banks
+    title: US regional banks
+    category: bank_trust
+    patterns: [U S Bancorp, U S Bank, PNC, Truist, Fifth Third, KeyBank, Key Investment Services, Huntington Investment Company, Regions Investment, Wilmington Trust, M and T, BMO Harris, BMO Private, Comerica, Synovus, Zions, BOK Financial, Frost Investment, First Horizon, Santander, HSBC, Citizens Securities]
+    parents: [U S Bancorp, PNC Financial, Truist Financial, Fifth Third, KeyCorp, Huntington Bancshares, Regions Financial, M and T Bank, Bank of Montreal, BMO Financial, Comerica, Synovus, BOK Financial, Cullen Frost, Citizens Financial Group, Santander, HSBC, Toronto Dominion]
+  - key: bank_generic
+    title: Any bank (by name)
+    category: bank_trust
+    confidence: 75
+    patterns: ["re:\\bBANK\\b|\\bBANCORP|\\bBANCSHARES\\b|\\bBANKSHARES\\b|\\bBANCORPORATION\\b|NATIONAL ASSOCIATION|\\bN A$|\\bFSB$|SAVINGS BANK|\\bTRUST COMPANY\\b|\\bTRUST CO$|CREDIT UNION"]
+    parents: ["re:\\bBANK\\b|\\bBANCORP|\\bBANCSHARES\\b|\\bBANKSHARES\\b|\\bBANCORPORATION\\b|NATIONAL ASSOCIATION|\\bN A$|SAVINGS BANK|\\bTRUST COMPANY\\b|CREDIT UNION"]
+    note: A name that says bank, bancorp, national association or trust company. Lower confidence than a named bank.
+
+  # Insurers
+  - key: northwestern_mutual
+    title: Northwestern Mutual
+    category: insurance
+    patterns: [Northwestern Mutual]
+    parents: [Northwestern Mutual]
+  - key: massmutual
+    title: MassMutual
+    category: insurance
+    patterns: [MassMutual, MML Investors]
+    parents: [Massachusetts Mutual Life, MassMutual]
+  - key: new_york_life
+    title: New York Life
+    category: insurance
+    patterns: [New York Life, NYLife, Eagle Strategies]
+    parents: [New York Life]
+  - key: other_insurers
+    title: Other insurers with adviser arms
+    category: insurance
+    patterns: [Lincoln Financial Advisors, Lincoln Financial Securities, Park Avenue Securities, Guardian Life, Principal Securities, Principal Advised Services, Pruco Securities, Equitable Advisors, Equitable Financial, Transamerica, Voya Financial Advisors, Thrivent, State Farm, Securian, Ameritas, Penn Mutual, Hornor Townsend and Kent, Nationwide Investment Services, Mutual of Omaha, Western and Southern, Ohio National, Pacific Life, Allianz, TIAA, Corebridge, Farm Bureau, Country Financial, Knights of Columbus, Modern Woodmen, Woodmen Financial]
+    parents: [Lincoln National, Guardian Life Insurance, Principal Financial Group, Principal Life, Prudential Financial, Equitable Holdings, Aegon, Transamerica, Voya Financial, Thrivent, State Farm, Securian Financial, Minnesota Life, Ameritas, Penn Mutual, Nationwide Mutual, Mutual of Omaha, Western and Southern, Ohio National, Pacific Life, Allianz SE, Allianz of America, Teachers Insurance and Annuity, Corebridge Financial, American International Group, Sammons Enterprises, Great West Lifeco, Great West Life, Manulife, Sun Life, MetLife, Brighthouse, Lincoln Life]
+  - key: insurer_generic
+    title: Any insurance company (by owner name)
+    category: insurance
+    confidence: 75
+    parents: ["re:LIFE INSURANCE|INSURANCE COMPANY|\\bASSURANCE\\b|REINSURANCE|MUTUAL LIFE|INSURANCE GROUP|\\bCASUALTY\\b"]
+    note: Owners whose name says insurance company. Insurance agencies are deliberately not matched; many independent planners own one.
+
+  # Asset managers
+  - key: blackrock
+    title: BlackRock
+    category: asset_manager
+    patterns: [BlackRock]
+    parents: [BlackRock]
+  - key: vanguard
+    title: Vanguard
+    category: asset_manager
+    patterns: [Vanguard Group, Vanguard Advisers, Vanguard Capital Management, Vanguard Portfolio Management, Vanguard Global Advisers, Vanguard Personalized Indexing, Vanguard Marketing]
+    parents: [The Vanguard Group]
+    note: Small firms that merely use the word Vanguard are unrelated.
+  - key: pimco
+    title: PIMCO
+    category: asset_manager
+    patterns: [Pacific Investment Management Company, PIMCO]
+  - key: fidelity_funds
+    title: Fidelity Management & Research
+    category: asset_manager
+    patterns: [Fidelity Management and Research, Fidelity Diversifying Solutions, Geode Capital]
+  - key: big_asset_managers
+    title: Other large asset managers
+    category: asset_manager
+    patterns: [Capital Research and Management, Capital Group Private Client, T Rowe Price, Franklin Templeton, Franklin Advisers, Invesco, State Street Global Advisors, SSGA Funds, Wellington Management, Dimensional Fund Advisors, Nuveen, Federated Hermes, Neuberger Berman, Lord Abbett, Massachusetts Financial Services, AllianceBernstein, Columbia Management Investment, Columbia Threadneedle, Principal Global Investors, PGIM, ClearBridge, Western Asset Management, Janus Henderson, Eaton Vance, Parametric Portfolio, Grantham Mayo Van Otterloo, Cohen and Steers, Victory Capital, Virtus Investment Advisers, Natixis, AQR Capital, Morgan Stanley Investment Management, Goldman Sachs Asset Management, J P Morgan Investment Management, JPMorgan Asset Management, BNY Mellon Investment Adviser, BNY Mellon ETF, Mellon Investments, Schroder Investment, Amundi, Allspring, American Century, Putnam Investment Management, Hartford Funds, John Hancock Investment, Pzena, Dodge and Cox, Harris Associates, MFS Investment]
+    parents: [Franklin Resources, Invesco Ltd, Affiliated Managers Group, Legg Mason, Virtus Investment Partners, Natixis, Janus Henderson, Neuberger Berman Group, T Rowe Price Group, Capital Group Companies]
+    note: Owners here do not make a wealth manager an asset manager; the firm keeps its own type and the owner is noted.
+
+  # Private fund managers
+  - key: big_private_funds
+    title: Large private fund managers
+    category: private_fund
+    patterns: [Blackstone, Kohlberg Kravis Roberts, KKR, Apollo Capital Management, Apollo Global, Apollo Management, Carlyle Group, Carlyle Investment Management, Carlyle Global Credit, Oaktree Capital Management, Oaktree Fund Advisors, Ares Management, Ares Capital Management, Blue Owl, Brookfield Asset Management, TPG Capital, TPG Global, Bain Capital, Citadel Advisors, Millennium Management, Two Sigma, Elliott Investment Management, Elliott Management, Pershing Square, Bridgewater Associates, Starwood Capital, Hines Interests]
+    parents: [Blackstone, KKR, Apollo Global, Carlyle Group, Ares Management, Blue Owl Capital, Brookfield Corporation, TPG Inc]
+    note: Firms that merely share a word (Oaktree Financial Planning, Oaktree Advisors) are unrelated.
+
+  # TAMPs, model providers and RIA platforms
+  - key: tamps
+    title: TAMPs and model providers
+    category: tamp
+    patterns: [AssetMark, Envestnet, SEI Investments Management, Orion Portfolio Solutions, Brinker Capital, GeoWealth, Gradient Investments, XY Investment Solutions, Morningstar Investment Management, Morningstar Investment Services, Buckingham Strategic Partners, Adhesion Wealth, Vestmark, Lockwood Advisors, Mariner Platform, Sanctuary Advisors, Dynasty Financial Partners, Clark Capital Management, Flexible Plan Investments]
+    note: Platforms that run money other advisers bring. Distribution partners rather than buyers.
+
+  # Digital advisers
+  - key: robos
+    title: Digital advisers
+    category: robo
+    patterns: [Betterment, Wealthfront, Acorns Advisers, Stash Investments, Stash Capital, Ellevest, SoFi Wealth, Personal Capital Advisors, Empower Advisory Group, Robinhood, Wealthsimple, Qapital, Revolut, M1 Advisory, Titan Global Capital, Marstone]
+
+  # Institutional consultants and OCIOs
+  - key: consultants
+    title: Institutional consultants and OCIOs
+    category: consultant_ocio
+    patterns: [Mercer Investments, Mercer Investment Consulting, Aon Investments, NEPC, Callan LLC, Callan Associates, Cambridge Associates, Meketa, Wilshire Advisors, Verus Advisory, RVK, Marquette Associates, Fiducient Advisors, Segal Marco, WTW Investments, Willis Towers Watson, Commonfund, Hirtle Callaghan, Sellwood, AndCo Consulting, Strategic Investment Group, OCIO]
+    note: Mercer Advisors (a wealth RIA) is not Mercer Investments.
+
+  # RIA groups and aggregators: owners that do not change a firm's type but
+  # are worth knowing (decisions may be made centrally).
+  - key: ria_groups
+    title: RIA groups and aggregators
+    category: independent_ria
+    parents: [Focus Financial Partners, Focus Operating, Ferdinand FFP, Mariner Holdings, Mariner Wealth Advisors, CI Private Wealth, Corient, CI Financial, Wealth Enhancement Group, Hightower, Creative Planning, Captrust, Beacon Pointe, Wealth Partners Capital, Mercer Global Advisors, Cerity Partners, Allworth, Wealthspire, Steward Partners, Carson Group, Pathstone, Savant Capital, Kestra Holdings, Sanctuary Wealth, Waverly Advisors, Wealth Partners Capital Group, EP Wealth, Merit Financial Group, Hightower Holding]
+    note: Owners that buy independent RIAs. The firm stays an independent RIA; Bellwether notes the group because tools are often chosen centrally.
+
+# ---------------------------------------------------------------- glossary
+glossary:
+  - key: ria
+    title: RIA
+    body: Registered investment adviser. A firm paid to advise on securities, registered with the SEC (usually $100M+ in assets) or with its home state. Owes clients a fiduciary duty.
+  - key: iar
+    title: IAR
+    body: Investment adviser representative. A person who gives advice for an RIA. Form ADV Item 5.B counts them.
+  - key: era
+    title: ERA
+    body: Exempt reporting adviser. Advises only venture funds or under $150M of private funds, files part of Form ADV, but is not registered.
+  - key: raum
+    title: AUM and RAUM
+    body: Assets under management. Regulatory AUM (RAUM, Item 5.F) counts only accounts the firm continuously supervises, gross of leverage; it is the number Bellwether shows as assets.
+  - key: form_adv
+    title: Form ADV
+    body: The adviser's registration form. Part 1A is the data (clients, assets, services, affiliations); Part 2A is the plain-English brochure; Part 2B the advisor supplements; Part 3 the client relationship summary (Form CRS).
+  - key: item_5d
+    title: Item 5.D
+    body: The ADV table of client types with their counts and assets (individuals, HNW, funds, pooled vehicles, pension plans, charities, institutions). Bellwether reads it to tell a wealth manager from an asset manager.
+  - key: schedule_a
+    title: Schedule A and B
+    body: Form ADV schedules naming the firm's direct (A) and indirect (B) owners and executive officers, with ownership brackets; E means 75% or more. Bellwether's copy comes from the SEC archive to December 2024.
+  - key: schedule_d
+    title: Schedule D
+    body: Detail behind Part 1A. 7.A lists related financial firms (broker-dealers, banks, insurers); 7.B.1 lists each private fund with its type and size; 5.K lists custodians.
+  - key: item_7a
+    title: Item 7.A
+    body: Which kinds of related persons the adviser has (broker-dealer, bank, trust company, insurer, fund sponsor). A related insurance agency is common for planners and does not make a firm captive.
+  - key: f13
+    title: 13F
+    body: Quarterly SEC filing of US-listed equity holdings by managers with $100M+ in such securities. Shows what an adviser actually holds.
+  - key: custodian
+    title: Custodian
+    body: The bank or broker that holds an adviser's client assets (Schwab, Fidelity, Pershing). A qualified custodian is one the custody rule accepts.
+  - key: wirehouse
+    title: Wirehouse
+    body: A national brokerage with employee advisors (Morgan Stanley, Merrill, UBS, Wells Fargo). Its advisors cannot buy tools or products on their own.
+  - key: ibd
+    title: Independent broker-dealer
+    body: A broker-dealer whose reps are independent contractors (LPL, Commonwealth, Osaic). Products and tools are approved by its home office.
+  - key: dual_registrant
+    title: Dual registrant and hybrid RIA
+    body: A dual registrant is both an adviser and a broker-dealer. A hybrid RIA is an independent adviser whose people also hold broker-dealer licenses, so it earns fees and commissions.
+  - key: tamp
+    title: TAMP
+    body: Turnkey asset management platform. Runs portfolios, models and trading for other advisers' clients (AssetMark, Envestnet, SEI, Orion).
+  - key: ocio
+    title: OCIO
+    body: Outsourced chief investment officer. Runs an institution's whole portfolio, usually for endowments, foundations and pension plans.
+  - key: family_office
+    title: Family office
+    body: Manages a wealthy family's affairs. Single-family offices are exempt and do not file; multi-family offices register as RIAs.
+  - key: hnw
+    title: HNW and UHNW
+    body: "High net worth: on Form ADV, a client with $1.1M or more with the adviser or $2.2M net worth. Ultra high net worth usually means $30M or more."
+  - key: wrap
+    title: Wrap fee program
+    body: One fee covering advice, trading and custody. Sponsors and portfolio managers report wrap assets in Item 5.I; typical of TAMPs and brokerages.
+  - key: private_fund
+    title: Private fund
+    body: A pooled vehicle exempt from fund registration (hedge, private equity, venture, real estate, credit). Item 7.B says whether an adviser advises any.
+  - key: cco
+    title: CCO
+    body: Chief compliance officer. Every SEC RIA must name one; at small firms the CCO usually holds another job too.
+  - key: marketing_rule
+    title: Marketing Rule
+    body: SEC rule 206(4)-1 on adviser advertising, testimonials, endorsements and performance. Item 5.L reports what a firm's ads include.
+  - key: x1031
+    title: 1031 exchange
+    body: Selling investment property and buying like-kind property to defer capital gains tax. The replacement must be identified within 45 days and closed within 180.
+  - key: dst
+    title: DST
+    body: Delaware statutory trust. A fractional real estate interest that qualifies as like-kind for a 1031 exchange; how many advisers complete exchanges for clients.
+  - key: net_lease
+    title: Net lease
+    body: A lease where the tenant pays taxes, insurance and maintenance, so the owner receives steady rent. PHH's focus, with industrial and necessity retail.
+  - key: covered_call
+    title: Covered call
+    body: Selling call options on shares already owned to earn premium. One contract covers 100 shares. AcuBooth runs it as an overlay.
+  - key: k1
+    title: K-1
+    body: The partnership tax form private fund investors receive. Whether a firm's custodian and reporting handle K-1s decides whether it can use private funds.
+  - key: microsoft365
+    title: Microsoft 365
+    body: Microsoft's email (Exchange Online), Teams and SharePoint suite. Glynac connects to it, and to Dynamics-based CRMs. Bellwether reads it from the firm's public mail records.
+  - key: salesforce
+    title: Salesforce
+    body: CRM platform. RIA CRMs built on it (Practifi, XLR8, Salentica) count as Salesforce for Glynac.
+  - key: redtail
+    title: Redtail
+    body: The most common CRM at small and mid-sized RIAs (Orion owns it). Glynac integrates with it.
+  - key: black_diamond
+    title: Black Diamond
+    body: SS&C's portfolio reporting platform for RIAs. Glynac integrates with it. Orion, Tamarac, Addepar and Advyzon are competing platforms.
+
+# --------------------------------------------------- Acumen and its products
+products:
+  - key: acumen
+    title: Acumen Strategy
+    body: Acumen Strategy uses Bellwether to find and approach the US investment advisers most likely to buy its three product families, PHH, AcuBooth and Glynac. Buyers are almost always independent wealth managers; custodians, wirehouses, broker-dealers, banks, insurers and asset managers are not.
+  - key: phh
+    title: PHH (Prairie Hill)
+    body: Private net-lease real estate sold through advisers. PHH Fund I is an evergreen fund for advisers' HNW clients (independent RIAs with $250M to $5B, individuals half or more of assets). PHH 1031 completes clients' property exchanges (RIAs whose clients own businesses or investment property; CPAs, attorneys and intermediaries refer too). PHH JV partners with family offices and institutions writing $5M+ checks.
+  - key: acubooth
+    title: AcuBooth
+    body: A covered call overlay on concentrated equity positions, for advisers with HNW books custodied at Schwab, $100M+ in assets and no private funds. Each position needs at least 100 shares.
+  - key: glynac
+    title: Glynac
+    body: Continuous cross-system compliance, portfolio and vendor intelligence for independent RIAs (SEC-registered, $100M+, not owned by a bank, insurer or wirehouse). Works with Microsoft 365 (mail, Teams, Dynamics CRMs), Salesforce (including Practifi and XLR8), Redtail and Black Diamond. Competes with Hadrius and COMPLY.
+
+# ------------------------------------------------- how Bellwether works
+facts:
+  - key: scores
+    title: How scores work
+    body: Each product list ranks firms by a score out of 100. Gates decide who is on a list, disqualifiers remove firms, factors earn points by weight. Unknown data earns zero and lowers coverage (the share of the score resting on known data); it never disqualifies.
+  - key: firm_types
+    title: Firm types
+    body: Every firm is classified from its Form ADV answers, its owners and the known-entity list into one type, with a confidence and the reasons. Each product sells only to some types; admins correct a type in Settings, Firm types, and corrections survive reclassification.
+  - key: sources
+    title: Where the data comes from
+    body: SEC weekly adviser and individual feeds (Form ADV, IAPD), the SEC Form ADV archive (Schedules A, B and D to 2024), Part 2A brochures, 13F filings, firm websites and public mail records. Nothing paid.
+  - key: manual_levels
+    title: Manual levels and status
+    body: Some factors (warm introduction, manager search) can be set by hand on a firm page; the hand-set level replaces the computed one and says who set it. Status and owner track the sales process.
+  - key: signals
+    title: Signals
+    body: Changes worth a call (new registration, assets jump, advisors added, custodian change, first private fund), detected by comparing weekly filings.

@@ -26,7 +26,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import ai, products, ui
-from .webapp import (FAMILY_COLOUR, TYPE_LABEL, conn, current_account, current_owner,
+from .webapp import (FAMILY_COLOUR, ICONS, TYPE_LABEL, conn, current_account, current_owner,
                      esc, escn, money, page, qs_join, score_cell, signal_cutoff)
 
 router = APIRouter()
@@ -168,6 +168,19 @@ def _gather() -> dict:
     except Exception:
         c.rollback()
         d["live"] = []
+    try:
+        from . import people_index
+        d["reach"] = people_index.coverage(c)
+    except Exception:
+        c.rollback()
+        d["reach"] = {}
+    d["finds"] = _all(c, """SELECT cp.crd, cp.person_name, cp.kind, cp.source,
+            COALESCE(cp.verified_at, cp.found_at) AS at, f.legal_name
+        FROM contact_point cp JOIN firm_scope s ON s.crd=cp.crd JOIN firm_current f ON f.crd=cp.crd
+        WHERE cp.person_key != '' AND ((cp.kind='email' AND cp.verify_status='valid')
+              OR (cp.kind='linkedin' AND cp.verify_status='matched')
+              OR (cp.kind='phone' AND cp.label IN ('direct','mobile')))
+        ORDER BY COALESCE(cp.verified_at, cp.found_at) DESC LIMIT 8""")
     d["feed_date"] = _one(c, "SELECT published_at FROM snapshot WHERE source_key='adv_feed'"
                              " ORDER BY id DESC LIMIT 1")
     d["scored_at"] = _one(c, "SELECT MAX(computed_at) FROM product_score")
@@ -203,10 +216,11 @@ def data() -> dict:
     return d
 
 
-def _kpi(n, label, sub="", href=None) -> str:
-    inner = (f'<div class="n">{n}</div><div class="l">{esc(label)}</div>'
+def _kpi(n, label, sub="", href=None, accent=False) -> str:
+    inner = (f'<div class="l">{esc(label)}</div><div class="n">{n}</div>'
              + (f'<div class="d">{sub}</div>' if sub else ""))
-    return f'<a class="kpi" href="{href}">{inner}</a>' if href else f'<div class="kpi">{inner}</div>'
+    cls = "kpi accent" if accent else "kpi"
+    return f'<a class="{cls}" href="{href}">{inner}</a>' if href else f'<div class="{cls}">{inner}</div>'
 
 
 def _compact(n: int) -> str:
@@ -239,38 +253,37 @@ def home(type: str = "", product: str = "", state: str = ""):
                                 status_code=307)
     d = data()
     me = current_owner()
+    acct = current_account() or {}
 
     kpis = "".join([
         _kpi(_compact(d["firms"]), "Adviser firms",
-             f'{d["firms_sec"]:,} SEC, {d["firms"] - d["firms_sec"]:,} state', "/firms"),
-        _kpi(money(d["aum"]), "Regulatory AUM"),
-        _kpi(f'{d["scope"]:,}', "Ranked firms", href="/firms?on=any"),
+             f'{money(d["aum"])} under management', "/firms"),
+        _kpi(f'{d["scope"]:,}', "Ranked for our products", "on at least one list", "/firms?on=any"),
         _kpi(_compact(d["people"]), "People tracked",
-             f'{d["hires_12m"] or 0:,} hires in 12 months', "/people"),
-        _kpi(f'{d["named_email"]:,}', "Named emails",
-             f'{d["verified"]:,} verified by mail server', "/people?reach=email"),
-        _kpi(f'{d["direct"]:,}', "Direct phone lines", f'{d["phones"]:,} numbers in all', "/people?reach=phone"),
-        _kpi(f'{d["signals_30"]:,}', "Signals in 30 days", href="/signals"),
+             f'{d["hires_12m"] or 0:,} job moves in 12 months', "/people"),
+        _kpi(f'{(d.get("reach") or {}).get("email", d["named_email"]):,}', "Reachable by email",
+             f'{d["verified"]:,} addresses verified', "/people?view=email", accent=True),
+        _kpi(f'{(d.get("reach") or {}).get("phone", d["phones"]):,}', "People with a phone",
+             f'{(d.get("reach") or {}).get("direct", 0):,} direct lines', "/people?view=direct"),
+        _kpi(f'{d["signals_30"]:,}', "Signals in 30 days", "filings, people, assets", "/signals"),
     ])
 
-    rows = []
+    cards = []
     for L in d["lists"]:
         p = L["p"]
         colour = FAMILY_COLOUR.get(p["family"], "#888")
         top = "".join(
-            f'<div class="small"><a href="/firm/{esc(t["crd"])}?p={L["key"]}">{escn(t["legal_name"])}</a>'
-            f' <span class="muted">{t["score"]:.0f}</span>'
-            f' <span class="tiny {"warnc" if t["coverage"] < 100 else "muted"}">{t["coverage"]:.0f}% known</span></div>' for t in L["top"])
-        rows.append(
-            f'<div class="prodrow"><div><div class="pn"><span class="dotc" style="background:{colour}"></span>'
-            f'<a href="/lists/{L["key"]}">{esc(p["name"])}</a></div></div>'
-            f'<div><div class="big" style="font-size:22px">{L["n"]:,}</div></div>'
-            f'<div class="distribution">{ui.histogram(L["scores"])}<div class="tiny muted">{L["hi"]:,} at 60+</div></div>'
-            f'<div class="coverage-cell"><div class="meter{" amber" if L["cov"] < 70 else ""}"><i style="width:{L["cov"]:.0f}%"></i></div>'
-            f'<div class="tiny {"warnc" if L["cov"] < 70 else "muted"}" style="margin-top:4px">{L["cov"]:.0f}% known data'
-            f'{" · " + str(L["fresh"]) + " new signals" if L["fresh"] else ""}</div></div>'
-            f'<div class="top-firms">{top or "<span class=muted>No scores yet</span>"}</div></div>')
-    lists_html = "".join(rows)
+            f'<a href="/firm/{esc(t["crd"])}?p={L["key"]}"><span>{escn(t["legal_name"])}</span>'
+            f'<span class="{"ok" if t["score"] >= 60 else "muted"}">{t["score"]:.0f}</span></a>' for t in L["top"])
+        cards.append(
+            f'<div class="prodcard"><a class="ph" href="/lists/{L["key"]}"><span class="dotc" style="background:{colour}"></span>'
+            f'<b>{esc(p["name"])}</b><span class="n">{L["n"]:,}</span></a>'
+            f'<div class="aud">{esc(p["audience"])}</div>'
+            f'<div><div class="meter{" amber" if L["cov"] < 70 else " soft"}"><i style="width:{L["cov"]:.0f}%"></i></div>'
+            f'<div class="tiny muted" style="margin-top:6px">{L["cov"]:.0f}% known data . {L["hi"]:,} at 60+'
+            f'{" . " + str(L["fresh"]) + " new signals" if L["fresh"] else ""}</div></div>'
+            f'<div class="tops">{top or "<span class=muted>No scores yet</span>"}</div></div>')
+    lists_html = "".join(cards)
 
     # Feed: people moves and signals merged.
     feed = []
@@ -278,24 +291,24 @@ def home(type: str = "", product: str = "", state: str = ""):
         joined = m["kind"] == "joined"
         other = escn(m["other_org_name"]) if m.get("other_org_name") else ""
         txt = (f'<b>{esc(m["person"] or "Someone")}</b> {"joined" if joined else "left"} '
-               f'<a href="/firm/{esc(m["crd"])}#hiring">{escn(m["legal_name"])}</a>'
+               f'<a href="/firm/{esc(m["crd"])}#activity">{escn(m["legal_name"])}</a>'
                + (f' <span class="muted">{"from" if joined else "for"} {other}</span>' if other else ""))
         feed.append((m["d"], f'<div class="it"><div class="ic {"in" if joined else "out"}">'
                              f'{"+" if joined else "-"}</div><div>{txt}</div>'
-                             f'<div class="tiny muted nowrap">{esc(ui.ago(m["d"]))}</div></div>'))
+                             f'<div class="when">{esc(ui.ago(m["d"]))}</div></div>'))
     for s in d["sigs"]:
-        feed.append((s["d"], f'<div class="it"><div class="ic">&#8599;</div><div>'
-                             f'<a href="/firm/{esc(s["crd"])}">{escn(s["legal_name"])}</a> '
+        feed.append((s["d"], f'<div class="it"><div class="ic amb">{ICONS["bolt"]}</div><div>'
+                             f'<a href="/firm/{esc(s["crd"])}"><b>{escn(s["legal_name"])}</b></a> '
                              f'<span class="chip lead">{esc(TYPE_LABEL.get(s["trigger_type"], s["trigger_type"]))}</span>'
                              f'<div class="meta">{esc(s["description"])}</div></div>'
-                             f'<div class="tiny muted nowrap">{esc(ui.ago(s["d"]))}</div></div>'))
+                             f'<div class="when">{esc(ui.ago(s["d"]))}</div></div>'))
     feed.sort(key=lambda x: x[0] or "", reverse=True)
-    feed_html = ("".join(x[1] for x in feed[:16]) or
+    feed_html = ("".join(x[1] for x in feed[:14]) or
                  '<p class="empty">No new signals in the last 60 days.</p>')
 
     hire_rows = "".join(
-        f'<div class="r"><a href="/firm/{esc(h["crd"])}#hiring">{escn(h["legal_name"])}</a>'
-        f'<div class="b"><i style="width:{min(100, h["hires_12m"] / max(1, d["hire_firms"][0]["hires_12m"]) * 100):.0f}%;background:var(--ok)"></i></div>'
+        f'<div class="r"><a href="/firm/{esc(h["crd"])}#activity">{escn(h["legal_name"])}</a>'
+        f'<div class="b"><i style="width:{min(100, h["hires_12m"] / max(1, d["hire_firms"][0]["hires_12m"]) * 100):.0f}%;background:linear-gradient(90deg,#2f9c6c,var(--ok))"></i></div>'
         f'<div class="num">+{h["hires_12m"]}</div></div>' for h in d["hire_firms"])
 
     cov_rows = "".join(
@@ -319,7 +332,7 @@ def home(type: str = "", product: str = "", state: str = ""):
                    sc.best_product, sc.best_score, sc.best_coverage
             FROM firm_status s JOIN firm_current f ON f.crd=s.crd
             LEFT JOIN firm_scope sc ON sc.crd=s.crd
-            WHERE s.owner=? ORDER BY s.updated_at DESC LIMIT 8""", (me,)).fetchall()
+            WHERE s.owner=? ORDER BY s.updated_at DESC LIMIT 6""", (me,)).fetchall()
     watched = c.execute("""
         SELECT w.crd, f.legal_name, f.state, f.city, f.raum,
                (SELECT description FROM trigger_event t WHERE t.crd=w.crd
@@ -332,32 +345,56 @@ def home(type: str = "", product: str = "", state: str = ""):
     c.close()
 
     mine_html = "".join(
-        f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="firm">'
-        f'<a href="/firm/{esc(r["crd"])}">{escn(r["legal_name"])}</a></div>'
-        f'<div class="meta">{ui.firm_meta(r)}</div></td>'
-        f'<td><span class="chip">{esc(r["status"] or "claimed")}</span></td>'
-        f'<td>{score_cell(r["best_score"], r["best_coverage"], show_cov=False)}'
-        f'<div class="meta">{esc(ui.product_name(r["best_product"]))}</div></td></tr>' for r in mine)
-    mine_html = (f'<table class="tight"><tbody>{mine_html}</tbody></table>' if mine_html else
-                 '<p class="empty">Assign yourself a firm to see it here.</p>')
+        f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="ent">{ui.mono(r["legal_name"], "sm")}<div>'
+        f'<a class="t" href="/firm/{esc(r["crd"])}">{escn(r["legal_name"])}</a>'
+        f'<div class="meta">{esc(r["status"] or "claimed").capitalize()} . {esc(ui.product_name(r["best_product"]))}</div></div></div></td>'
+        f'<td class="num">{score_cell(r["best_score"], r["best_coverage"], show_cov=False)}</td></tr>' for r in mine)
+    mine_html = (f'<table class="tight bare"><tbody>{mine_html}</tbody></table>' if mine_html else
+                 '<div class="empty"><b>Nothing assigned to you yet</b>Set a status on any firm page '
+                 'and it lands here.</div>')
     watch_html = "".join(
-        f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="firm">'
-        f'<a href="/firm/{esc(r["crd"])}">{escn(r["legal_name"])}</a></div>'
-        f'<div class="meta">{esc(r["last_desc"] or "No change since you started watching")}</div></td>'
-        f'<td class="small muted nowrap">{esc(ui.ago(r["last_date"]))}</td></tr>' for r in watched)
-    watch_html = (f'<table class="tight"><tbody>{watch_html}</tbody></table>' if watch_html else
-                  '<p class="empty">Star a firm on its page to follow it here.</p>')
-    live_html = "".join(
-        f'<div class="job"><span class="dotc" style="background:'
-        f'{"var(--ok)" if j["state"] == "running" else "var(--amber)"}"></span>'
-        f'{esc(j["label"])}<span class="muted small">'
-        f'{" . " + format(j["backlog"], ",") + " to go" if j.get("backlog") else ""}</span></div>'
-        for j in live[:6]) or '<p class="muted small">No jobs running.</p>'
+        f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="ent">{ui.mono(r["legal_name"], "sm")}<div>'
+        f'<a class="t" href="/firm/{esc(r["crd"])}">{escn(r["legal_name"])}</a>'
+        f'<div class="meta">{esc(r["last_desc"] or "No change since you started watching")}</div></div></div></td>'
+        f'<td class="small muted nowrap num">{esc(ui.ago(r["last_date"]))}</td></tr>' for r in watched)
+    watch_html = (f'<table class="tight bare"><tbody>{watch_html}</tbody></table>' if watch_html else
+                  '<div class="empty"><b>Not watching any firm</b>Star a firm on its page to follow it here.</div>')
+
+    # The contact discovery engine: how far it has got, what it is doing now,
+    # and what it found most recently.
+    rc = d.get("reach") or {}
+    listed = rc.get("listed") or 0
+    pct = (rc.get("listed_email", 0) / listed * 100) if listed else 0
+    engine = "".join(
+        f'<div class="e"><i class="{"run" if j["state"] == "running" else "wait"}"></i>'
+        f'<span>{esc(j["label"])}</span><span class="m">'
+        f'{format(j["backlog"], ",") + " to go" if j.get("backlog") else ("running" if j["state"] == "running" else "queued")}'
+        f'</span></div>' for j in live[:6]) or '<p class="muted small">Every job is up to date; the next runs start on schedule.</p>'
+    finds = "".join(
+        f'<div class="it"><div class="ic in">{ICONS["check"]}</div><div><b>{esc(f_["person_name"] or "A shared inbox")}</b>'
+        f' <span class="muted">at</span> <a href="/firm/{esc(f_["crd"])}#people">{escn(f_["legal_name"])}</a>'
+        f'<div class="meta">{"Verified email" if f_["kind"] == "email" else "LinkedIn profile" if f_["kind"] == "linkedin" else "Phone line"}'
+        f' . {esc(ui.SOURCE_LABEL.get(f_["source"], f_["source"]))}</div></div><div class="when">{esc(ui.ago(f_["at"]))}</div></div>'
+        for f_ in (d.get("finds") or [])[:6])
+    discovery = f"""<div class="card"><div class="card-head"><div><h2>Contact discovery</h2>
+<div class="sub">People at firms on our lists with a usable email</div></div>
+<a class="more" href="/people?on=any&amp;view=hunting">Still hunting</a></div>
+<div class="row" style="align-items:flex-end;gap:14px"><div class="big">{pct:.1f}%</div>
+<div class="small soft" style="padding-bottom:6px">{rc.get('listed_email', 0):,} of {listed:,} people</div></div>
+<div class="reachbar" style="margin:14px 0 6px"><i style="flex:{rc.get('email', 0)};background:var(--ok)"></i>
+<i style="flex:{max(0, rc.get('linkedin', 0))};background:#8ab4ff"></i>
+<i style="flex:{max(0, rc.get('direct', 0))};background:var(--soft)"></i>
+<i style="flex:{max(1, (rc.get('total') or 1) - rc.get('email', 0))};background:var(--raise3)"></i></div>
+<div class="legend" style="margin-bottom:14px"><span><i style="background:var(--ok)"></i>email {rc.get('email', 0):,}</span>
+<span><i style="background:#8ab4ff"></i>LinkedIn {rc.get('linkedin', 0):,}</span>
+<span><i style="background:var(--soft)"></i>direct line {rc.get('direct', 0):,}</span></div>
+<h3 style="margin-top:6px">Working now</h3><div class="engine">{engine}</div>
+{('<h3 style="margin-top:16px">Latest finds</h3><div class="feed">' + finds + '</div>') if finds else ''}</div>"""
 
     ai_ready = ai.configured()
     askbar = f"""<form class="askbar" method="get" action="/ask">
-<canvas data-orb="breathing" data-size="32" data-px="30" data-tint="#ef7e89" aria-label="Bellwether AI"></canvas>
-<input name="q" aria-label="{'Ask Bellwether AI' if ai_ready else 'Search firms'}" placeholder="{'Ask Bellwether AI' if ai_ready else 'Search firms'}" autocomplete="off">
+<canvas data-orb="breathing" data-size="32" data-px="26" data-tint="#f06b72" aria-hidden="true"></canvas>
+<input name="q" aria-label="{'Ask Bellwether AI' if ai_ready else 'Search firms'}" placeholder="{'Ask Bellwether AI anything' if ai_ready else 'Search firms'}" autocomplete="off">
 <button class="primary" type="submit">{'Ask' if ai_ready else 'Search'}</button></form>"""
 
     fresh = []
@@ -367,21 +404,30 @@ def home(type: str = "", product: str = "", state: str = ""):
     fresh.append(f"{d['sites']:,} firm websites read")
     if d.get("scored_at"):
         fresh.append(f"scores computed {esc(ui.ago(d['scored_at']))}")
+    first = (acct.get("name") or "").split(" ")[0]
+    hour = datetime.now().hour
+    hello = ("Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening") + (f", {esc(first)}" if first else "")
 
-    body = f"""<div class="pg wide dashboard">
-<div class="head dashboard-head"><h1>GTM intelligence</h1>{askbar}</div>
-<nav class="workspace-tabs" data-workspace-tabs aria-label="Intelligence views"><button type="button" data-panel="home-overview">Overview</button><button type="button" data-panel="home-products">Product lists</button><button type="button" data-panel="home-coverage">Data coverage</button></nav>
-<section id="home-overview">
-<div class="home-metrics"><a href="/firms"><strong>{d['firms']:,}</strong><span>Adviser firms</span></a><a href="/people"><strong>{d['people']:,}</strong><span>People tracked</span></a><a href="/signals"><strong>{d['signals_30']:,}</strong><span>Signals in 30 days</span></a></div>
-<div class="home-overview"><div><section class="home-block"><div class="s-head"><h2>Latest intelligence</h2><a href="/signals" class="more">All activity</a></div><div class="feed">{feed_html}</div></section>
-<section class="home-block"><div class="s-head"><h2>Hiring activity</h2><a href="/firms?sort=hires&on=any" class="more">View firms</a></div><div class="hbars">{hire_rows or '<p class="empty">No recorded hiring activity.</p>'}</div></section></div>
-<div><section class="home-block"><div class="s-head"><h2>Your firms</h2><a href="/firms?owner=me" class="more">View all</a></div>{mine_html}</section>
-<section class="home-block"><div class="s-head"><h2>Watching</h2><a href="/firms" class="more">Find firms</a></div>{watch_html}</section>
-<section class="home-block"><div class="s-head"><h2>Team pipeline</h2></div><div class="funnel">{funnel}</div></section></div></div>
-</section>
-<section id="home-products"><div class="s-head"><h2>Product performance</h2><span class="more">Scores retain missing-data penalties</span></div><div class="prodrow product-head" aria-hidden="true"><div>Product</div><div>Firms</div><div>Scores</div><div>Coverage</div><div class="top-firms">Top firms</div></div>{lists_html}
-<details class="geography"><summary>Firms by state <span>Explore locations</span></summary>{_map(d['by_state'])}</details></section>
-<section id="home-coverage"><div class="kpis">{kpis}</div><div class="workspace-section"><div class="home-overview"><div><h2>Coverage across {d['scope']:,} ranked firms</h2>{cov_rows}<p class="meta">{d['candidates']:,} internal email candidates awaiting verification.</p></div><div><h2>Background discovery</h2><div class="live">{live_html}</div></div></div></div></section>
-<p class="meta" style="margin-top:32px">{' &middot; '.join(fresh)}</p>
+    body = f"""<div class="pg wide">
+<div class="dash-hero"><div><div class="eyebrow">Bellwether</div><h1 class="hello">{hello}</h1>
+<p class="lede">{d['signals_30']:,} signals and {d['hires_12m'] or 0:,} job moves across {d['firms']:,} advisory firms.
+Here is what matters today.</p></div>{askbar}</div>
+<div class="kpis">{kpis}</div>
+<section class="s"><div class="s-head"><h2>Product lists</h2><a class="more" href="/lists/{d['lists'][0]['key'] if d['lists'] else ''}">Open lists</a></div>
+<div class="prodgrid">{lists_html}</div></section>
+<section class="s"><div class="cols-21">
+<div class="card"><div class="card-head"><h2>Latest intelligence</h2><a href="/signals" class="more">All activity</a></div><div class="feed">{feed_html}</div></div>
+<div>{discovery}</div></div></section>
+<section class="s"><div class="cols-3">
+<div class="card"><div class="card-head"><h2>Hiring now</h2><a href="/firms?sort=hires&amp;on=any" class="more">View firms</a></div><div class="hbars">{hire_rows or '<p class="empty">No recorded hiring activity.</p>'}</div></div>
+<div class="card"><div class="card-head"><h2>Your firms</h2><a href="/firms?owner=me" class="more">View all</a></div>{mine_html}
+<h3 style="margin-top:18px">Team pipeline</h3><div class="funnel">{funnel}</div></div>
+<div class="card"><div class="card-head"><h2>Watching</h2><a href="/firms" class="more">Find firms</a></div>{watch_html}</div>
+</div></section>
+<section class="s"><div class="cols-2">
+<div class="card"><div class="card-head"><h2>Where the ranked firms are</h2><span class="sub">Darker means more firms</span></div>{_map(d['by_state'])}</div>
+<div class="card"><div class="card-head"><h2>Data coverage</h2><span class="sub">Across {d['scope']:,} ranked firms</span></div>{cov_rows}</div>
+</div></section>
+<p class="meta" style="margin-top:28px">{' . '.join(fresh)}</p>
 </div>"""
     return page("Home", "home", body, orbs=True)

@@ -17,6 +17,11 @@ Providers, chosen in Settings, AI:
 Cost control is not optional: every call is counted in ai_call, and once the
 day's count reaches ai.daily_limit every feature reports itself unavailable
 until midnight UTC, rather than quietly running up a bill.
+
+A failed call explains itself. The screen gets a sentence; ai_call.error (and
+the Settings connection test) gets what an engineer needs: the provider, the
+model, the HTTP status and the provider's own message, or, for an empty
+answer, why it was empty (the stop reason and what the reply held instead).
 """
 
 from __future__ import annotations
@@ -59,6 +64,8 @@ FEATURES = {
     "brief": "A short written brief on each firm page",
     "extract": "Reads team pages and directories for people the rules missed",
     "clean": "Tidies names and titles and sorts people into roles",
+    "research": "Searches the web for published emails, phones and LinkedIn profiles of "
+                "people every free source missed; each one is checked on its page first",
 }
 
 DEFAULT_MODELS = {
@@ -70,7 +77,14 @@ EDEN_BASE = "https://api.edenai.run/v3"
 
 
 class AIError(Exception):
-    """A model call that failed, with a message fit for the screen."""
+    """A model call that failed, with a message fit for the screen. `detail`
+    is the technical account (status, provider message, model) that goes to
+    ai_call.error and the connection test."""
+
+    def __init__(self, message: str, detail: str | None = None):
+        super().__init__(message)
+        self.detail = detail or message
+        self.bad_json: str | None = None   # the answer that failed to parse, for a retry
 
 
 def _now() -> str:
@@ -78,8 +92,15 @@ def _now() -> str:
 
 
 def init(conn) -> None:
+    """ai_call and ai_note, and the research log with them: the app calls this
+    at startup, so the screens can read what research found before it runs."""
     conn.executescript(SCHEMA)
     conn.commit()
+    try:
+        from . import research
+        research.init(conn)
+    except Exception:
+        conn.rollback()
 
 
 def provider() -> str:
@@ -171,9 +192,8 @@ def _anthropic_client():
     return c
 
 
-def _call_anthropic(system: str, messages: list[dict], mdl: str, max_tokens: int,
-                    schema: dict | None, effort: str) -> tuple[str, int, int]:
-    import anthropic
+def _anthropic_options(mdl: str, effort: str, schema: dict | None) -> dict:
+    """The optional request parameters this model accepts."""
     # Not every Claude model takes every parameter: effort exists from the 4.6
     # generation on, and server-side fallback only on the newest models. An
     # admin can pick any model in Settings, so send only what it accepts.
@@ -192,28 +212,85 @@ def _call_anthropic(system: str, messages: list[dict], mdl: str, max_tokens: int
         # the API retries it on the model Anthropic recommends for that
         # category instead of returning an empty answer.
         extra.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
-    try:
-        resp = _anthropic_client().beta.messages.create(
-            model=mdl, max_tokens=max_tokens, system=system, messages=messages, **extra)
-    except anthropic.AuthenticationError:
-        raise AIError("The Anthropic API key was rejected. Check it in Settings, AI.") from None
-    except anthropic.PermissionDeniedError:
-        raise AIError("That Anthropic key cannot use this model.") from None
-    except anthropic.NotFoundError:
-        raise AIError(f"Anthropic does not recognise the model {mdl}.") from None
-    except anthropic.RateLimitError:
-        raise AIError("Anthropic is rate limiting this key. Try again in a minute.") from None
-    except anthropic.BadRequestError as e:
-        raise AIError(f"Anthropic refused the request: {e.message[:200]}") from None
-    except anthropic.APIStatusError as e:
-        raise AIError(f"Anthropic returned an error ({e.status_code}).") from None
-    except anthropic.APIConnectionError:
-        raise AIError("Could not reach Anthropic.") from None
-    if resp.stop_reason == "refusal":
-        raise AIError("The model declined to answer that.")
+    return extra
+
+
+def _call_anthropic(system: str, messages: list[dict], mdl: str, max_tokens: int,
+                    schema: dict | None, effort: str) -> tuple[str, int, int]:
+    extra = _anthropic_options(mdl, effort, schema)
+    resp = _anthropic_create(_anthropic_client(), mdl, model=mdl, max_tokens=max_tokens,
+                             system=system, messages=messages, **extra)
     text = "".join(b.text for b in resp.content if b.type == "text")
+    _check_anthropic_reply(resp, text, mdl, max_tokens)
     u = resp.usage
     return text, int(u.input_tokens or 0), int(u.output_tokens or 0)
+
+
+def _anthropic_detail(e, mdl: str) -> str:
+    """HTTP status, Anthropic's own error type and message, model, request id."""
+    status = getattr(e, "status_code", None)
+    body = getattr(e, "body", None)
+    msg = ""
+    if isinstance(body, dict):
+        err = body.get("error") if isinstance(body.get("error"), dict) else body
+        msg = f"{err.get('type', '')}: {err.get('message', '')}".strip(": ")
+    msg = msg or str(getattr(e, "message", "") or e)
+    req = getattr(e, "request_id", None)
+    return (f"anthropic HTTP {status}: {msg[:200]} (model {mdl}"
+            + (f", request {req}" if req else "") + ")")
+
+
+def _anthropic_create(client, mdl: str, **kw):
+    """One Messages API request, every failure turned into an AIError that
+    says what happened."""
+    import anthropic
+    try:
+        return client.beta.messages.create(**kw)
+    except anthropic.AuthenticationError as e:
+        raise AIError("The Anthropic API key was rejected. Check it in Settings, AI.",
+                      _anthropic_detail(e, mdl)) from None
+    except anthropic.PermissionDeniedError as e:
+        raise AIError("That Anthropic key cannot use this model.",
+                      _anthropic_detail(e, mdl)) from None
+    except anthropic.NotFoundError as e:
+        raise AIError(f"Anthropic does not recognise the model {mdl}.",
+                      _anthropic_detail(e, mdl)) from None
+    except anthropic.RateLimitError as e:
+        raise AIError("Anthropic is rate limiting this key. Try again in a minute.",
+                      _anthropic_detail(e, mdl)) from None
+    except anthropic.BadRequestError as e:
+        raise AIError(f"Anthropic refused the request: {e.message[:200]}",
+                      _anthropic_detail(e, mdl)) from None
+    except anthropic.APIStatusError as e:
+        raise AIError(f"Anthropic returned an error ({e.status_code}).",
+                      _anthropic_detail(e, mdl)) from None
+    except anthropic.APITimeoutError:
+        raise AIError("Anthropic took too long to answer.",
+                      f"anthropic timeout (model {mdl})") from None
+    except anthropic.APIConnectionError as e:
+        cause = e.__cause__ or e
+        raise AIError("Could not reach Anthropic.",
+                      f"anthropic connection error: {type(cause).__name__}: "
+                      f"{str(cause)[:160]} (model {mdl})") from None
+
+
+def _check_anthropic_reply(resp, text: str, mdl: str, max_tokens: int) -> None:
+    """A refusal or an empty answer, with the reason it was empty."""
+    if resp.stop_reason == "refusal":
+        cat = getattr(getattr(resp, "stop_details", None), "category", None)
+        raise AIError("The model declined to answer that.",
+                      f"anthropic refusal (category {cat}, model {resp.model})")
+    if text.strip():
+        return
+    kinds = ",".join(sorted({b.type for b in resp.content})) or "nothing"
+    out = int(getattr(resp.usage, "output_tokens", 0) or 0)
+    detail = (f"anthropic empty answer: stop_reason {resp.stop_reason}, reply held {kinds},"
+              f" {out} output tokens, max_tokens {max_tokens}, model {resp.model or mdl}")
+    if resp.stop_reason == "max_tokens":
+        raise AIError("The model used its whole allowance thinking and wrote no answer. "
+                      "It needs a larger max_tokens.", detail)
+    raise AIError("The AI provider returned an empty answer. An admin can review the "
+                  "model in Settings, AI.", detail)
 
 
 def _call_openai_compatible(system: str, messages: list[dict], mdl: str, max_tokens: int,
@@ -238,34 +315,161 @@ def _call_openai_compatible(system: str, messages: list[dict], mdl: str, max_tok
                                                "matching this JSON schema: " + json.dumps(schema))
             r = requests.post(base.rstrip("/") + "/chat/completions", json=body,
                               headers=headers, timeout=120)
-    except requests.RequestException:
-        raise AIError("Could not reach the AI provider.") from None
+    except requests.RequestException as e:
+        raise AIError("Could not reach the AI provider.",
+                      f"{provider()} connection error: {type(e).__name__}: {str(e)[:160]}"
+                      f" (model {mdl}, base {base})") from None
+    where = f"(model {mdl}, base {base})"
     if r.status_code in (401, 403):
-        raise AIError("The AI provider rejected the key. Check it in Settings, AI.")
+        raise AIError("The AI provider rejected the key. Check it in Settings, AI.",
+                      f"{provider()} HTTP {r.status_code}: {_provider_message(r)} {where}")
     if r.status_code >= 400:
-        raise AIError(f"The AI provider returned an error ({r.status_code}): {r.text[:160]}")
+        raise AIError(f"The AI provider returned an error ({r.status_code}): {r.text[:160]}",
+                      f"{provider()} HTTP {r.status_code}: {_provider_message(r)} {where}")
     try:
         d = r.json()
-        text = d["choices"][0]["message"]["content"] or ""
-    except (ValueError, KeyError, IndexError, TypeError):
-        raise AIError("The AI provider sent back something unreadable.") from None
+        choice = d["choices"][0]
+        msg = choice.get("message") or {}
+        text = msg.get("content") or ""
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        raise AIError("The AI provider sent back something unreadable.",
+                      f"{provider()} unreadable reply: {r.text[:200]} {where}") from None
+    if isinstance(text, list):      # some gateways return content parts
+        text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+    if not str(text).strip():
+        held = [k for k in ("reasoning_content", "reasoning", "tool_calls", "refusal")
+                if msg.get(k)]
+        u = d.get("usage") or {}
+        detail = (f"{provider()} empty answer: finish_reason {choice.get('finish_reason')},"
+                  f" reply held {','.join(held) or 'nothing'},"
+                  f" {u.get('completion_tokens')} output tokens, max_tokens {max_tokens} {where}")
+        if choice.get("finish_reason") == "length":
+            raise AIError("The model used its whole allowance and wrote no answer. It needs "
+                          "a larger max_tokens.", detail)
+        raise AIError("The AI provider returned an empty answer. An admin can review the "
+                      "model in Settings, AI.", detail)
     u = d.get("usage") or {}
     return text, int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
 
 
-def _parse_json(text: str) -> dict:
-    t = text.strip()
-    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t)
+def _provider_message(r) -> str:
+    """The error message an OpenAI-compatible provider put in its reply."""
+    try:
+        d = r.json()
+        err = d.get("error") if isinstance(d, dict) else None
+        if isinstance(err, dict):
+            return str(err.get("message") or err)[:200]
+        if err:
+            return str(err)[:200]
+        return str(d.get("detail") or d.get("message") or d)[:200]
+    except (ValueError, AttributeError):
+        return (r.text or "")[:200]
+
+
+_THINK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.S | re.I)
+_FENCE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.S)
+_TRAILING_COMMA = re.compile(r",\s*([}\]])")
+
+
+def _json_spans(t: str) -> list[str]:
+    """Every balanced {...} or [...] in the text, outermost first, skipping
+    braces inside strings."""
+    out: list[str] = []
+    i = 0
+    while i < len(t):
+        if t[i] not in "{[":
+            i += 1
+            continue
+        depth, j, in_str, esc = 0, i, False, False
+        while j < len(t):
+            ch = t[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+                if depth == 0:
+                    out.append(t[i:j + 1])
+                    break
+            j += 1
+        i = j + 1 if depth == 0 and j < len(t) else i + 1
+    return sorted(out, key=len, reverse=True)
+
+
+def _loads_lenient(t: str):
+    """json.loads, then the usual small slips a weaker model makes: smart
+    quotes, trailing commas, Python's True/False/None and single quotes."""
     try:
         return json.loads(t)
     except ValueError:
-        m = re.search(r"\{.*\}", t, re.S)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except ValueError:
-                pass
-    raise AIError("The model's answer was not valid JSON.")
+        pass
+    u = (t.replace(chr(0x201C), '"').replace(chr(0x201D), '"')
+          .replace(chr(0x2018), "'").replace(chr(0x2019), "'"))
+    u = _TRAILING_COMMA.sub(r"\1", u)
+    try:
+        return json.loads(u)
+    except ValueError:
+        pass
+    import ast
+    try:
+        v = ast.literal_eval(u)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        raise ValueError("not JSON") from None
+    if isinstance(v, (dict, list)):
+        return v
+    raise ValueError("not JSON")
+
+
+def _parse_json(text: str, schema: dict | None = None):
+    """The JSON object in a model's answer, however it was wrapped: thinking
+    tags, code fences, prose around it, small syntax slips. With a schema, a
+    bare list is wrapped in the schema's one array field and missing required
+    fields get empty values, so a weak model's near miss still parses."""
+    t = _THINK.sub("", text or "").strip()
+    tries = [t] + _FENCE.findall(t) + _json_spans(t)
+    for cand in tries:
+        cand = cand.strip()
+        if not cand:
+            continue
+        try:
+            v = _loads_lenient(cand)
+        except ValueError:
+            continue
+        v = _coerce(v, schema)
+        if isinstance(v, dict):
+            return v
+    raise AIError("The model's answer was not valid JSON.",
+                  f"{provider()} answer was not JSON: {t[:160]!r}")
+
+
+def _coerce(v, schema: dict | None):
+    if not schema or schema.get("type") != "object":
+        return v
+    props = schema.get("properties") or {}
+    if isinstance(v, list):
+        arrays = [k for k, p in props.items() if p.get("type") == "array"]
+        if len(arrays) == 1:
+            v = {arrays[0]: v}
+        elif not v:
+            v = {}          # "nothing found" said as an empty list
+    if not isinstance(v, dict):
+        return v
+    lower = {str(k).lower(): k for k in v}
+    for k, p in props.items():
+        if k not in v and k.lower() in lower:
+            v[k] = v.pop(lower[k.lower()])
+        if k not in v:
+            v[k] = {"array": [], "string": "", "boolean": False,
+                    "object": {}}.get(p.get("type"), None)
+    return v
 
 
 def complete(system: str, messages: list[dict], *, feature: str, tier: str = "smart",
@@ -276,9 +480,28 @@ def complete(system: str, messages: list[dict], *, feature: str, tier: str = "sm
         raise AIError("No AI provider is connected. An admin can add one in Settings, AI.")
     if budget_left() <= 0:
         raise AIError("Today's AI allowance is used up. It resets at midnight UTC.")
-    p = provider()
     mdl = model(tier)
+    try:
+        return _complete_once(system, messages, mdl, feature, tier, schema, max_tokens, who)
+    except AIError as e:
+        # Weaker models wrap JSON in prose or slip on its syntax now and then.
+        # One more try, shown its own answer and told plainly what is wanted,
+        # usually lands; a second miss is reported as it is.
+        if schema is None or not getattr(e, "bad_json", None) or budget_left() <= 0:
+            raise
+        again = list(messages) + [
+            {"role": "assistant", "content": e.bad_json[:6000]},
+            {"role": "user", "content": "That was not one valid JSON object. Reply again "
+             "with only the JSON object, starting with { and ending with }, no other text "
+             "and no code fences, matching this JSON schema: " + json.dumps(schema)}]
+        return _complete_once(system, again, mdl, feature, tier, schema, max_tokens, who)
+
+
+def _complete_once(system: str, messages: list[dict], mdl: str, feature: str, tier: str,
+                   schema: dict | None, max_tokens: int, who: str | None):
+    p = provider()
     t0 = time.monotonic()
+    text = ""
     try:
         if p == "anthropic":
             text, tin, tout = _call_anthropic(system, messages, mdl, max_tokens, schema,
@@ -291,25 +514,143 @@ def complete(system: str, messages: list[dict], *, feature: str, tier: str = "sm
                 system, messages, mdl, max_tokens, schema,
                 settings.get("ai.base_url") or "https://api.openai.com/v1")
         else:
-            raise AIError("Unknown AI provider.")
-        if not text.strip():
-            raise AIError('The AI provider returned an empty answer. Try again with a shorter question; an admin can review the model in Settings, AI.')
-        out = _parse_json(text) if schema is not None else text.strip()
+            raise AIError("Unknown AI provider.", f"unknown provider {p!r}")
+        if not str(text or "").strip():
+            # The provider calls explain an empty answer themselves; this is
+            # the backstop for any path that does not.
+            raise AIError("The AI provider returned an empty answer. An admin can review "
+                          "the model in Settings, AI.", f"{p} empty answer (model {mdl})")
+        out = _parse_json(text, schema) if schema is not None else text.strip()
     except AIError as e:
-        _log(feature, mdl, False, None, None, int((time.monotonic() - t0) * 1000), who, str(e))
+        _log(feature, mdl, False, None, None, int((time.monotonic() - t0) * 1000), who,
+             e.detail)
+        if schema is not None and text.strip():
+            e.bad_json = text
         raise
     _log(feature, mdl, True, tin, tout, int((time.monotonic() - t0) * 1000), who, None)
     return out
 
 
+# ------------------------------------------------------------------ web research
+
+WEB_SEARCH_TOOL = "web_search_20260209"
+WEB_FETCH_TOOL = "web_fetch_20260209"
+MAX_CONTINUATIONS = 3       # pause_turn resumptions per research question
+RESEARCH_TIMEOUT_S = 300.0  # a searching, reading turn takes longer than a chat reply
+
+
+def web_research(system: str, prompt: str, *, feature: str = "research",
+                 max_searches: int = 4, max_fetches: int = 5, max_tokens: int = 16000,
+                 who: str | None = None) -> dict:
+    """Let Claude search and read the web to answer, through Anthropic's
+    server tools (web_search and web_fetch, the versions with dynamic
+    filtering). Returns {"text": the final answer, "sources": [{url, title,
+    via}]}, where sources are the pages the tools really returned, which a
+    caller can hold the answer's citations against.
+
+    Anthropic runs the tool loop itself. When it stops a long turn with
+    pause_turn, the conversation so far is sent back and it carries on, at
+    most MAX_CONTINUATIONS times. Every request is one ai_call row, so the
+    daily limit counts each of them. Other providers have no such tools; their
+    callers gather the evidence themselves and use complete()."""
+    if provider() != "anthropic":
+        raise AIError("Web research needs the Anthropic provider.",
+                      f"web research is not available on provider {provider()}")
+    if not configured():
+        raise AIError("No AI provider is connected. An admin can add one in Settings, AI.")
+    mdl = model("smart")
+    # The dynamic-filtering versions need a 4.6-generation model or newer; an
+    # older model chosen in Settings gets the basic ones instead of a 400.
+    dynamic = mdl.startswith(("claude-opus-5", "claude-sonnet-5", "claude-fable-5",
+                              "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+                              "claude-sonnet-4-6"))
+    tools = [{"type": WEB_SEARCH_TOOL if dynamic else "web_search_20250305",
+              "name": "web_search", "max_uses": max_searches},
+             {"type": WEB_FETCH_TOOL if dynamic else "web_fetch_20250910",
+              "name": "web_fetch", "max_uses": max_fetches, "max_content_tokens": 20000}]
+    extra = _anthropic_options(mdl, "medium", None)
+    client = _anthropic_client().with_options(timeout=RESEARCH_TIMEOUT_S)
+    messages: list = [{"role": "user", "content": prompt}]
+    sources: list[dict] = []
+    for _turn in range(MAX_CONTINUATIONS + 1):
+        if budget_left() <= 0:
+            raise AIError("Today's AI allowance is used up. It resets at midnight UTC.")
+        t0 = time.monotonic()
+        try:
+            resp = _anthropic_create(client, mdl, model=mdl, max_tokens=max_tokens,
+                                     system=system, messages=messages, tools=tools, **extra)
+            sources += _web_sources(resp.content)
+            if resp.stop_reason != "pause_turn":
+                text = _final_text(resp.content)
+                _check_anthropic_reply(resp, text, mdl, max_tokens)
+        except AIError as e:
+            _log(feature, mdl, False, None, None, int((time.monotonic() - t0) * 1000), who,
+                 e.detail)
+            raise
+        u = resp.usage
+        _log(feature, mdl, True, int(u.input_tokens or 0), int(u.output_tokens or 0),
+             int((time.monotonic() - t0) * 1000), who, None)
+        if resp.stop_reason == "pause_turn":
+            # Send the paused turn back as it stands; the API sees the trailing
+            # server tool call and resumes it. No extra "continue" message.
+            messages = [{"role": "user", "content": prompt},
+                        {"role": "assistant", "content": resp.content}]
+            continue
+        return {"text": text, "sources": sources}
+    detail = f"anthropic research still paused after {MAX_CONTINUATIONS} continuations (model {mdl})"
+    _log(feature, mdl, False, None, None, 0, who, detail)
+    raise AIError("The research took too many steps and was stopped.", detail)
+
+
+def _web_sources(content) -> list[dict]:
+    """Pages the server tools actually returned in one response."""
+    out: list[dict] = []
+    for b in content or []:
+        kind = getattr(b, "type", "")
+        if kind == "web_search_tool_result":
+            items = getattr(b, "content", None)
+            if isinstance(items, list):      # an error result is an object, not a list
+                for r in items:
+                    if getattr(r, "type", "") == "web_search_result" and getattr(r, "url", None):
+                        out.append({"url": r.url, "title": getattr(r, "title", "") or "",
+                                    "via": "search"})
+        elif kind == "web_fetch_tool_result":
+            c = getattr(b, "content", None)
+            if getattr(c, "type", "") == "web_fetch_result" and getattr(c, "url", None):
+                doc = getattr(c, "content", None)
+                out.append({"url": c.url, "title": getattr(doc, "title", "") or "",
+                            "via": "fetch"})
+    return out
+
+
+def _final_text(content) -> str:
+    """The answer: text written after the last tool call or result, since
+    text before it is the model narrating what it is about to look up."""
+    blocks = list(content or [])
+    last = -1
+    for i, b in enumerate(blocks):
+        kind = getattr(b, "type", "")
+        if kind == "server_tool_use" or kind.endswith("tool_result"):
+            last = i
+    tail = "".join(getattr(b, "text", "") for b in blocks[last + 1:]
+                   if getattr(b, "type", "") == "text")
+    if tail.strip():
+        return tail
+    return "".join(getattr(b, "text", "") for b in blocks if getattr(b, "type", "") == "text")
+
+
 def test_connection() -> tuple[bool, str]:
+    """(ok, what happened). On failure the message carries the provider, model,
+    HTTP status and the provider's own words, so a failed check says why.
+    The allowance is generous because current Claude models always think
+    before answering, and a small max_tokens can be spent before any text."""
     try:
         out = complete("You are a connectivity check. Reply with the single word OK.",
                        [{"role": "user", "content": "Say OK."}], feature="test",
-                       max_tokens=200)
+                       tier="fast", max_tokens=2048)
     except AIError as e:
-        return False, str(e)
-    return True, f"Connected to {provider()} using {model('smart')}. It replied: {str(out)[:40]}"
+        return False, f"{e} [{e.detail}]" if e.detail != str(e) else str(e)
+    return True, f"Connected to {provider()} using {model('fast')}. It replied: {str(out)[:40]}"
 
 
 # ------------------------------------------------------------------ rendering
@@ -342,7 +683,7 @@ def md_to_html(text: str) -> str:
         if not s:
             flush()
             continue
-        m = re.match(r"^([-*•]|\d+[.)])\s+(.*)$", s)
+        m = re.match(r"^([-*\u2022]|\d+[.)])\s+(.*)$", s)
         if m:
             if para:
                 out.append("<p>" + inline(" ".join(para)) + "</p>")

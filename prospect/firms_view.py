@@ -103,9 +103,12 @@ def _states(c):
     return _STATES["v"]
 
 
-def _where(q, st, size, reg, lst, stat, owner, trig, list_id, hires="", reach=""):
+def _where(q, st, size, reg, lst, stat, owner, trig, list_id, hires="", reach="", cat=""):
     where: list[str] = []
     args: list = []
+    if cat:
+        where.append("EXISTS (SELECT 1 FROM firm_class fc WHERE fc.crd=f.crd AND fc.category=?)")
+        args.append(cat)
     if reg == "ERA":
         where.append("f.is_era=1")
     elif reg == "all":
@@ -191,7 +194,7 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
           size: str = Query(""), reg: str = Query(""), lst: str = Query("", alias="on"),
           stat: str = Query(""), owner: str = Query(""),
           trig: str = Query(""), list_id: str = Query("", alias="list"),
-          hires: str = Query(""), reach: str = Query(""), sort: str = Query(""),
+          hires: str = Query(""), reach: str = Query(""), sort: str = Query(""), cat: str = Query(""),
           preset: str = Query(""), page_n: int = Query(1, ge=1, alias="page"),
           per: int = Query(50, ge=10, le=200)):
     # Links from before the product lists passed a preset; send them to the
@@ -203,14 +206,14 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
     c = conn()
     hires = hires if hires.isdigit() else ""
     sort = sort if sort in SORTS else ""
-    where, args = _where(q, st, size, reg, lst, stat, owner, trig, list_id, hires, reach)
+    where, args = _where(q, st, size, reg, lst, stat, owner, trig, list_id, hires, reach, cat)
     list_name = ""
     if list_id:
         r = c.execute("SELECT name FROM user_list WHERE id=?", (int(list_id),)).fetchone()
         list_name = r["name"] if r else ""
     qs = qs_join(view=view if view != "firms" else "", q=q, st=st, size=size, reg=reg,
                  on=lst, stat=stat, owner=owner, trig=trig, list=list_id, hires=hires,
-                 reach=reach, sort=sort)
+                 reach=reach, sort=sort, cat=cat)
     if view == "contacts":
         table, total = _contacts(c, where, args, page_n, per)
     else:
@@ -222,13 +225,9 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
     def vtab(v, label):
         href = "/firms?" + qs_join(view=v if v != "firms" else "", q=q, st=st, size=size,
                                    reg=reg, on=lst, stat=stat, owner=owner, trig=trig,
-                                   list=list_id, hires=hires, reach=reach, sort=sort)
+                                   list=list_id, hires=hires, reach=reach, sort=sort, cat=cat)
         return f'<a class="{"on" if view == v else ""}" href="{href}">{label}</a>'
 
-    lst_opts = (ui.opt("", lst, "Any") + ui.opt("any", lst, "On any list")
-                + ui.opt("none", lst, "On no list")
-                + "".join(ui.opt(k, lst, products.product(k)["name"])
-                          for k in products.product_keys()))
     pages = max(1, -(-total // per))
     prev = f'<a href="/firms?{qs}&page={page_n-1}">Previous</a>' if page_n > 1 else ""
     nxt = f'<a href="/firms?{qs}&page={page_n+1}">Next</a>' if page_n < pages else ""
@@ -236,37 +235,43 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
            if view == "contacts" else
            f'<a class="btn" href="/firms/export.csv?{qs}" data-noprefetch>Export firms</a>')
     title = f"Saved list: {esc(list_name)}" if list_name else "Firms"
-    user_list_opts = "".join(ui.opt(str(l["id"]), list_id, l["name"]) for l in lists)
+    lists_opts = ([("", "Any list"), ("any", "On any product list"), ("none", "On no list")]
+                  + [(k, products.product(k)["name"]) for k in products.product_keys()])
+    more = [("reg", "Registration", list(REGS.items())),
+            ("hires", "Hiring", [("", "Any hiring"), ("1", "Hired in 12 months"), ("3", "Hired 3+"),
+                                 ("5", "Hired 5+")]),
+            ("owner", "Owner", [("", "Anyone"), ("me", "Mine"), ("none", "Unclaimed")]),
+            ("stat", "Status", [("", "Any status")] + [(x, x.capitalize()) for x in ui.STATUS_OPTIONS]),
+            ("trig", "Signal", [("", "Any signal"), ("open", "New in 60 days")]),
+            ("list", "Saved list", [("", "Any saved list")] + [(str(l["id"]), l["name"]) for l in lists])]
+    try:
+        from . import firmtype
+        cats = [(x["key"], x["label"]) for x in firmtype.categories()]
+        more.insert(0, ("cat", "Firm type", [("", "Any firm type")] + cats))
+    except Exception:
+        pass
+    more.append(("sort", "Sort", [(k, v[0]) for k, v in SORTS.items()]))
+    vals = dict(q=q, st=st, size=size, reg=reg, on=lst, stat=stat, owner=owner, trig=trig,
+                list=list_id, hires=hires, reach=reach, sort=sort, cat=cat)
+    bar = ui.filter_bar("/firms", vals, search=("q", "Search firm, city or CRD"),
+                        quick=[("on", "List", lists_opts),
+                               ("st", "State", [("", "All states")] + [(x, x) for x in states]),
+                               ("size", "Size", [(k, v[0]) for k, v in SIZES.items()]),
+                               ("reach", "Reach", [("", "Any reach"), ("email", "Named email"),
+                                                   ("verified", "Verified email"), ("none", "No email yet")])],
+                        more=more, hidden={"view": view if view != "firms" else ""})
     body = f"""<div class="pg wide">
-<div class="head"><div><h1>{title}</h1></div>
-<div class="acts">{exp}</div></div>
-<form class="filters" method="get" action="/firms">
-<input type="hidden" name="view" value="{esc(view if view != 'firms' else '')}">
-<label>Search<input type="search" name="q" value="{esc(q)}" placeholder="Firm, city or CRD"></label>
-<label>State<select name="st">{ui.opt("", st, "All states")}{"".join(ui.opt(s, st, s) for s in states)}</select></label>
-<label>Size<select name="size">{"".join(ui.opt(k, size, v[0]) for k, v in SIZES.items())}</select></label>
-<label>Registration<select name="reg">{"".join(ui.opt(k, reg, v) for k, v in REGS.items())}</select></label>
-<label>Product list<select name="on">{lst_opts}</select></label>
-<label>Hiring<select name="hires">{ui.opt("", hires, "Any")}{ui.opt("1", hires, "Hired in 12 months")}{ui.opt("3", hires, "Hired 3+")}{ui.opt("5", hires, "Hired 5+")}</select></label>
-<label>Reach<select name="reach">{ui.opt("", reach, "Any")}{ui.opt("email", reach, "A named person's email")}{ui.opt("verified", reach, "A verified email")}{ui.opt("none", reach, "No email yet")}</select></label>
-<label>Owner<select name="owner">{ui.opt("", owner, "Anyone")}{ui.opt("me", owner, "Mine")}{ui.opt("none", owner, "Unclaimed")}</select></label>
-<label>Status<select name="stat">{ui.opt("", stat, "Any")}{"".join(ui.opt(s, stat, s.capitalize()) for s in ui.STATUS_OPTIONS)}</select></label>
-<label>Signal<select name="trig">{ui.opt("", trig, "Any")}{ui.opt("open", trig, "New in 60 days")}</select></label>
-<label>Saved list<select name="list">{ui.opt("", list_id, "Any")}{user_list_opts}</select></label>
-<label>Sort<select name="sort">{"".join(ui.opt(k, sort, v[0]) for k, v in SORTS.items())}</select></label>
-<button class="primary" type="submit">Apply</button>
-<a class="btn ghost" href="/firms">Clear</a>
-</form>
-<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:12px 0 0;flex-wrap:wrap">
-<div class="seg">{vtab("firms", "Firms")}{vtab("contacts", "Contacts")}</div>
-<div class="acts"><span class="small soft"><b style="color:var(--ink)">{total:,}</b>
-{"people" if view == "contacts" else "firms"}</span>
-<form method="post" action="/views/save" class="acts">
+<div class="head"><div><h1>{title}</h1><p class="lede">Every SEC and state registered adviser, with
+fit, team, reach and activity. Filter, save the view, export exactly what is on screen.</p></div>
+<div class="acts"><details class="save-view"><summary>Save view</summary><form method="post" action="/views/save">
 <input type="hidden" name="page" value="firms"><input type="hidden" name="qs" value="{esc(qs)}">
-<input type="text" name="name" placeholder="Name this view to save it" style="min-width:200px">
-<button type="submit" class="sm">Save view</button></form></div></div>
+<input type="text" name="name" placeholder="Name this view" required><button type="submit" class="primary sm">Save</button></form></details>{exp}</div></div>
+<nav class="tabs">{vtab("firms", "Firms")}{vtab("contacts", "Contacts")}</nav>
+{bar}
+<div class="resbar"><span><b>{total:,}</b> {"contacts" if view == "contacts" else "firms"}</span>
+<span class="muted small">Page {page_n} of {pages:,}</span></div>
 {table}
-<div class="pager">{prev} Page {page_n} of {pages} {nxt}</div>
+<div class="pager"><span>Page {page_n} of {pages:,}</span><span class="acts">{prev}{nxt}</span></div>
 </div>"""
     return page(title if not list_name else list_name, "firms" if not list_id else "saved",
                 body, FIRMS_CSS, js=ADD_JS)
@@ -296,6 +301,12 @@ def _firms(c, where, args, page_n, per, qs, sort=""):
         {base} ORDER BY {SORTS.get(sort, SORTS[""])[1]}
         LIMIT ? OFFSET ?""", args + [per, (page_n - 1) * per]).fetchall()
     flags = ui.contact_flags(c, [r["crd"] for r in rows])
+    ftypes = {}
+    try:
+        from . import firmtype
+        ftypes = firmtype.get_many(c, [r["crd"] for r in rows]) or {}
+    except Exception:
+        c.rollback()
     lists = c.execute("SELECT id, name FROM user_list ORDER BY name").fetchall()
     listopts = "".join(f'<option value="{l["id"]}">{esc(l["name"])}</option>' for l in lists)
     body = []
@@ -320,22 +331,23 @@ def _firms(c, where, args, page_n, per, qs, sort=""):
                f'<input type="hidden" name="crd" value="{esc(r["crd"])}">'
                f'<input type="hidden" name="back" value="/firms?{esc(qs)}">'
                f'<input type="hidden" name="new_name" value="">'
-               f'<select name="list_id" onchange="addToList(this)" class="listpick">'
-               f'<option value="">+ list</option>{listopts}'
+               f'<select name="list_id" onchange="addToList(this)" class="listpick" style="height:28px;font-size:12px;min-width:0;width:92px" aria-label="Add to a saved list">'
+               f'<option value="">+ List</option>{listopts}'
                f'<option value="__new">New list...</option></select></form>')
         body.append(
-            f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="firm">'
-            f'<a href="/firm/{esc(r["crd"])}">{escn(r["legal_name"] or "(unnamed)")}</a></div>'
-            f'<div class="meta">{ui.firm_meta(r)} &middot; {esc(reg)}</div></td>'
+            f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="ent">{ui.mono(r["legal_name"])}<div>'
+            f'<a class="t" href="/firm/{esc(r["crd"])}">{escn(r["legal_name"] or "(unnamed)")}</a>'
+            f'<div class="meta">{ui.firm_meta(r)} &middot; {esc(reg)}</div>'
+            f'{("<div class=pills style=margin-top:6px><span class=ftype>" + esc(ftypes[r["crd"]].get("short") or ftypes[r["crd"]].get("label") or ftypes[r["crd"]]["category"]) + "</span></div>") if ftypes.get(r["crd"], {}).get("category") else ""}</div></div></td>'
             f'<td class="num">{money(r["raum"])}<div class="meta">HNW {hs:.0f}%</div></td>'
             f'<td class="num">{team}{moves}</td>'
             f'<td>{best or "<span class=muted>-</span>"}</td>'
-            f'<td>{ui.contact_cell(flags[r["crd"]])}</td><td><details class="row-actions"><summary>Manage</summary>{who}{add}</details></td></tr>')
+            f'<td>{ui.contact_cell(flags[r["crd"]])}</td><td>{who}{add}</td></tr>')
     empty = '<tr><td colspan="6" class="empty">No firms match these filters.</td></tr>'
-    return (f'<table><thead><tr><th>Firm</th><th class="num">AUM</th>'
+    return (f'<div class="table-scroll"><table><thead><tr><th>Firm</th><th class="num">AUM</th>'
             f'<th class="num" title="People registered at the firm now, and job moves in 12 months">Team</th>'
-            f'<th>Product fit</th><th>Contacts</th><th></th></tr></thead>'
-            f'<tbody>{"".join(body) or empty}</tbody></table>'), total
+            f'<th>Best fit</th><th>Reach</th><th></th></tr></thead>'
+            f'<tbody>{"".join(body) or empty}</tbody></table></div>'), total
 
 
 def _contacts(c, where, args, page_n, per):
@@ -360,9 +372,9 @@ def _contacts(c, where, args, page_n, per):
             f'<td>{em}</td><td class="nowrap">{esc(r["phone"] or "-")}</td></tr>')
     empty = ('<tr><td colspan="4" class="empty">No contacts for this set yet. The website, '
              'brochure and directory jobs fill them in by themselves.</td></tr>')
-    return (f'<table><thead><tr><th>Firm</th><th>Person</th><th>Email</th>'
+    return (f'<div class="table-scroll"><table><thead><tr><th>Firm</th><th>Person</th><th>Email</th>'
             f'<th>Phone</th></tr></thead>'
-            f'<tbody>{"".join(body) or empty}</tbody></table>'), total
+            f'<tbody>{"".join(body) or empty}</tbody></table></div>'), total
 
 
 @router.get("/firms/export.csv")

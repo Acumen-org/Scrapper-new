@@ -24,7 +24,16 @@ TAGS = re.compile(r"<[^>]+>")
 
 # (signal, pattern matched against link targets and link text)
 PLATFORM_PATTERNS = [
-    ("platform_salesforce", re.compile(r"salesforce\.com|force\.com|\bsalesforce\b", re.I)),
+    ("platform_salesforce", re.compile(r"salesforce\.com|force\.com|my\.site\.com|\bsalesforce\b",
+                                       re.I)),
+    # Glynac also works with Microsoft Dynamics CRMs and the RIA CRMs built on
+    # Salesforce; a client portal or login link on the site gives them away.
+    ("platform_dynamics", re.compile(r"powerappsportals\.com|microsoftcrmportals\.com"
+                                     r"|crm\d*\.dynamics\.com|dynamics\s*365|microsoft\s+dynamics",
+                                     re.I)),
+    ("platform_practifi", re.compile(r"practifi", re.I)),
+    ("platform_xlr8", re.compile(r"\bxlr8\b|xlr8crm", re.I)),
+    ("platform_salentica", re.compile(r"salentica", re.I)),
     ("platform_redtail", re.compile(r"redtailtechnology|redtail\s*(crm|technology)|redtail\.com", re.I)),
     ("platform_black_diamond", re.compile(r"black\s*diamond|blackdiamond|bdportal"
                                           r"|advent\.com", re.I)),

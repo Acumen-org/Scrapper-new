@@ -53,6 +53,21 @@ BUILTIN = [
     ("form_d", "SEC Form D", "https://www.sec.gov/edgar", "As filed", "Private offerings and their owners."),
     ("mail_platform", "Public DNS mail records", "DNS", "Every 90 days",
      "Microsoft 365 or Google, from MX and SPF records; mail servers for verification."),
+    ("offices", "Form ADV Schedule D 1.F and 1.I", "https://www.sec.gov/foia-services/frequently-requested-documents/form-adv-data",
+     "Weekly check", "Every branch office with its phone number, matched to the people who work "
+     "there; and the websites and LinkedIn pages each firm lists, including its advisors' profiles."),
+    ("web_enrich", "Each firm's own website", "Firm websites", "Every 90 days",
+     "Team, bio and contact pages and vCards, read with Scrapling (a headless browser for "
+     "JavaScript-only sites): people, titles, emails, direct lines and LinkedIn links."),
+    ("contact_search", "Web search", "DuckDuckGo, Bing and others through ddgs", "Continuous",
+     "Public LinkedIn profile links for each person, and addresses the firm has published "
+     "anywhere on the web. No LinkedIn login is used."),
+    ("email_hunt", "The firm's own mail server", "SMTP", "Continuous",
+     "Each person's likely addresses checked one by one with the firm's mail server until one is "
+     "accepted; only accepted addresses are ever shown."),
+    ("ai_research", "AI research", "The AI provider in Settings", "Continuous, within the daily limit",
+     "For people still missing a contact: published emails, direct lines and LinkedIn, each "
+     "checked against its source page before it is kept."),
 ]
 
 KINDS = {"directory": "Directory or listing of advisers", "website": "A single website",

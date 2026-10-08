@@ -109,6 +109,15 @@ def _merge(base: dict, over: dict) -> dict:
             merged[k] = g[k]
     for key, body in over.items():
         if key in merged["products"]:
+            body = json.loads(json.dumps(body))
+            # A product edited before a gate or disqualifier shipped (the
+            # firm-type rule, say) still gets it: the editor cannot remove
+            # gates or disqualifiers, so a missing one was never a choice.
+            for section in ("gates", "disqualifiers"):
+                have = {g["key"] for g in body.get(section) or []}
+                for g in merged["products"][key].get(section) or []:
+                    if g["key"] not in have:
+                        body.setdefault(section, []).append(json.loads(json.dumps(g)))
             merged["products"][key] = body
     # Preserve edited weights and points while expanding the legacy criterion.
     for cr in merged['products']['glynac']['criteria']:
@@ -118,6 +127,8 @@ def _merge(base: dict, over: dict) -> dict:
             for lv in cr.get('levels', []):
                 if lv[1] == 'Orion, Tamarac, Addepar or Advyzon':
                     lv[1] = 'No confirmed supported portfolio or CRM system'
+        if cr['key'] == 'm365' and cr.get('label') == 'Email runs on Microsoft 365':
+            cr['label'] = 'Microsoft 365 or Dynamics'
     return merged
 
 
@@ -182,6 +193,13 @@ def _validate(c: dict) -> None:
         for g in p.get("gates", []) + p.get("disqualifiers", []):
             if g["key"] not in GATES:
                 raise ValueError(f"{p.get('name', key)}: gate {g['key']} has no evaluator")
+        for g in p.get("gates", []):
+            if g["key"] == "firm_type":
+                raise ValueError(f"{p.get('name', key)}: the firm-type rule is a disqualifier, "
+                                 f"not a gate")
+        for g in p.get("disqualifiers", []):
+            if g["key"] == "firm_type":
+                _check_firm_type_rule(p.get("name", key), g)
 
 
 def save_product(key: str, body: dict, who: str, note: str = "") -> None:
@@ -207,6 +225,7 @@ def save_product(key: str, body: dict, who: str, note: str = "") -> None:
     finally:
         c.close()
     reload()
+    request_rescore()
 
 
 def reset_product(key: str, who: str) -> None:
@@ -223,6 +242,107 @@ def reset_product(key: str, who: str) -> None:
     finally:
         c.close()
     reload()
+    request_rescore()
+
+
+def request_rescore(refresh_all: bool = False, conn=None) -> bool:
+    """Rescore everything: queue the Scores job (scripts.score_products), which
+    rescans every firm in firm_current against every product, not only the
+    firms already on some list. With refresh_all, every firm's website, email
+    platform and email checks are queued for a refresh first.
+
+    Called after every scoring save and reset, by the Rescore all firms
+    buttons and after a reclassification changes any firm's type. Only flags
+    the job, so it is safe inside a request: the background worker picks it
+    up within a minute (the caller in the web app may also call
+    ensure_autopilot to start a stopped worker). Returns False when the job
+    table is not there yet."""
+    from . import db, jobs
+    c = conn or db.connect()
+    try:
+        if refresh_all:
+            jobs.request_full_refresh(c)
+        jobs.request_run(c, "rescore")
+        return True
+    except Exception:
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        if conn is None:
+            c.close()
+
+
+# ------------------------------------------------------- firm-type rules
+# Each product's firm_type disqualifier lists the firm types it sells to.
+# The scoring editor reads firm_type_rule() and writes with set_firm_types()
+# or, inside its own save handler, apply_firm_types().
+
+def _check_firm_type_rule(name: str, g: dict) -> None:
+    from . import firmtype
+    allow = g.get("allow")
+    if not isinstance(allow, list) or not allow:
+        raise ValueError(f"{name}: choose at least one firm type the product sells to")
+    bad = [c for c in allow if c not in firmtype.KEYS or c == "unknown"]
+    if bad:
+        raise ValueError(f"{name}: unknown firm type {bad[0]}")
+    try:
+        mc = float(g.get("min_confidence", 60))
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}: firm-type confidence must be a number") from None
+    if not 0 <= mc <= 100:
+        raise ValueError(f"{name}: firm-type confidence must be between 0 and 100")
+
+
+def firm_type_rule(key: str) -> dict | None:
+    """A product's firm-type rule, for the scoring editor:
+    {index, label, allow: [keys], min_confidence, off, categories: [{key, label,
+    short, description, treatment, core, allowed}]}. None if the product has
+    no such rule. 'unknown' is not offered: it can never disqualify."""
+    from . import firmtype
+    for i, g in enumerate(product(key).get("disqualifiers", [])):
+        if g["key"] != "firm_type":
+            continue
+        allow = list(g.get("allow") or [])
+        return {"index": i, "label": g.get("label", ""), "allow": allow,
+                "min_confidence": int(float(g.get("min_confidence", 60))),
+                "off": bool(g.get("off")),
+                "categories": [dict(c, allowed=c["key"] in allow)
+                               for c in firmtype.categories() if c["key"] != "unknown"]}
+    return None
+
+
+def apply_firm_types(body: dict, allow: list[str], min_confidence=None) -> dict:
+    """Write the allowed firm types (and optionally the confidence needed to
+    disqualify) into a product body in place, adding the rule if the body
+    lacks it; validated. For the scoring editor's save handler, before
+    save_product."""
+    allow = [a for a in dict.fromkeys(allow or []) if a]
+    rule = next((g for g in body.get("disqualifiers") or [] if g["key"] == "firm_type"), None)
+    if rule is None:
+        rule = {"key": "firm_type", "label": "Not a firm type this product sells to",
+                "min_confidence": 60}
+        body.setdefault("disqualifiers", []).insert(0, rule)
+    rule["allow"] = allow
+    if min_confidence not in (None, ""):
+        try:
+            mc = float(min_confidence)
+        except (TypeError, ValueError):
+            raise ValueError("Firm-type confidence must be a number") from None
+        rule["min_confidence"] = int(mc) if mc == int(mc) else mc
+    _check_firm_type_rule(body.get("name", "This product"), rule)
+    return body
+
+
+def set_firm_types(key: str, allow: list[str], who: str, min_confidence=None,
+                   note: str = "") -> None:
+    """Save which firm types a product sells to (validated, kept in history,
+    and every firm rescored)."""
+    body = json.loads(json.dumps(product(key)))
+    apply_firm_types(body, allow, min_confidence)
+    save_product(key, body, who, note or "firm types changed")
 
 
 def history(key: str, limit: int = 12) -> list[dict]:
@@ -381,7 +501,8 @@ def load_features(conn, crds: list[str] | None = None) -> dict[str, dict]:
         d.update(tags={}, funds=None, seg=None, cust=None, h13f={}, files_13f=False,
                  officers=[], owners=[], triggers=[], filings_12m=0, mail=None, web={},
                  status=None, overrides={}, extra=None, brochure=None, people=None,
-                 reach={"personal": 0, "verified": 0}, web_scanned=False)
+                 reach={"personal": 0, "verified": 0}, web_scanned=False,
+                 firm_class=None)
         F[d["crd"]] = d
     if not F:
         return F
@@ -468,6 +589,16 @@ def load_features(conn, crds: list[str] | None = None) -> dict[str, dict]:
                                               "verified": r["verified"] or 0}))
     each(f"SELECT crd FROM web_enrich_state WHERE status='ok'{only('crd')}",
          lambda d, r: d.__setitem__("web_scanned", True))
+
+    def firm_class(d, r):
+        try:
+            ev = json.loads(r["evidence"] or "[]")
+        except ValueError:
+            ev = []
+        d["firm_class"] = {"category": r["category"], "confidence": r["confidence"],
+                           "source": r["source"], "evidence": ev}
+    each(f"""SELECT crd, category, confidence, source, evidence FROM firm_class
+             WHERE 1=1{only('crd')}""", firm_class)
     return F
 
 
@@ -601,7 +732,18 @@ CIO_RE = re.compile(r"CHIEF INVESTMENT|\bCIO\b", re.I)
 PLATFORMS = {"platform_black_diamond": "Black Diamond", "platform_orion": "Orion",
              "platform_tamarac": "Tamarac", "platform_addepar": "Addepar",
              "platform_advyzon": "Advyzon", "platform_salesforce": "Salesforce",
-             "platform_redtail": "Redtail"}
+             "platform_redtail": "Redtail",
+             # Read as soon as the brochure vocabulary or the website patterns
+             # emit them; until then they are simply never found.
+             "platform_dynamics": "Microsoft Dynamics", "platform_practifi": "Practifi",
+             "platform_xlr8": "XLR8", "platform_salentica": "Salentica"}
+
+# The four systems Glynac works with, and the products that count as each:
+# Practifi, XLR8 and Salentica are CRMs built on Salesforce.
+GLYNAC_SYSTEMS = {"Microsoft": ("Microsoft Dynamics",),
+                  "Salesforce": ("Salesforce", "Practifi", "XLR8", "Salentica"),
+                  "Redtail": ("Redtail",), "Black Diamond": ("Black Diamond",)}
+OTHER_PLATFORMS = ("Orion", "Tamarac", "Addepar", "Advyzon")
 
 
 def platform_evidence(d) -> dict[str, str]:
@@ -612,6 +754,23 @@ def platform_evidence(d) -> dict[str, str]:
             out[name] = said(d, sig)
         elif sig in d["web"]:
             out[name] = "website: " + (d["web"][sig]["evidence"] or "client login link")
+    return out
+
+
+def glynac_systems(d) -> dict[str, list[str]]:
+    """Which of the four systems Glynac works with a firm is seen to use, each
+    with what was found and where: Microsoft 365 from the public mail records,
+    the rest from the brochure or the firm's website. A system not found is
+    absent from the result, which means unknown, not 'does not use'."""
+    out: dict[str, list[str]] = {}
+    m = d.get("mail") or {}
+    if m.get("platform") == "m365":
+        out["Microsoft"] = [f"Microsoft 365 email ({m.get('evidence') or m.get('domain') or 'mail records'})"]
+    plats = platform_evidence(d)
+    for system, names in GLYNAC_SYSTEMS.items():
+        for n in names:
+            if n in plats:
+                out.setdefault(system, []).append(f"{n} ({plats[n]})")
     return out
 
 
@@ -683,16 +842,13 @@ def g_independent(d, g, key):
 
 
 def g_supported_system(d, g, key):
-    mail = (d["mail"] or {}).get("platform")
-    plats = platform_evidence(d)
-    supported = [p for p in plats if p in ("Black Diamond", "Salesforce", "Redtail")]
-    if mail == "m365":
-        supported.insert(0, "Microsoft 365")
-    if supported:
-        return True, "Compatible: " + ", ".join(supported)
+    sy = glynac_systems(d)
+    if sy:
+        return True, "Compatible: " + "; ".join(v[0] for v in sy.values())
     # A portfolio or email vendor does not establish which CRM a firm uses.
-    # Keep unknown compatibility eligible, with missing factors worth zero.
-    return True, "Compatibility unconfirmed; Microsoft, Salesforce, Redtail and Black Diamond are supported"
+    # Unknown compatibility stays eligible, with the missing factors worth zero.
+    return True, ("Compatibility not confirmed yet; Glynac works with Microsoft 365 and "
+                  "Dynamics, Salesforce (including Practifi and XLR8), Redtail and Black Diamond")
 
 
 def g_no_private_funds(d, g, key):
@@ -765,7 +921,30 @@ def g_left_schwab(d, g, key):
     return False, ""
 
 
+def g_firm_type(d, g, key):
+    """Disqualifier: the firm's type is not one this product sells to. A firm
+    not classified yet, typed 'unknown', or classified below min_confidence by
+    the rules or AI is never removed (missing data never disqualifies); a type
+    set by hand always counts."""
+    fc = d.get("firm_class")
+    allow = g.get("allow") or []
+    if not fc or not allow:
+        return False, "Firm type not classified yet"
+    cat = fc.get("category")
+    from . import firmtype
+    if cat in allow or cat == "unknown":
+        return False, f"{firmtype.label(cat)}"
+    manual = fc.get("source") == "manual"
+    conf = int(fc.get("confidence") or 0)
+    if not manual and conf < float(g.get("min_confidence", 60)):
+        return False, f"Possibly {firmtype.label(cat).lower()} ({conf}%), too unsure to remove"
+    why = (fc.get("evidence") or [""])[0]
+    how = "set by hand" if manual else f"{conf}% confident"
+    return True, f"{firmtype.label(cat)} ({how})" + (f": {why}" if why else "")
+
+
 GATES = {
+    "firm_type": g_firm_type,
     "sec_registered": g_sec_registered, "raum_range": g_raum_range,
     "min_raum": g_min_raum, "individual_share": g_individual_share,
     "independent": g_independent, "supported_system": g_supported_system,
@@ -1078,27 +1257,37 @@ def c_advisors(d, c, key):
 
 # Glynac
 def c_m365(d, c, key):
-    m = d["mail"]
+    """Microsoft: Microsoft 365 email (public mail records) or a Dynamics CRM
+    (brochure or website). Email checked and elsewhere is a finding; email not
+    checked yet, or no domain to check, is missing data."""
+    sy = glynac_systems(d)
+    if "Microsoft" in sy:
+        return 100, "; ".join(sy["Microsoft"])
+    m = d.get("mail")
     if not m:
-        return unknown(33, "Email platform not checked yet")
-    p = m["platform"]
-    if p == "m365":
-        return 100, f"Microsoft 365: {m['evidence']}"
+        return unknown(0, "Email platform not checked yet; no Dynamics CRM seen")
+    p, ev = m.get("platform"), m.get("evidence") or ""
     if p == "google":
-        return 0, f"Google Workspace: {m['evidence']}"
+        return 0, f"Email on Google Workspace ({ev}); no Dynamics CRM seen"
     if p == "other":
-        return 0, f"Not Microsoft 365: {m['evidence']}"
-    if p in ("none", "no_domain"):
-        return 0, m["evidence"] or "No mail server"
-    return unknown(33, m["evidence"] or "Provider not identifiable")
+        return 0, f"Email not on Microsoft 365 ({ev}); no Dynamics CRM seen"
+    if p == "none":
+        return 0, ev or "The firm's domain receives no email"
+    return unknown(0, ev or "Email provider not identifiable from the mail records")
 
 
 def c_black_diamond(d, c, key):
-    plats = platform_evidence(d)
-    supported = [f"{name}: {plats[name]}" for name in ("Black Diamond", "Salesforce", "Redtail") if name in plats]
-    if supported:
-        return 100, "; ".join(supported)
-    return unknown(0, "No confirmed Black Diamond, Salesforce or Redtail evidence")
+    """Black Diamond, Salesforce (or a CRM built on it) or Redtail, seen in
+    the brochure or on the website. Not seen is missing data, never a no:
+    firms rarely name their CRM in public."""
+    sy = glynac_systems(d)
+    found = [line for s in ("Black Diamond", "Salesforce", "Redtail") for line in sy.get(s, [])]
+    if found:
+        return 100, "; ".join(found)
+    others = [n for n in platform_evidence(d) if n in OTHER_PLATFORMS]
+    return unknown(0, "Not confirmed yet: no Black Diamond, Salesforce (or Practifi, XLR8) or "
+                      "Redtail in the brochure or on the website"
+                   + (f"; reports on {', '.join(others)}" if others else ""))
 
 
 GLYNAC_TRIGGER_POINTS = {"aum_jump": 80, "iar_growth": 65,
@@ -1285,6 +1474,11 @@ FLAGS: dict[str, tuple[str, object]] = {
     "private_funds_any": ("Advises any private fund", advises_private_funds),
     "has_personal_email": ("Has a named person with an email",
                            lambda d: d["reach"]["personal"] > 0),
+    "wealth_manager": ("Firm type is a wealth manager (independent or hybrid RIA, family office)",
+                       lambda d: None if not d.get("firm_class")
+                       or d["firm_class"]["category"] == "unknown"
+                       else d["firm_class"]["category"] in ("independent_ria", "hybrid_ria",
+                                                            "multi_family_office")),
 }
 
 
@@ -1572,6 +1766,14 @@ def init(conn) -> None:
         if cols and col not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
     conn.commit()
+    # The scores read each firm's type, and the firm types read the industry
+    # knowledge base, so both are created (and the knowledge seeded) here, at
+    # startup, with the scoring tables. A failure must not stop the scores.
+    for mod in ("firmtype", "knowledge"):
+        try:
+            __import__(f"prospect.{mod}", fromlist=["init"]).init(conn)
+        except Exception:
+            conn.rollback()
 
 
 def _detail(r: Result) -> str:

@@ -3,7 +3,13 @@
 # One format for every product, agreed with the team in September 2026:
 #
 #   gates         must all pass, or the firm is not on the list
-#   disqualifiers remove a firm that passed the gates
+#   disqualifiers remove a firm that passed the gates; each product has a
+#                 firm_type disqualifier listing the firm types (see
+#                 config/industry.yml and prospect/firmtype.py) it sells to.
+#                 A firm of any other type is removed when its type is set by
+#                 hand or classified with min_confidence or more. A firm not
+#                 classified yet, or classified with less confidence, is never
+#                 removed: missing data never disqualifies.
 #   criteria      each earns 0-100 points, multiplied by its weight; weights add to 100
 #   penalties     points taken off the final score
 #   signals       never scored; shown as talking points or flags
@@ -33,7 +39,7 @@
 # (RIA Fit, 1031 Partner and JV Mandate Fit scores, plan points rescaled to
 # 100), and Glynac/02_GLYNAC_GTM_Plan_v2.1.
 
-config_version: 2
+config_version: 3
 
 # The order products appear in the sidebar and on the home page.
 order: [phh_fund, phh_1031, phh_jv, acubooth, glynac]
@@ -65,6 +71,11 @@ products:
         label: Individual and HNW clients are at least half of assets (ADV Item 5.D)
         min: 0.50
     disqualifiers:
+      - key: firm_type
+        # Wealth managers placing HNW clients. Broker-dealers and wirehouses buy through a home-office platform review, not this list.
+        label: Firm type PHH Fund I does not sell to
+        allow: [independent_ria, hybrid_ria, multi_family_office]
+        min_confidence: 60
       - key: bans_illiquid
         label: Brochure bans private placements, K-1 investments or illiquid investments
       - key: re_competitor
@@ -158,6 +169,12 @@ products:
         label: An RIA whose clients own businesses or investment real estate
       - key: investment_property
         label: Works with investment property, not mainly homes
+    disqualifiers:
+      - key: firm_type
+        # RIAs whose clients own businesses or investment property. CPAs, attorneys and intermediaries are scored by hand.
+        label: Firm type PHH 1031 does not work with
+        allow: [independent_ria, hybrid_ria, multi_family_office]
+        min_confidence: 60
     criteria:
       - key: exchange_frequency
         label: How often they see relevant property sales
@@ -240,6 +257,12 @@ products:
       - key: check_capacity
         label: Can commit $5M+ per deal (assets of $250M+)
         min: 250000000
+    disqualifiers:
+      - key: firm_type
+        # Family offices and the wealth managers, OCIOs and trust companies that allocate for wealthy families and institutions. Fund managers with their own real estate teams are competitors.
+        label: Firm type PHH JV does not partner with
+        allow: [multi_family_office, independent_ria, hybrid_ria, consultant_ocio, bank_trust]
+        min_confidence: 60
     criteria:
       - key: check_size
         label: Check size fits PHH
@@ -329,6 +352,11 @@ products:
       - key: no_private_funds
         label: Advises no private funds
     disqualifiers:
+      - key: firm_type
+        # Advisers with HNW books who place the overlay themselves.
+        label: Firm type AcuBooth does not sell to
+        allow: [independent_ria, hybrid_ria, multi_family_office]
+        min_confidence: 60
       - key: left_schwab
         label: Moved away from Schwab
     criteria:
@@ -432,19 +460,32 @@ products:
         label: $100M+ in assets
         min: 100000000
       - key: supported_system
-        label: Some system Glynac works with
+        # Always passes: a system Glynac works with that we have not seen yet
+        # is unknown, never a reason to drop the firm.
+        label: Works with Microsoft, Salesforce, Redtail or Black Diamond, or not known yet
+    disqualifiers:
+      - key: firm_type
+        # Independent and hybrid RIAs and multi-family offices only: not custodians, wirehouses, broker-dealers, banks, insurers, asset or fund managers, TAMPs, robo-advisers or consultants.
+        label: Firm type Glynac does not sell to
+        allow: [independent_ria, hybrid_ria, multi_family_office]
+        min_confidence: 60
     criteria:
+      # Glynac works with four systems: Microsoft (Microsoft 365 email,
+      # Dynamics CRMs), Salesforce (including Practifi, XLR8 and Salentica,
+      # which are built on it), Redtail and Black Diamond. Evidence comes from
+      # public mail records, the firm's website and its brochure; a system not
+      # seen is missing data (no points, lower coverage), never a negative.
       - key: m365
-        label: Email runs on Microsoft 365
+        label: Microsoft 365 or Dynamics
         weight: 15
         levels:
-          - [100, "Confirmed"]
-          - [0, "Google Workspace or another provider"]
+          - [100, "Confirmed: Microsoft 365 email or a Dynamics CRM"]
+          - [0, "Email on Google Workspace or another provider, no Dynamics seen"]
       - key: black_diamond
         label: Black Diamond, Salesforce or Redtail
         weight: 15
         levels:
-          - [100, "Confirmed"]
+          - [100, "Confirmed (Salesforce includes Practifi and XLR8)"]
           - [0, "No confirmed supported portfolio or CRM system"]
       - key: best_trigger
         label: Best recent trigger

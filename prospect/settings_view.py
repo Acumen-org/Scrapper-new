@@ -6,6 +6,11 @@
   AI            the model provider behind Bellwether AI, its key and daily limit
   Verification  how email checking talks to mail servers, and whether it can
   Crawling      how firm websites and directories are read
+  Firm types    what kind of firm each adviser is (independent RIA, custodian,
+                wirehouse, asset manager ...): counts, spot checks, corrections
+                by hand, Reclassify all and Rescore all
+  Industry knowledge  the known names, firm-type wording, glossary and Acumen's
+                own purpose, which the classifier, scores and Bellwether AI read
   Jobs          every background job: running by itself, with Run now and Pause
   System        data freshness, run history, snapshots, record counts
   Review queue  the few decisions that need a person
@@ -16,6 +21,7 @@ nothing here re-checks the role; the forms still validate every value.
 
 from __future__ import annotations
 
+import urllib.parse
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Form, Query, Request
@@ -30,6 +36,8 @@ router = APIRouter()
 TABS = [("overview", "Overview", "/settings"), ("users", "Users", "/settings/users"),
         ("signin", "Sign-in", "/settings/signin"), ("ai", "AI", "/settings/ai"),
         ("verify", "Verification", "/settings/verify"), ("crawl", "Crawling", "/settings/crawl"),
+        ("firmtypes", "Firm types", "/settings/firmtypes"),
+        ("knowledge", "Industry knowledge", "/settings/knowledge"),
         ("jobs", "Jobs", "/settings/jobs"), ("system", "System", "/settings/system"),
         ("review", "Review queue", "/settings/review")]
 
@@ -537,6 +545,428 @@ def job_action(kind: str, action: str):
             "resume": "is running by itself again"}[action]
     return RedirectResponse(f"/settings/jobs?{qs_join(msg=jobs.BY_KIND[kind].label + ' ' + word + '.')}",
                             status_code=303)
+
+
+# ------------------------------------------------------------------ firm types
+
+def _ft_badge(t: dict | None) -> str:
+    """A firm's type as a small badge with its confidence and source."""
+    if not t:
+        return '<span class="chip line">Not classified yet</span>'
+    cls = "lead" if t.get("core") else ("line" if t["category"] == "unknown" else "")
+    src = {"manual": "set by hand", "ai": "AI", "rules": "rules"}.get(t.get("source"), "")
+    return (f'<span class="chip {cls}">{esc(t["label"])}</span> '
+            f'<span class="meta" style="text-transform:none;letter-spacing:0">'
+            f'{t["confidence"]}% . {esc(src)}</span>')
+
+
+def _ft_form(crd: str, current: str | None, back: str, compact: bool = False) -> str:
+    """Set a firm's type by hand, or hand it back to the rules."""
+    from . import firmtype
+    opts = ui.opt("", "" if current is None else "-",
+                  "Use the rules' answer" if current is None else "Back to the rules") + "".join(
+        ui.opt(c["key"], current or "", c["label"]) for c in firmtype.categories()
+        if c["key"] in firmtype.ASSIGNABLE)
+    note = ('' if compact else
+            '<input type="text" name="note" placeholder="Why (optional)" style="min-width:180px">')
+    return (f'<form method="post" action="/settings/firmtypes/override" class="row">'
+            f'<input type="hidden" name="crd" value="{esc(crd)}">'
+            f'<input type="hidden" name="back" value="{esc(back)}">'
+            f'<select name="category" style="max-width:240px">{opts}</select>{note}'
+            f'<button class="sm" type="submit">Set</button></form>')
+
+
+def _job_line(c, kind: str) -> str:
+    try:
+        r = c.execute("SELECT last_run_at, last_status, message, force FROM auto_task"
+                      " WHERE kind=?", (kind,)).fetchone()
+    except Exception:
+        c.rollback()
+        r = None
+    if not r:
+        return '<span class="meta">Not run yet</span>'
+    bits = []
+    if r["force"]:
+        bits.append("queued to run now")
+    if r["last_run_at"]:
+        bits.append(f'last ran {esc(ui.ago(r["last_run_at"]))}'
+                    + (f' ({esc(r["last_status"])})' if r["last_status"] else ""))
+    msg = f'<div class="meta">{esc((r["message"] or "")[:160])}</div>' if r["message"] else ""
+    return f'<span class="small soft">{"; ".join(bits) or "scheduled"}</span>{msg}'
+
+
+@router.get("/settings/firmtypes", response_class=HTMLResponse)
+def firmtypes_page(q: str = Query(""), cat: str = Query(""), msg: str = Query(""),
+                   err: str = Query("")):
+    from . import firmtype
+    from .names import nice_name
+    c = conn()
+    try:
+        counts = firmtype.counts(c)
+        found = firmtype.search(c, q, 25) if q.strip() else []
+        listed = firmtype.firms_in(c, cat, 50) if cat in firmtype.KEYS else []
+        manual = firmtype.overrides(c)
+        classify_line, rescore_line = _job_line(c, "classify"), _job_line(c, "rescore")
+    finally:
+        c.close()
+    reach: dict[str, list[str]] = {}
+    for k in products.product_keys():
+        rule = products.firm_type_rule(k)
+        if rule and not rule["off"]:
+            for a in rule["allow"]:
+                reach.setdefault(a, []).append(products.product(k)["short"])
+    total = sum(v["n"] for v in counts.values())
+    rows = []
+    for cdef in firmtype.categories():
+        k = cdef["key"]
+        n = counts.get(k, {})
+        lists = ("All lists" if k == "unknown" else ", ".join(reach.get(k, [])) or "None")
+        rows.append(
+            f'<tr><td style="width:28%"><b>{esc(cdef["label"])}</b>'
+            f'<div class="meta" style="text-transform:none;letter-spacing:0">{esc(cdef["description"])}</div></td>'
+            f'<td class="num"><a href="/settings/firmtypes?{qs_join(cat=k)}#firms">{n.get("n", 0):,}</a></td>'
+            f'<td class="num">{n.get("sec", 0):,}</td>'
+            f'<td class="num">{n.get("manual", 0):,}</td>'
+            f'<td class="num">{n.get("conf", 0):.0f}%</td>'
+            f'<td class="small">{esc(lists)}<div class="meta" style="text-transform:none;letter-spacing:0">'
+            f'{esc(cdef["treatment"])}</div></td></tr>')
+    summary = (f'<table><thead><tr><th>Type</th><th class="num">Firms</th>'
+               f'<th class="num">SEC-registered</th><th class="num">Set by hand</th>'
+               f'<th class="num">Avg confidence</th><th>Product lists</th></tr></thead>'
+               f'<tbody>{"".join(rows)}</tbody></table>'
+               f'<p class="meta">{total:,} firms classified. Which lists each type may appear on is set '
+               f'per product on its Scoring screen; a firm classified below that product\'s '
+               f'confidence threshold, or not classified, is never removed.</p>')
+    actions = f"""<div class="row" style="margin:6px 0 4px">
+<form method="post" action="/settings/firmtypes/reclassify"><button class="primary" type="submit">Reclassify all firms</button></form>
+<span>{classify_line}</span></div>
+<div class="row" style="margin:6px 0 18px">
+<form method="post" action="/settings/firmtypes/rescore"><button type="submit">Rescore all firms</button></form>
+<span>{rescore_line}</span></div>"""
+
+    def firm_rows(items: list[dict], back: str) -> str:
+        out = []
+        for r in items:
+            t = r.get("firm_class")
+            ev = "; ".join((t or {}).get("evidence") or [])
+            out.append(
+                f'<tr><td style="width:30%"><a href="/firm/{esc(r["crd"])}"><b>{esc(nice_name(r["legal_name"]))}</b></a>'
+                f'<div class="meta">CRD {esc(r["crd"])} . {esc(nice_name(r.get("city") or ""))} {esc(r.get("state") or "")}'
+                f' . {esc(firmtype._money(r.get("raum")))}</div></td>'
+                f'<td style="width:22%">{_ft_badge(t)}</td>'
+                f'<td class="small soft">{esc(ev[:260])}</td>'
+                f'<td style="width:30%">{_ft_form(r["crd"], (t or {}).get("category") if (t or {}).get("source") == "manual" else None, back)}</td></tr>')
+        return "".join(out)
+
+    search_html = f"""<section class="s"><h2>Find a firm and set its type</h2>
+<form method="get" action="/settings/firmtypes" class="row" style="margin-bottom:12px">
+<input type="text" name="q" value="{esc(q)}" placeholder="Firm name or CRD" style="min-width:300px">
+<button type="submit">Search</button></form>"""
+    if q.strip():
+        search_html += (f'<table><tbody>{firm_rows(found, qs_join(q=q))}</tbody></table>' if found
+                        else '<p class="muted">No firm matches.</p>')
+    search_html += "</section>"
+
+    cat_html = ""
+    if listed:
+        types = {}
+        c = conn()
+        try:
+            types = firmtype.get_many(c, [r["crd"] for r in listed])
+        finally:
+            c.close()
+        items = [dict(r, firm_class=types.get(r["crd"])) for r in listed]
+        cat_html = (f'<section class="s" id="firms"><h2>Largest firms typed {esc(firmtype.label(cat))}</h2>'
+                    f'<p class="lede">The 50 largest by assets, to check the rules. Set a type by hand '
+                    f'where they are wrong; it is kept through every reclassification.</p>'
+                    f'<table><tbody>{firm_rows(items, qs_join(cat=cat))}</tbody></table></section>')
+
+    man_rows = "".join(
+        f'<tr><td><a href="/firm/{esc(m["crd"])}"><b>{esc(nice_name(m.get("legal_name") or m["crd"]))}</b></a>'
+        f'<div class="meta">CRD {esc(m["crd"])}</div></td>'
+        f'<td>{_ft_badge(m)}</td>'
+        f'<td class="small">{esc(m.get("overridden_by") or "")}<div class="meta">{esc(ui.ago(m.get("overridden_at")))}</div></td>'
+        f'<td class="small soft">{esc(m.get("note") or "")}'
+        + (f'<div class="meta" style="text-transform:none;letter-spacing:0">The rules say '
+           f'{esc(firmtype.label(m.get("rules_category")))} ({m.get("rules_confidence") or 0}%)</div>'
+           if m.get("rules_category") and m.get("rules_category") != m["category"] else "")
+        + f'</td><td class="num"><form method="post" action="/settings/firmtypes/override">'
+          f'<input type="hidden" name="crd" value="{esc(m["crd"])}"><input type="hidden" name="category" value="">'
+          f'<button class="sm ghost" type="submit">Back to the rules</button></form></td></tr>'
+        for m in manual)
+    manual_html = (f'<section class="s"><h2>Set by hand ({len(manual)})</h2>'
+                   + (f'<table><thead><tr><th>Firm</th><th>Type</th><th>By</th><th>Note</th><th></th></tr></thead>'
+                      f'<tbody>{man_rows}</tbody></table>' if manual else
+                      '<p class="muted">No firm has a type set by hand yet.</p>')
+                   + '</section>')
+    rules_html = ('<section class="s"><h2>How the rules decide</h2><p class="lede">Tried in this order; '
+                  'the first that applies decides. Known names live in '
+                  '<a href="/settings/knowledge?kind=entity">Industry knowledge</a>.</p>'
+                  + "".join(f'<div class="gline" style="padding:6px 0"><b>{i}. {esc(t)}</b> '
+                            f'<span class="small soft">{esc(b)}</span></div>'
+                            for i, (t, b) in enumerate(firmtype.RULES_SUMMARY, 1))
+                  + '</section>')
+    inner = actions + summary + search_html + cat_html + manual_html + rules_html
+    return _frame("Firm types", "firmtypes",
+                  "What kind of firm each adviser is: an independent RIA, a custodian like Schwab, a "
+                  "wirehouse, an asset manager, a fund manager. Each product sells only to some types.",
+                  inner, msg, err)
+
+
+@router.post("/settings/firmtypes/override")
+async def firmtypes_override(request: Request):
+    from . import firmtype
+    form = await request.form()
+    crd = (form.get("crd") or "").strip()
+    category = (form.get("category") or "").strip() or None
+    note = (form.get("note") or "").strip()
+    # Only the search or the type being viewed comes back, rebuilt rather
+    # than echoed, so nothing but those two values reaches the redirect.
+    prev = urllib.parse.parse_qs(form.get("back") or "")
+    back = qs_join(q=(prev.get("q") or [""])[0][:120], cat=(prev.get("cat") or [""])[0][:40])
+    c = conn()
+    try:
+        t = firmtype.set_override(c, crd, category, current_owner(), note)
+    except ValueError as e:
+        return RedirectResponse("/settings/firmtypes?" + "&".join(
+            x for x in (back, qs_join(err=str(e))) if x), status_code=303)
+    finally:
+        c.close()
+    word = (f"set to {t['label']} by hand" if category else
+            f"back to the rules: {t['label']}") if t else "updated"
+    done = qs_join(msg=f"CRD {crd} {word}. Its scores are updated.")
+    return RedirectResponse("/settings/firmtypes?" + "&".join(x for x in (back, done) if x),
+                            status_code=303)
+
+
+@router.post("/settings/firmtypes/reclassify")
+def firmtypes_reclassify():
+    c = conn()
+    try:
+        # The job row exists once the app has started with the job registered;
+        # make sure of it, then ask for a run now.
+        c.execute("INSERT INTO auto_task (kind, desired_state) VALUES ('classify', 'running')"
+                  " ON CONFLICT (kind) DO NOTHING")
+        c.commit()
+        jobs.request_run(c, "classify")
+    finally:
+        c.close()
+    from .webapp import ensure_autopilot
+    ensure_autopilot()
+    return RedirectResponse("/settings/firmtypes?" + qs_join(
+        msg="Every firm will be reclassified within a minute; scores follow if any type changes."),
+        status_code=303)
+
+
+@router.post("/settings/firmtypes/rescore")
+def firmtypes_rescore():
+    c = conn()
+    try:
+        ok = products.request_rescore(conn=c)
+    finally:
+        c.close()
+    from .webapp import ensure_autopilot
+    ensure_autopilot()
+    if not ok:
+        return RedirectResponse("/settings/firmtypes?" + qs_join(
+            err="The Scores job is not set up yet; restart Bellwether."), status_code=303)
+    return RedirectResponse("/settings/firmtypes?" + qs_join(
+        msg="Every firm will be rescored for every product within a minute."), status_code=303)
+
+
+# ------------------------------------------------------------- industry knowledge
+
+def _kn_fields(it: dict | None, kind: str) -> str:
+    """The form fields for one item (or a new one) of a kind."""
+    from . import firmtype
+    it = it or {"title": "", "body": "", "data": {}}
+    d = it.get("data") or {}
+    title_label = {"category": "Name", "entity": "Name", "glossary": "Term",
+                   "product": "Product", "fact": "Title"}.get(kind, "Title")
+    body_label = {"category": "What it is", "entity": "Note", "glossary": "Meaning",
+                  "product": "What it is and who buys it", "fact": "Text"}.get(kind, "Text")
+    f = [f'<label style="max-width:640px">{title_label}<input type="text" name="title" '
+         f'value="{esc(it["title"])}" required></label>']
+    if kind == "category":
+        f.append(f'<label style="max-width:640px">Short label (badges)<input type="text" name="short" '
+                 f'value="{esc(d.get("short") or "")}"></label>')
+    if kind == "entity":
+        opts = "".join(ui.opt(c["key"], d.get("category") or "", c["label"])
+                       for c in firmtype.categories() if c["key"] in firmtype.ASSIGNABLE)
+        f.append(f'<label style="max-width:640px">Firm type<select name="category">{opts}</select></label>')
+        f.append(f'<label style="max-width:640px">Name patterns, one per line (matched against the '
+                 f'firm\'s own names)<textarea name="patterns" rows="4">{esc(chr(10).join(d.get("patterns") or []))}</textarea></label>')
+        f.append(f'<label style="max-width:640px">Owner patterns, one per line (matched against '
+                 f'companies owning 50%+ of a firm)<textarea name="parents" rows="3">{esc(chr(10).join(d.get("parents") or []))}</textarea></label>')
+        f.append(f'<label style="max-width:240px">Confidence (30 to 99, blank for 95)<input type="number" '
+                 f'name="confidence" min="30" max="99" value="{esc(d.get("confidence") or "")}"></label>')
+    f.append(f'<label style="max-width:640px">{body_label}<textarea name="body" rows="3">{esc(it.get("body") or "")}</textarea></label>')
+    if kind == "category":
+        f.append(f'<label style="max-width:640px">How Bellwether treats it<textarea name="treatment" rows="2">'
+                 f'{esc(d.get("treatment") or "")}</textarea></label>')
+    return "".join(f)
+
+
+@router.get("/settings/knowledge", response_class=HTMLResponse)
+def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str = Query("")):
+    from . import firmtype, knowledge
+    kind = kind if kind in knowledge.KINDS else "entity"
+    c = conn()
+    try:
+        all_items = knowledge.items(c)
+    finally:
+        c.close()
+    per = {k: sum(1 for i in all_items if i["kind"] == k) for k in knowledge.KINDS}
+    seg = ('<div class="seg" style="margin:0 0 14px">' + "".join(
+        f'<a class="{"on" if k == kind else ""}" href="/settings/knowledge?{qs_join(kind=k)}">'
+        f'{esc(label)} <span class="muted">{per[k]}</span></a>'
+        for k, label in knowledge.KINDS.items()) + '</div>')
+    items = [i for i in all_items if i["kind"] == kind]
+    if kind == "category":
+        order = {k: n for n, k in enumerate(firmtype.KEYS)}
+        items.sort(key=lambda i: order.get(i["key"], 99))
+    rows = []
+    for it in items:
+        d = it.get("data") or {}
+        state = ('<span class="chip line">Off</span>' if not it.get("active") else
+                 ('<span class="chip warn">Edited</span>' if it.get("edited") else
+                  '<span class="chip line">Shipped</span>'))
+        detail = ""
+        if kind == "entity":
+            detail = (f'<div class="small"><span class="chip">{esc(firmtype.label(d.get("category")))}</span></div>'
+                      f'<div class="meta" style="text-transform:none;letter-spacing:0">Names: '
+                      f'{esc(", ".join(d.get("patterns") or []) or "none")}</div>'
+                      + (f'<div class="meta" style="text-transform:none;letter-spacing:0">Owners: '
+                         f'{esc(", ".join(d.get("parents") or []))}</div>' if d.get("parents") else ""))
+        elif kind == "category":
+            detail = (f'<div class="meta" style="text-transform:none;letter-spacing:0">Badge: '
+                      f'{esc(d.get("short") or "")}. {esc(d.get("treatment") or "")}</div>')
+        buttons = []
+        if kind != "category":
+            buttons.append(
+                f'<form method="post" action="/settings/knowledge/toggle" style="display:inline">'
+                f'<input type="hidden" name="id" value="{it["id"]}">'
+                f'<input type="hidden" name="active" value="{0 if it.get("active") else 1}">'
+                f'<button class="sm ghost" type="submit">{"Switch off" if it.get("active") else "Switch on"}</button></form>')
+        shipped = knowledge.is_shipped(it)
+        if shipped and (it.get("edited") or not it.get("active")):
+            buttons.append(
+                f'<form method="post" action="/settings/knowledge/reset" style="display:inline" '
+                f'onsubmit="return confirm(\'Put this item back to the shipped version?\')">'
+                f'<input type="hidden" name="id" value="{it["id"]}">'
+                f'<button class="sm ghost" type="submit">Reset</button></form>')
+        if not shipped and kind != "category":
+            buttons.append(
+                f'<form method="post" action="/settings/knowledge/delete" style="display:inline" '
+                f'onsubmit="return confirm(\'Delete this item?\')">'
+                f'<input type="hidden" name="id" value="{it["id"]}">'
+                f'<button class="sm ghost" type="submit">Delete</button></form>')
+        edit = (f'<details class="source-help"><summary>Edit</summary>'
+                f'<form method="post" action="/settings/knowledge/save" style="margin-top:8px">'
+                f'<input type="hidden" name="id" value="{it["id"]}"><input type="hidden" name="kind" value="{esc(kind)}">'
+                f'{_kn_fields(it, kind)}<button class="primary sm" type="submit">Save</button></form></details>')
+        who = ("" if not it.get("edited") else
+               f'<div class="meta">{esc(it.get("updated_by") or "")} . {esc(ui.ago(it.get("updated_at")))}</div>')
+        rows.append(
+            f'<tr{" style=opacity:.55" if not it.get("active") else ""}><td style="width:30%"><b>{esc(it["title"])}</b>{who}</td>'
+            f'<td><div class="small soft">{esc(it.get("body") or "")}</div>{detail}{edit}</td>'
+            f'<td class="nowrap">{state}</td><td class="num nowrap">{" ".join(buttons)}</td></tr>')
+    add = ""
+    if kind != "category":
+        add = (f'<section class="s"><h2>Add</h2><form method="post" action="/settings/knowledge/save">'
+               f'<input type="hidden" name="kind" value="{esc(kind)}">{_kn_fields(None, kind)}'
+               f'<button class="primary" type="submit">Add</button></form></section>')
+    try:
+        digest = knowledge.ai_context()
+    except Exception:
+        digest = ""
+    ai_html = (f'<section class="s"><h2>What Bellwether AI reads</h2><p class="lede">A digest of '
+               f'this knowledge, about {len(digest.split()):,} words, goes with every question and '
+               f'brief, beside the data on the firm itself.</p><details class="source-help">'
+               f'<summary>Show the digest</summary><pre class="small soft" style="white-space:pre-wrap">'
+               f'{esc(digest)}</pre></details></section>') if digest else ""
+    inner = (seg + f'<p class="lede">{esc(knowledge.KIND_HELP.get(kind, ""))}</p>'
+             f'<table><tbody>{"".join(rows) or "<tr><td class=empty>Nothing here yet.</td></tr>"}</tbody></table>'
+             + add + ai_html)
+    return _frame("Industry knowledge", "knowledge",
+                  "What Bellwether knows about the adviser industry and about Acumen's own purpose. "
+                  "The classifier, the scores and Bellwether AI all read it.", inner, msg, err)
+
+
+@router.post("/settings/knowledge/save")
+async def knowledge_save(request: Request):
+    from . import knowledge
+    form = await request.form()
+    kind = form.get("kind") or ""
+    raw_id = (form.get("id") or "").strip()
+    back = f"/settings/knowledge?{qs_join(kind=kind)}"
+    data = {"category": form.get("category"), "patterns": form.get("patterns") or "",
+            "parents": form.get("parents") or "", "confidence": form.get("confidence"),
+            "short": form.get("short"), "treatment": form.get("treatment")}
+    c = conn()
+    try:
+        knowledge.save_item(c, int(raw_id) if raw_id.isdigit() else None, kind,
+                            form.get("title") or "", form.get("body") or "", data, current_owner())
+        if kind == "entity":
+            c.execute("INSERT INTO auto_task (kind, desired_state) VALUES ('classify', 'running')"
+                      " ON CONFLICT (kind) DO NOTHING")
+            c.commit()
+            jobs.request_run(c, "classify")
+    except ValueError as e:
+        return RedirectResponse(f"{back}&{qs_join(err=str(e))}", status_code=303)
+    finally:
+        c.close()
+    msg = "Saved."
+    if kind == "entity":
+        from .webapp import ensure_autopilot
+        ensure_autopilot()
+        msg = "Saved. Every firm will be reclassified within a minute."
+    return RedirectResponse(f"{back}&{qs_join(msg=msg)}", status_code=303)
+
+
+@router.post("/settings/knowledge/toggle")
+def knowledge_toggle(id: int = Form(...), active: int = Form(...)):
+    from . import knowledge
+    c = conn()
+    try:
+        it = knowledge.get(c, id)
+        knowledge.set_active(c, id, bool(active), current_owner())
+    except ValueError as e:
+        return RedirectResponse(f"/settings/knowledge?{qs_join(err=str(e))}", status_code=303)
+    finally:
+        c.close()
+    kind = (it or {}).get("kind", "entity")
+    return RedirectResponse(f"/settings/knowledge?{qs_join(kind=kind, msg='Switched on.' if active else 'Switched off.')}",
+                            status_code=303)
+
+
+@router.post("/settings/knowledge/reset")
+def knowledge_reset(id: int = Form(...)):
+    from . import knowledge
+    c = conn()
+    try:
+        it = knowledge.get(c, id)
+        ok = knowledge.reset_item(c, id)
+    finally:
+        c.close()
+    kind = (it or {}).get("kind", "entity")
+    return RedirectResponse(f"/settings/knowledge?{qs_join(kind=kind, msg='Back to the shipped version.' if ok else '', err='' if ok else 'Nothing to reset.')}",
+                            status_code=303)
+
+
+@router.post("/settings/knowledge/delete")
+def knowledge_delete(id: int = Form(...)):
+    from . import knowledge
+    c = conn()
+    try:
+        it = knowledge.get(c, id)
+        knowledge.delete_item(c, id)
+    except ValueError as e:
+        return RedirectResponse(f"/settings/knowledge?{qs_join(err=str(e))}", status_code=303)
+    finally:
+        c.close()
+    kind = (it or {}).get("kind", "entity")
+    return RedirectResponse(f"/settings/knowledge?{qs_join(kind=kind, msg='Deleted.')}", status_code=303)
 
 
 # ------------------------------------------------------------------ system

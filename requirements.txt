@@ -34,6 +34,12 @@ cryptography==50.0.2
 # browser itself is installed in the image separately (see the Dockerfile).
 scrapling[fetchers]==0.4.15
 
+# Free web search (prospect/websearch.py): public LinkedIn profiles and
+# published addresses through search engines, with no API key and no LinkedIn
+# account. MIT licensed (github.com/deedy5/ddgs); primp is its HTTP client.
+ddgs==9.16.0
+primp==2.0.1
+
 # Bellwether AI with Claude, through Anthropic's SDK. Eden AI and other
 # OpenAI-compatible providers are called over plain HTTP with requests.
 anthropic==1.11.0

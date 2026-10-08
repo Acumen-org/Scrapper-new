@@ -194,6 +194,17 @@ def api_crawl(crd: str, url: str = Form("")):
                             "here in a few minutes.")
 
 
+@router.post("/api/firm/{crd}/hunt")
+def api_hunt(crd: str):
+    """Every contact discovery step for this one firm, now, in the background."""
+    if not CRD_RE.match(crd):
+        return _j(False, message="Not a firm")
+    _bg([sys.executable, "-m", "scripts.find_contacts", "--crd", crd], "find_contacts.log")
+    return _j(True, message="Searching now: website, web search, email checks against the "
+                            "mail server and AI research. New contacts appear here as they are "
+                            "confirmed, usually within a few minutes.")
+
+
 @router.post("/api/firm/{crd}/contact")
 def api_add_contact(crd: str, name: str = Form(""), title: str = Form(""),
                     email: str = Form(""), phone: str = Form("")):

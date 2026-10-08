@@ -240,7 +240,8 @@ def _init_once() -> None:
     for mod in ("scripts.triggers", "scripts.build_firm_history", "scripts.ingest_13f_index",
                 "scripts.match_13f", "scripts.ingest_13f_holdings", "scripts.brochures",
                 "scripts.ingest_schedule_a", "scripts.web_enrich", "scripts.mail_platform",
-                "scripts.ingest_adv_extra", "scripts.custodian_share", "scripts.segment_real_estate"):
+                "scripts.ingest_adv_extra", "scripts.custodian_share", "scripts.segment_real_estate",
+                "scripts.ingest_offices"):
         try:
             m = __import__(mod, fromlist=["SCHEMA"])
             c.executescript(m.SCHEMA)
@@ -262,7 +263,7 @@ def _init_once() -> None:
     settings.init(c)
     users.init(c)
     for mod in ("contacts", "jobs", "ai", "roles", "people", "verify", "directory",
-                "websignals"):
+                "websignals", "firmtype", "knowledge", "websearch"):
         _init_optional(c, mod)
     c.close()
 
@@ -328,6 +329,32 @@ def _init_once() -> None:
         except Exception:
             pass
     threading.Thread(target=_warm, daemon=True, name="warm-home").start()
+
+    # A new install (or the first boot of this release) has no People index
+    # yet: build it now rather than wait for the background worker's turn.
+    def _people_index():
+        b = db.connect()
+        try:
+            from . import people_index
+            if people_index.exists(b):
+                return
+            if not b.execute("SELECT pg_try_advisory_lock(424243) ok").fetchone()["ok"]:
+                return
+            b.commit()
+            people_index.build(b)
+        except Exception:
+            try:
+                b.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                b.execute("SELECT pg_advisory_unlock_all()")
+                b.commit()
+            except Exception:
+                pass
+            b.close()
+    threading.Thread(target=_people_index, daemon=True, name="people-index").start()
 
     # The scheduler runs itself. One worker wins the claim; the other simply
     # does not schedule. BELLWETHER_SCHEDULER=0 switches it off, for a test copy
@@ -604,6 +631,23 @@ ICONS = {
     "settings": f'<svg viewBox="0 0 24 24" {I}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
     "search": f'<svg viewBox="0 0 24 24" {I}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
     "out": f'<svg viewBox="0 0 24 24" {I}><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg>',
+    "spark": f'<svg viewBox="0 0 24 24" {I}><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
+    "mail": f'<svg viewBox="0 0 24 24" {I}><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3.5 7l8.5 6 8.5-6"/></svg>',
+    "phone": f'<svg viewBox="0 0 24 24" {I}><path d="M5 3.5h3.2l1.6 4.3-2.2 1.5a11 11 0 0 0 7.1 7.1l1.5-2.2 4.3 1.6V19a1.8 1.8 0 0 1-2 1.8A16.6 16.6 0 0 1 3.2 5.5 1.8 1.8 0 0 1 5 3.5z"/></svg>',
+    "linkedin": '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.98 3.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM3 9.75h4v11H3zm6.5 0h3.8v1.6h.06c.53-1 1.83-2.06 3.77-2.06 4.03 0 4.77 2.65 4.77 6.1v5.36h-4v-4.75c0-1.13-.02-2.6-1.58-2.6-1.59 0-1.83 1.24-1.83 2.52v4.83h-4z"/></svg>',
+    "globe": f'<svg viewBox="0 0 24 24" {I}><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.8 3.9 5.8 3.9 9s-1.3 6.2-3.9 9c-2.6-2.8-3.9-5.8-3.9-9S9.4 5.8 12 3z"/></svg>',
+    "pin": f'<svg viewBox="0 0 24 24" {I}><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>',
+    "check": f'<svg viewBox="0 0 24 24" {I}><path d="M4.5 12.5l5 5 10-11"/></svg>',
+    "plus": f'<svg viewBox="0 0 24 24" {I}><path d="M12 5v14M5 12h14"/></svg>',
+    "arrow": f'<svg viewBox="0 0 24 24" {I}><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+    "send": f'<svg viewBox="0 0 24 24" {I}><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
+    "lists": f'<svg viewBox="0 0 24 24" {I}><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>',
+    "filter": f'<svg viewBox="0 0 24 24" {I}><path d="M4 6h16M7 12h10M10 18h4"/></svg>',
+    "shield": f'<svg viewBox="0 0 24 24" {I}><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>',
+    "clock": f'<svg viewBox="0 0 24 24" {I}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    "star": f'<svg viewBox="0 0 24 24" {I}><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.8z"/></svg>',
+    "bolt": f'<svg viewBox="0 0 24 24" {I}><path d="M13 2.5L4.5 13.5H12l-1 8 8.5-11H12z"/></svg>',
+    "chart": f'<svg viewBox="0 0 24 24" {I}><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
 }
 FAMILY_COLOUR = {"PHH": "#c65454", "AcuBooth": "#cfa95c", "Glynac": "#63aa7c"}
 
@@ -691,6 +735,8 @@ def nav(active: str) -> str:
         return (f'<a class="i{" on" if key == active else ""}" href="{href}">'
                 f'{ic}{esc(label)}{c}</a>')
 
+    # Product lists sit right under Home and stay open on every page: they are
+    # where the work starts, so they must never be one click away or below the fold.
     plist = "".join(
         item(f"list:{k}", f"/lists/{k}", products.product(k)["name"], n["lists"].get(k),
              dot=FAMILY_COLOUR.get(products.product(k)["family"], "#888"))
@@ -709,28 +755,30 @@ def nav(active: str) -> str:
             role = "Owner, " + ", ".join(acct["families"])
         who = (f'<div class="me"><div class="av">{esc(initials(acct.get("name") or ""))}</div>'
                f'<div class="who"><b>{esc(acct.get("name") or "")}</b><span>{esc(role)}</span></div>'
-               f'<form method="post" action="/logout"><button type="submit" title="Sign out">'
+               f'<form method="post" action="/logout"><button type="submit" title="Sign out" aria-label="Sign out">'
                f'{ICONS["out"]}</button></form></div>')
     quit_link = ("" if MANAGED or not users.is_admin(acct)
-                 else f'<a href="/quit">Quit {APP_NAME}</a><br>')
+                 else f' . <a href="/quit">Quit</a>')
     feed = esc(n["feed"]) if n.get("feed") else "none yet"
     pages = json.dumps(_pages_for(acct))
     return (f'<script>window.BW_PAGES={pages};</script>' + PALETTE_HTML +
-            '<header class="mobile-nav"><a href="/">Bellwether</a>'
+            '<header class="mobile-nav"><a href="/"><img src="/static/mark.svg" alt="">Bellwether</a>'
             '<button type="button" data-nav-toggle aria-controls="main-nav" aria-expanded="false">Menu</button></header>'
             '<nav class="side" id="main-nav" aria-label="Main navigation">'
-            f'<a class="brand" href="/"><img src="/static/mark.svg" width="30" height="30" alt=""><div class="t">{APP_NAME}</div></a>'
+            f'<a class="brand" href="/"><img src="/static/mark.svg" width="30" height="30" alt="">'
+            f'<div class="t">{APP_NAME}<small>Acumen Strategy</small></div></a>'
             f'<button class="find" type="button" onclick="palShow()">{ICONS["search"]}'
-            'Find anything<kbd>Ctrl K</kbd></button>'
+            'Search firms and people<kbd>Ctrl K</kbd></button>'
             + item("home", "/", "Home")
+            + item("ask", "/ask", "Bellwether AI", icon="spark")
+            + '<div class="grp">Product lists</div><div class="lists">' + plist + '</div>'
+            + '<div class="grp">Explore</div>'
             + item("firms", "/firms", "Firms")
             + item("people", "/people", "People")
             + item("signals", "/signals", "Signals", n.get("signals"), hot=True)
-            + item("ask", "/ask", "Bellwether AI")
             + item("saved", "/saved", "Saved lists")
-            + f'<details class="nav-products"{" open" if active.startswith("list:") else ""}><summary>Product lists</summary>{plist}</details>'
             + data
-            + f'<div class="foot">{who}<div class="fresh">{quit_link}SEC feed of {feed}</div></div>'
+            + f'<div class="foot">{who}<div class="fresh"><i></i>SEC data of {feed}{quit_link}</div></div>'
             + '</nav>')
 
 
@@ -742,8 +790,8 @@ def page(title: str, active: str, body: str, css: str = "", js: str = "",
         f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<meta name="viewport" content="width=device-width,initial-scale=1">'
         f'<title>{esc(title)} . {APP_NAME}</title>{FAVICON}'
+        f'<link rel="preload" href="/static/fonts/InstrumentSans.ttf" as="font" type="font/ttf" crossorigin>'
         f'<link rel="stylesheet" href="{asset("app.css")}">'
-        f'<link rel="stylesheet" href="{asset("workspace.css")}">'
         f'{("<style>" + css + "</style>") if css else ""}{SPECULATION}</head>'
         f'<body>{nav(active)}<main id="main-content">{body}</main>'
         f'<script src="{asset("app.js")}" defer></script>{orb}'
@@ -973,21 +1021,57 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
                        f'<summary>Sign in with a password</summary>{form}</details>')
         else:
             pw_form = form
-    hint = '<p class="hint">Use your Acumen Strategy account.</p>' if ms else ""
+    if ms and pw_form:
+        pw_form = '<div class="or">or</div>' + pw_form
+    hint = (f'<p class="hint">{ICONS["shield"]}Secured by Microsoft Entra ID for Acumen Strategy</p>'
+            if ms else "")
+    caps = "".join(f'<span><b>{esc(v)}</b>{esc(k)}</span>' for k, v in _signin_stats())
     return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to {APP_NAME}</title>{FAVICON}
-<link rel="stylesheet" href="{asset('app.css')}"><link rel="stylesheet" href="{asset('workspace.css')}"></head>
+<link rel="stylesheet" href="{asset('app.css')}"></head>
 <body class="signin-page">
+<div class="signin-wrap">
 <main class="signin">
-<a class="signin-wordmark" href="/login"><img src="/static/mark.svg" width="36" height="36" alt="">{APP_NAME}</a>
-<h1>Welcome back</h1>
-<p class="sub">Sign in to your intelligence workspace.</p>
+<div class="logo-row"><a class="wm" href="/login"><img src="/static/mark.svg" width="34" height="34" alt="">{APP_NAME}</a>
+<span class="ai-dot"><canvas data-orb="breathing" data-size="20" data-px="18" aria-hidden="true"></canvas>AI ready</span></div>
+<h1>Sign in to {APP_NAME}</h1>
+<p class="sub">Go-to-market intelligence on every US advisory firm and the people who run them.</p>
 {err}{ms_btn}{pw_form}
 {hint}
-</main><footer class="signin-owner">Bellwether by Acumen Strategy</footer>
+</main>
+<div class="signin-caps">{caps}</div>
+<div class="signin-owner">Acumen Strategy</div>
+</div>
 <script type="module" src="{asset('orb.js')}"></script></body></html>""",
                         status_code=status or (200 if not error else 401))
+
+
+_SIGNIN_CACHE: dict = {"t": 0.0, "v": []}
+
+
+def _signin_stats() -> list[tuple[str, str]]:
+    """Three headline numbers under the sign-in card, refreshed every ten
+    minutes; estimates are fine here and keep the public page cheap."""
+    import time as _time
+    if _time.monotonic() - _SIGNIN_CACHE["t"] < 600 and _SIGNIN_CACHE["v"]:
+        return _SIGNIN_CACHE["v"]
+    out: list[tuple[str, str]] = []
+    try:
+        c = conn()
+        try:
+            firms = c.execute("SELECT COUNT(*) n FROM firm_current").fetchone()["n"]
+            people = c.execute("SELECT GREATEST(reltuples, 0)::bigint n FROM pg_class"
+                               " WHERE relname='person'").fetchone()
+            out = [("advisory firms", f"{firms:,}")]
+            if people and people["n"]:
+                out.append(("people", f"{int(people['n']):,}"))
+        finally:
+            c.close()
+    except Exception:
+        out = []
+    _SIGNIN_CACHE.update(t=_time.monotonic(), v=out)
+    return out
 
 
 @app.get("/login", response_class=HTMLResponse)

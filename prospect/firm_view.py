@@ -35,13 +35,13 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import ai, contacts, products, roles, ui
-from .webapp import (STATUSES, TYPE_LABEL, caveat, conn, current_account, current_owner, esc,
+from .webapp import (ICONS, STATUSES, TYPE_LABEL, caveat, conn, current_account, current_owner, esc,
                      escn, missing_chip, money, nice_name, page, score_cell)
 
 router = APIRouter()
@@ -50,10 +50,10 @@ router = APIRouter()
 # crafted path can never become part of a Location header or a stored row.
 CRD_RE = re.compile(r"^[0-9]{1,12}$")
 
-SOURCE_LABEL = {"adv": "Form ADV", "brochure": "their brochure", "website": "their website",
-                "vcard": "a vCard on their site", "directory": "a directory",
-                "pattern": "the firm's email pattern", "ai": "AI reading of their site",
-                "manual": "added by hand"}
+# Firm types that are not buyers for any product: shown in red on the badge.
+OUT_TYPES = {"custodian", "wirehouse", "independent_bd", "bank_trust", "insurance"}
+
+SOURCE_LABEL = ui.SOURCE_LABEL
 
 
 def _pretty_name(filed: str) -> str:
@@ -240,57 +240,147 @@ def _breakdown(crd: str, r) -> str:
 # ------------------------------------------------------------------ people
 
 def _contact_line(cp, show_verify=True) -> str:
-    """One email or phone with where it came from and how sure we are."""
+    """One email, phone or profile with where it came from and how sure we are."""
     src = SOURCE_LABEL.get(cp["source"], cp["source"])
     if cp["kind"] == "email":
         status = cp["verify_status"]
         label = contacts.VERIFY_LABEL.get(status, status)
-        if cp["source"] == "pattern" and status in ("unverified", "queued"):
-            label = "Guess"
+        if status != "valid" and cp["source"] != "pattern":
+            label = "Published"
         btn = ""
-        if show_verify and status not in ("invalid", "no_mail_server"):
-            btn = (f' <button class="sm ghost" data-post="/api/contact/{cp["id"]}/verify" '
-                   f'data-busy="Checking" data-target="#vs{cp["id"]}">Recheck</button>')
-        role = ' <span class="muted">shared inbox</span>' if cp["is_role"] else ""
-        return (f'<span class="ctline"><a href="mailto:{esc(cp["value"])}">{esc(cp["value"])}</a>'
-                f'<span id="vs{cp["id"]}"><span class="chip v-{esc(status)}" title="From '
-                f'{esc(src)}; confidence {cp["confidence"]}">{esc(label)}</span></span>{role}{btn}</span>')
-    lab = {"direct": "direct", "mobile": "mobile", "office": "office", "main": "main",
-           "toll_free": "toll free"}.get(cp["label"] or "", "")
-    return (f'<span class="ctline"><span>{esc(cp["value"])}</span>'
-            f'<span class="muted small" title="From {esc(src)}">{esc(lab or "phone")}</span></span>')
+        if show_verify and status not in ("invalid", "no_mail_server", "valid"):
+            btn = (f'<button class="sm ghost" data-post="/api/contact/{cp["id"]}/verify" '
+                   f'data-busy="Checking" data-target="#vs{cp["id"]}">Check</button>')
+        role = ' <span class="muted small">shared inbox</span>' if cp["is_role"] else ""
+        return (f'<div class="cline{" ok" if status == "valid" else ""}">{ICONS["mail"]}'
+                f'<a href="mailto:{esc(cp["value"])}" title="{esc(cp["value"])}">{esc(cp["value"])}</a>{role}'
+                f'<span id="vs{cp["id"]}"><span class="chip v-{esc(status)}" title="From {esc(src)};'
+                f' confidence {cp["confidence"]}">{esc(label)}</span></span>{btn}</div>')
+    if cp["kind"] == "linkedin":
+        return (f'<div class="cline">{ICONS["linkedin"]}<a href="{esc(cp["value"])}" target="_blank" '
+                f'rel="noopener" data-noprefetch>LinkedIn profile</a>'
+                f'<span class="chip{" good" if cp["verify_status"] == "matched" else ""}" title="From {esc(src)}">'
+                f'{"Matched" if cp["verify_status"] == "matched" else "Likely match"}</span></div>')
+    lab = {"direct": "Direct", "mobile": "Mobile", "office": "Office", "main": "Main line",
+           "toll_free": "Toll free"}.get(cp["label"] or "", "Phone")
+    return (f'<div class="cline">{ICONS["phone"]}<a href="tel:{esc(cp["value"])}">{esc(cp["value"])}</a>'
+            f'<span class="chip line" title="From {esc(src)}">{esc(lab)}</span></div>')
+
+
+PEOPLE_CARDS_MAX = 60
+
+
+def _person_card(person: dict, key: str, points: list, hunt: dict | None = None) -> str:
+    name = person.get("name") or "Name unavailable"
+    title = roles.clean_title(person.get("title") or "") or (
+        "Officer" if person.get("is_officer") else "Registered representative")
+    role = roles.classify(person.get("title") or "")
+    chips = []
+    if person.get("is_officer"):
+        chips.append('<span class="chip">Officer</span>')
+    for d in (person.get("designations") or [])[:3]:
+        label = d if isinstance(d, str) else (d.get("name") or d.get("code") or "")
+        if label and len(label) <= 12:
+            chips.append(f'<span class="chip">{esc(label)}</span>')
+    if person.get("has_disclosure"):
+        chips.append('<span class="chip warn">Disclosure</span>')
+    meta = []
+    if person.get("since"):
+        meta.append(f'Since {esc(person["since"][:7])}')
+    if person.get("prior_firm"):
+        pk = person.get("prior_firm_pk")
+        prior = (f'<a href="/firm/{esc(pk)}">{escn(person["prior_firm"])}</a>'
+                 if pk and str(pk).isdigit() else escn(person["prior_firm"]))
+        meta.append(f"from {prior}")
+    if person.get("branch_city"):
+        meta.append(esc(" ".join(x for x in (person["branch_city"], person.get("branch_state") or "") if x)))
+    # Best first: verified email, published email, direct line, office line, profile.
+    order = {"email": 0, "phone": 1, "linkedin": 2}
+    pts = sorted(points, key=lambda cp: (order.get(cp["kind"], 3), cp["verify_status"] != "valid",
+                                         -(cp["confidence"] or 0)))
+    lines = "".join(_contact_line(cp) for cp in pts[:5])
+    if not any(cp["kind"] == "email" for cp in points):
+        lines += _hunt_line(hunt)
+    iapd = (f'<a class="more" href="{esc(person["iapd_link"])}" target="_blank" rel="noopener" '
+            f'data-noprefetch>SEC record</a>' if person.get("iapd_link") else "")
+    anchor = "p-" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
+    return (f'<article class="pcard" id="{anchor}"><div class="top">{ui.mono(name, "p")}<div>'
+            f'<span class="nm">{esc(name)}</span><div class="ttl">{esc(title)}'
+            f'{" . " + esc(roles.ROLE_LABEL.get(role, "")) if role and role not in ("other", "") else ""}</div>'
+            f'<div class="meta">{" . ".join(meta)}</div></div>{iapd}</div>'
+            f'{("<div class=pills>" + "".join(chips) + "</div>") if chips else ""}'
+            f'<div class="reach">{lines}</div></article>')
+
+
+# Hunt states that are settled for now: shown without the pulsing dot.
+HUNT_SETTLED = {"exhausted", "accept_all_domain", "no_mail_server", "no_domain", "free_mail",
+                "blocked", "unnamed", "unverifiable"}
+
+
+def _hunt_line(hunt: dict | None) -> str:
+    """Where the email hunt stands for one person, in words."""
+    if not hunt:
+        return ('<div class="hunt" title="Website, web search, every common pattern checked '
+                'with the mail server, and AI research"><i></i>Finding a verified email</div>')
+    tried = hunt.get("tried") or 0
+    extra = f" . {tried} address{'es' if tried != 1 else ''} checked" if tried else ""
+    when = ""
+    if hunt.get("next_try_at") and hunt["state"] in HUNT_SETTLED:
+        when = f" . trying again {ui.ago(hunt['next_try_at'])}"
+    settled = hunt["state"] in HUNT_SETTLED
+    return (f'<div class="hunt{" done" if settled else ""}" title="{esc(hunt.get("detail") or hunt["label"])}">'
+            f'<i></i>{esc(hunt["label"])}{esc(extra)}{esc(when)}</div>')
 
 
 def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: list,
-                    unmatched: list, stats: dict | None) -> str:
-    cards, unresolved, seen = [], [], set()
-    records = [(person, f"i:{person['indvl_pk']}") for person in roster]
-    records += [(dict(name=person['person_name'], title=person.get('title')), person['person_key']) for person in web_people]
-    records += [(dict(name=_pretty_name(person['name']), title=person.get('title')), contacts.name_key(_pretty_name(person['name']))) for person in unmatched]
+                    unmatched: list, stats: dict | None,
+                    hunts: dict | None = None) -> tuple[str, list[str], dict]:
+    """Every person as a card, the ones we can reach first. Returns the HTML,
+    the top cards for the overview, and the counts for the header."""
+    records, seen = [], set()
+    for person in roster:
+        records.append((person, f"i:{person['indvl_pk']}"))
+    for person in web_people:
+        records.append((dict(name=person["person_name"], title=person.get("title")), person["person_key"]))
+    for person in unmatched:
+        nm = _pretty_name(person["name"])
+        records.append((dict(name=nm, title=person.get("title"), is_officer=True), contacts.name_key(nm)))
+    uniq = []
     for person, key in records:
         if key in seen:
             continue
         seen.add(key)
-        name = person.get('name') or 'Name unavailable'
-        title = roles.clean_title(person.get('title') or 'Registered adviser')
-        points = cps_by_person.get(key, [])
-        if not points:
-            unresolved.append(f'<li><strong>{esc(name)}</strong><span>{esc(title)}</span></li>')
-            continue
-        details = []
-        if person.get('since'):
-            details.append(f'At the firm since {esc(person["since"][:7])}')
-        if person.get('prior_firm'):
-            details.append(f'Previously at {escn(person["prior_firm"])}')
-        if person.get('has_disclosure'):
-            details.append('Disclosure recorded in the SEC roster')
-        if person.get('iapd_link'):
-            details.append(f'<a href="{esc(person["iapd_link"])}" target="_blank" rel="noopener">SEC profile</a>')
-        more = ('<details class="person-extra"><summary>Background</summary><p>' + '<br>'.join(details) + '</p></details>') if details else ''
-        cards.append(f'<article class="contact-person"><div class="contact-person-heading"><span class="person-initial" aria-hidden="true">{esc(name[:1])}</span><div><h3>{esc(name)}</h3><span>{esc(title)}</span></div></div><div class="person-reach">' + ''.join(f'<div>{_contact_line(cp)}</div>' for cp in points) + f'</div>{more}</article>')
-    discovery = (f'<details class="research-disclosure"><summary>Contact discovery <span class="meta">{len(unresolved)} unresolved</span></summary><p class="meta">Website, directory and verification jobs continue looking for these people.</p><ul class="discovery-people">' + ''.join(unresolved) + '</ul></details>') if unresolved else ''
-    stats_html = (f'<p class="people-summary"><strong>{len(cards)}</strong> people ready to contact <span>{len(seen)} people recorded</span></p>')
-    return stats_html + ('<div class="contact-people">' + ''.join(cards) + '</div>' if cards else '<div class="discovery-empty"><h3>Contact research is in progress</h3><p>Verified emails and sourced phone numbers appear here as they are found.</p></div>') + discovery
+        uniq.append((person, key))
+
+    def rank(item):
+        person, key = item
+        pts = cps_by_person.get(key, [])
+        has_mail = any(cp["kind"] == "email" for cp in pts)
+        has_direct = any(cp["kind"] == "phone" and cp["label"] in ("direct", "mobile") for cp in pts)
+        leader = roles.classify(person.get("title") or "") in ("leadership", "exec", "owner")
+        return (not has_mail, not person.get("is_officer"), not leader, not has_direct,
+                person.get("since") or "9999", person.get("name") or "")
+    uniq.sort(key=rank)
+    counts = {"people": len(uniq), "email": 0, "direct": 0, "linkedin": 0}
+    for person, key in uniq:
+        pts = cps_by_person.get(key, [])
+        counts["email"] += any(cp["kind"] == "email" for cp in pts)
+        counts["direct"] += any(cp["kind"] == "phone" and cp["label"] in ("direct", "mobile") for cp in pts)
+        counts["linkedin"] += any(cp["kind"] == "linkedin" for cp in pts)
+    hunts = hunts or {}
+    cards = [_person_card(person, key, cps_by_person.get(key, []), hunts.get(key))
+             for person, key in uniq[:PEOPLE_CARDS_MAX]]
+    more = ""
+    if len(uniq) > PEOPLE_CARDS_MAX:
+        more = (f'<p class="small soft" style="margin-top:14px">Showing {PEOPLE_CARDS_MAX} of '
+                f'{len(uniq):,}, reachable people first. <a href="/people?q={esc(crd)}">See everyone '
+                f'at this firm in People</a>.</p>')
+    if not cards:
+        html = ('<div class="card empty"><b>No people on record yet</b>The SEC roster, Schedule A '
+                'and the website reader fill this in; use Find contacts now to start.</div>')
+    else:
+        html = f'<div class="people-grid">{"".join(cards)}</div>{more}'
+    return html, cards[:6], counts
 
 
 def _hiring_section(c, crd: str, stats, mv, series) -> str:
@@ -338,6 +428,24 @@ def _hiring_section(c, crd: str, stats, mv, series) -> str:
             if dests:
                 bits.append(f"<b>Leavers went to</b> {fl(dests)}.")
             out += f'<p class="small soft" style="margin-top:12px">{" ".join(bits)}</p>'
+    return out
+
+
+def _hiring_glance(stats, series) -> str:
+    """The overview's hiring card: the year's moves as three numbers, then the
+    last decade as bars."""
+    if not stats and not series:
+        return '<p class="muted">Joins and departures appear once the SEC roster loads.</p>'
+    out = ""
+    if stats:
+        net = (stats.get("hires_12m") or 0) - (stats.get("departures_12m") or 0)
+        out = (f'<div class="facts" style="margin-bottom:14px"><div><div class="l">Joined, 12 months</div>'
+               f'<div class="v ok">+{stats.get("hires_12m") or 0}</div></div>'
+               f'<div><div class="l">Left, 12 months</div><div class="v bad">'
+               f'{-(stats.get("departures_12m") or 0) or 0}</div></div>'
+               f'<div><div class="l">Net</div><div class="v">{net:+d}</div></div></div>')
+    if series:
+        out += ui.year_bars(series[-8:], w=420, h=130)
     return out
 
 
@@ -408,6 +516,15 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     web_pages = web_pages[0]["n"] if web_pages else 0
     brief = rows("SELECT content, model, created_at FROM ai_note WHERE crd=? AND kind='brief'", (crd,))
     brief = dict(brief[0]) if brief else None
+    offices = rows("SELECT * FROM firm_office WHERE crd=? ORDER BY city LIMIT 60", (crd,))
+    attempts = rows("SELECT COUNT(*) n, COUNT(DISTINCT person_key) p FROM email_attempt WHERE crd=?", (crd,))
+    attempts = attempts[0] if attempts else None
+    ftype = None
+    try:
+        from . import firmtype
+        ftype = firmtype.get(c, crd)
+    except Exception:
+        c.rollback()
 
     # People, from the SEC roster when it has loaded, else Schedule A alone.
     roster, stats, mv, series, unmatched = [], None, {"joined": [], "left": []}, [], []
@@ -440,12 +557,10 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     focus = p if p in products.product_keys() else ""
     hs = (f["hnw_aum"] or 0) / f["raum"] * 100 if f["raum"] else 0
     scored = sorted([r for r in results.values() if r.status == "scored"], key=lambda r: -r.score)
-    best = scored[0] if scored else None
-    flags = ui.contact_flags(c, [crd])[crd]
 
     # ---- signals timeline
     trow = []
-    for t in trigs[:40]:
+    for t in trigs[:60]:
         kind = products.trigger_products().get(t["trigger_type"], {}).get("kind")
         chip = "dis" if kind == "disqualifier" else "lead"
         old = (" " + caveat("archive_as_of", "archive") if t["detected_date"] < "2025-01-01" else "")
@@ -455,12 +570,17 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                     f'<div class="why">{esc(t["description"])}'
                     f'{" <span class=chip>" + esc(t["state"]) + "</span>" if t["state"] else ""}</div></div>')
     trig_html = (f'<div class="timeline">{"".join(trow)}</div>' if trow else
-                 '<p class="muted">No recorded signals.</p>')
+                 '<p class="muted">No recorded signals yet. Bellwether watches every filing for changes.</p>')
 
     # ---- their own words
-    points = []
+    points, seen_tp = [], set()
     for fam in ("phh", "acubooth", "glynac"):
-        points += [dict(tp, fam=fam) for tp in products.talking_points(d, fam)]
+        for tp in products.talking_points(d, fam):
+            # One brochure sentence often supports several tags; show it once.
+            if tp["text"] in seen_tp:
+                continue
+            seen_tp.add(tp["text"])
+            points.append(dict(tp, fam=fam))
     fam_name = {"phh": "PHH", "acubooth": "AcuBooth", "glynac": "Glynac"}
     tp_html = "".join(
         f'<div class="tp"><span class="chip">{esc(fam_name[tp["fam"]])}</span> '
@@ -503,20 +623,22 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
               "none": "No mail server", "no_domain": "No domain on file",
               "unknown": "Not identifiable"}.get(mail.get("platform"), "Not checked yet")
     est = money((f["raum"] or 0) / f["clients_total"]) if f["clients_total"] else "-"
-    website = ""
+    website, site_host = "", ""
     if f["website"]:
         href = f["website"] if f["website"].lower().startswith("http") else "https://" + f["website"]
+        site_host = f["website"].lower().replace("https://", "").replace("http://", "").rstrip("/")
         website = (f'<a href="{esc(href)}" target="_blank" rel="noopener" data-noprefetch>'
-                   f'{esc(f["website"].lower().replace("https://", "").replace("http://", "").rstrip("/"))}</a>')
+                   f'{esc(site_host)}</a>')
+    firm_li = next((cp["value"] for cp in firm_level if cp["kind"] == "linkedin"), None)
 
-    assets_html = f"""{aum_chart(history)}
-<dl class="kv" style="margin-top:18px">
-<dt>High net worth</dt><dd>{f['hnw_clients'] or 0} clients &middot; {money(f['hnw_aum'])} &middot; <b>{hs:.0f}%</b> of assets</dd>
-<dt>Other individuals</dt><dd>{f['retail_clients'] or 0} clients &middot; {money(f['retail_aum'])}</dd>
-<dt>All clients</dt><dd>{f['clients_total'] or 0} &middot; average {caveat('est_avg_client_size', est)}</dd>
-<dt>Discretionary</dt><dd>{money(f['raum_disc'])} of {money(f['raum'])}</dd>
-<dt>Services</dt><dd>{esc(", ".join(svc)) or "-"}</dd>
-</dl>"""
+    assets_html = f"""<div class="card"><div class="card-head"><h2>Assets over time</h2></div>{aum_chart(history)}</div>
+<div class="facts" style="margin-top:12px">
+<div><div class="l">High net worth clients</div><div class="v">{f['hnw_clients'] or 0:,} <small>{money(f['hnw_aum'])}, {hs:.0f}% of assets</small></div></div>
+<div><div class="l">Other individuals</div><div class="v">{f['retail_clients'] or 0:,} <small>{money(f['retail_aum'])}</small></div></div>
+<div><div class="l">All clients</div><div class="v">{f['clients_total'] or 0:,} <small>average {caveat('est_avg_client_size', est)}</small></div></div>
+<div><div class="l">Discretionary</div><div class="v">{money(f['raum_disc'])} <small>of {money(f['raum'])}</small></div></div>
+</div>
+<dl class="kv" style="margin-top:18px"><dt>Services</dt><dd>{esc(", ".join(svc)) or "-"}</dd></dl>"""
 
     if funds:
         frows = "".join(
@@ -524,9 +646,9 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
             f'<td class="num">{money(z["gross_asset_value"])}</td><td class="num">{z["owners"] or 0}</td>'
             f'<td class="num">{money(z["minimum_investment"])}</td>'
             f'<td class="meta">{esc(z["d"])}</td></tr>' for z in funds)
-        funds_html = ('<table class="tight"><thead><tr><th>Type</th><th>Fund</th><th class="num">Assets</th>'
+        funds_html = ('<div class="table-scroll"><table class="tight"><thead><tr><th>Type</th><th>Fund</th><th class="num">Assets</th>'
                       '<th class="num">Investors</th><th class="num">Minimum</th>'
-                      f'<th>As of</th></tr></thead><tbody>{frows}</tbody></table>')
+                      f'<th>As of</th></tr></thead><tbody>{frows}</tbody></table></div>')
     else:
         funds_html = ('<p class="muted">No private funds on Schedule D. That is typical: most '
                       'advisers this size run none.</p>')
@@ -539,20 +661,19 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     h13 = sorted(d["h13f"].items(), key=lambda kv: -(kv[1]["value"] or 0))
     h13_html = ""
     if h13:
-        h13_html = ('<h3 style="margin-top:20px">13F holdings of interest</h3><table class="tight"><tbody>'
+        h13_html = ('<h3 style="margin-top:22px">13F holdings of interest</h3><div class="table-scroll"><table class="tight"><tbody>'
                     + "".join(f'<tr><td><b>{esc(tk)}</b></td><td class="num">{money(h["value"])}</td>'
                               f'<td class="meta">{esc(h["quarter"])}</td></tr>' for tk, h in h13[:12])
-                    + "</tbody></table>")
+                    + "</tbody></table></div>")
     invest_html = f"""<dl class="kv">
 <dt>Primary custodian</dt><dd>{esc(cust.get('primary_canonical') or '-')}{f", {cust.get('reported_custodians')} reported" if cust.get('reported_custodians') else ""}</dd>
 <dt>Schwab share</dt><dd>{schwab}</dd>
 <dt>Files 13F</dt><dd>{"Yes" + (f' <span class="meta">CIK {esc(match["cik"])}, link confidence {match["confidence"]:.2f}</span>' if match else "") if d["files_13f"] else "No"}</dd>
-</dl><h3 style="margin-top:20px">Private funds</h3>{funds_html}{seg_html}{h13_html}
-<h3 style="margin-top:22px">In their own words</h3>{tp_html}"""
+</dl><h3 style="margin-top:22px">Private funds</h3>{funds_html}{seg_html}{h13_html}"""
 
     tech_html = f"""<dl class="kv">
 <dt>Email platform</dt><dd>{esc(mail_s)}{f' <span class="meta">{esc(mail.get("evidence"))}</span>' if mail.get("evidence") else ""}</dd>
-<dt>Reporting platform</dt><dd>{esc(", ".join(f"{k}" for k in plats)) or "Not found"}{''.join(f'<div class="meta">{esc(v)}</div>' for v in plats.values())}</dd>
+<dt>Reporting and CRM</dt><dd>{esc(", ".join(f"{k}" for k in plats)) or "Not found"}{''.join(f'<div class="meta">{esc(v)}</div>' for v in plats.values())}</dd>
 <dt>Website</dt><dd>{website or "None on file"}{f'<div class="meta">{web_pages} pages read, last {esc(ui.ago(web_state["scanned_at"]))}</div>' if web_state else ""}</dd>
 <dt>Publishes</dt><dd>{"Blog or newsletter found" if "publishes" in d["web"] else "Nothing found"}</dd>
 <dt>Advertising (Item 5.L)</dt><dd>{esc(", ".join(mkt)) or ("None reported" if x else "-")}</dd>
@@ -569,72 +690,134 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <dt>SEC number</dt><dd>{esc(f['sec_number'] or '-')}</dd>
 </dl>"""
 
-    # ---- contacts (firm level and sources)
-    fl_rows = "".join(f"<div class='reach' style='padding:7px 0;border-bottom:1px solid var(--rule)'>"
-                      f"{_contact_line(cp)} <span class='meta'>from {esc(SOURCE_LABEL.get(cp['source'], cp['source']))}</span></div>"
-                      for cp in firm_level)
+    office_html = ""
+    if offices:
+        orows = "".join(
+            f'<tr><td>{esc(nice_name(o.get("city") or ""))}{", " + esc(o["state"]) if o.get("state") else ""}</td>'
+            f'<td class="meta">{esc(o.get("street") or "")}</td>'
+            f'<td>{("<a href=" + chr(34) + "tel:" + esc(o["phone"]) + chr(34) + ">" + esc(o["phone"]) + "</a>") if o.get("phone") else "-"}</td></tr>'
+            for o in offices)
+        office_html = (f'<div class="card" style="margin-top:16px"><div class="card-head"><h2>Offices '
+                       f'<span class="h-cnt">{len(offices)}</span></h2><span class="sub">From Form ADV '
+                       f'Schedule D</span></div><table class="tight"><tbody>{orows}</tbody></table></div>')
+
+    # ---- contacts: firm lines, sources, and the discovery engine's state
+    fl_rows = "".join(_contact_line(cp) for cp in firm_level if cp["kind"] != "linkedin")
     n_em = sum(1 for cp in cps if cp["kind"] == "email")
     srcs = {}
     for cp in cps:
         for s_ in (cp["sources"] or cp["source"]).split(","):
             srcs[s_] = srcs.get(s_, 0) + 1
     src_line = ", ".join(f"{n} from {SOURCE_LABEL.get(k, k)}" for k, n in sorted(srcs.items(), key=lambda kv: -kv[1]))
-    contacts_html = f"""<div class="row" style="margin-bottom:12px">
-<button class="sm" data-post="/api/firm/{esc(crd)}/verify" data-busy="Starting">Verify all emails</button>
-<button class="sm" data-post="/api/firm/{esc(crd)}/crawl" data-busy="Starting">Refresh website</button>
-<form method="post" action="/firm/{esc(crd)}/emails" style="display:inline"><button class="sm ghost" type="submit"
- title="Build candidate addresses from the firm's known email pattern">Find email candidates</button></form>
-</div>
-{fl_rows or '<p class="muted">No firm-level phone or inbox on file.</p>'}
-<details class="source-help"><summary>{n_em} email address{"es" if n_em != 1 else ""} &middot; Sources and verification</summary>
-<p>{esc(src_line)}. Verified addresses passed a mailbox check; catch-all domains remain unconfirmed.</p></details>
-<details class="adj" style="margin-top:10px"><summary>Add a contact</summary>
-<form class="row" style="margin-top:8px" data-api-form action="/api/firm/{esc(crd)}/contact" method="post">
+
+    hunts = {}
+    try:
+        from . import hunt as _hunt
+        hunts = _hunt.person_status(c, crd)
+    except Exception:
+        c.rollback()
+    people_html, top_cards, pc = _people_section(c, crd, roster, cps_by_person, web_people,
+                                                 unmatched, stats, hunts)
+    c.close()
+    hiring_html = _hiring_section(None, crd, stats, mv, series)
+    hunting = max(0, pc["people"] - pc["email"])
+    tried = (f'{attempts["n"]:,} candidate addresses checked with the mail server for '
+             f'{attempts["p"]:,} people so far. ' if attempts and attempts["n"] else "")
+    discovery_html = f"""<div class="card"><div class="card-head"><div><h2>Contact discovery</h2>
+<div class="sub">{pc["email"]:,} of {pc["people"]:,} people have a verified or published email,
+{pc["direct"]:,} a direct line, {pc["linkedin"]:,} a LinkedIn profile.</div></div>
+<button class="primary sm" data-post="/api/firm/{esc(crd)}/hunt" data-busy="Starting">{ICONS["bolt"]}Find contacts now</button></div>
+<div class="reachbar" aria-hidden="true"><i style="flex:{pc['email']};background:var(--ok)"></i>
+<i style="flex:{max(0, pc['direct'] - 0)};background:var(--soft)"></i><i style="flex:{hunting};background:var(--raise3)"></i></div>
+<p class="small soft" style="margin:12px 0 0">{"Still hunting for " + f"{hunting:,}" + " people. " if hunting else ""}{tried}Bellwether keeps
+working on this firm by itself: its website, web search for published addresses and profiles, every common
+email pattern checked against the firm's mail server, and AI research. Only verified or published
+addresses are ever shown.</p>
+<div style="margin-top:16px">{fl_rows or '<p class="muted small">No firm-level phone or inbox on file.</p>'}</div>
+<details class="source-help"><summary>{n_em} email address{"es" if n_em != 1 else ""} on file . where they came from</summary>
+<p>{esc(src_line) or "None yet"}. Verified addresses passed a mailbox check with the firm's mail server.</p></details>
+<div class="row" style="margin-top:6px">
+<button class="sm" data-post="/api/firm/{esc(crd)}/verify" data-busy="Starting">Re-check emails</button>
+<button class="sm ghost" data-post="/api/firm/{esc(crd)}/crawl" data-busy="Starting">Re-read website</button></div>
+<details class="adj" style="margin-top:12px"><summary>Add a contact you know</summary>
+<form class="row" style="margin-top:10px" data-api-form action="/api/firm/{esc(crd)}/contact" method="post">
 <label>Name<input type="text" name="name"></label><label>Title<input type="text" name="title"></label>
 <label>Email<input type="email" name="email"></label><label>Phone<input type="text" name="phone"></label>
 <button type="submit" class="sm" data-busy="Saving">Save contact</button></form></details>
 <details class="adj" style="margin-top:6px"><summary>Website is wrong or missing</summary>
-<form class="row" style="margin-top:8px" data-api-form action="/api/firm/{esc(crd)}/crawl" method="post">
+<form class="row" style="margin-top:10px" data-api-form action="/api/firm/{esc(crd)}/crawl" method="post">
 <label>Website<input type="url" name="url" placeholder="https://their-site.com" required></label>
-<button type="submit" class="sm" data-busy="Starting">Read website</button></form></details>"""
+<button type="submit" class="sm" data-busy="Starting">Read website</button></form></details></div>"""
 
-    people_html = _people_section(c, crd, roster, cps_by_person, web_people,
-                                  unmatched, stats)
-    c.close()
-    hiring_html = _hiring_section(None, crd, stats, mv, series)
-
-    # A firm's identity comes from its actual filings, people and history.
+    # ---- identity
     profile_name = nice_name(f["business_name"] or f["legal_name"])
-    initials = "".join(w[0] for w in profile_name.split()[:2]) or "B"
+    place = ", ".join(x for x in (nice_name(f["city"] or ""), f["state"] or "") if x)
+    tags = []
+    if ftype and ftype.get("category"):
+        core = bool(ftype.get("core"))
+        ev = "; ".join(str(e) for e in (ftype.get("evidence") or [])[:3])
+        tags.append(f'<span class="ftype {"core" if core else "out" if ftype["category"] in OUT_TYPES else ""}" title="{esc(ev)}"><i></i>'
+                    f'{esc(ftype.get("label") or ftype["category"])}</span>')
+    if f["is_era"]:
+        tags.append('<span class="chip warn">Exempt reporting adviser</span>')
+    cur_status = (fs["status"] or "") if fs else ""
+    if cur_status:
+        tags.append(f'<span class="chip lead">{esc(cur_status.capitalize())}'
+                    f'{" . " + esc(fs["owner"]) if fs and fs["owner"] else ""}</span>')
+    if trigs and trigs[0]["detected_date"] >= (datetime.now(timezone.utc).date().isoformat()[:4] + "-01-01"):
+        tags.append(f'<a class="chip good" href="#activity">{len(trigs)} signal{"s" if len(trigs) != 1 else ""}</a>')
+    for l in in_lists[:3]:
+        tags.append(f'<a class="chip" href="/firms?list={l["id"]}">{esc(l["name"])}</a>')
+    growth = ""
+    if len(history) >= 2 and history[0]["raum"]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=365)).date().isoformat()
+        yr_ago = [h for h in history if h["filing_date"] <= cutoff]
+        base = (yr_ago[-1]["raum"] if yr_ago else history[0]["raum"]) or 0
+        if base:
+            pct = (history[-1]["raum"] - base) / base * 100
+            growth = (f'<span class="{"up" if pct >= 0 else "dn"}">{pct:+.0f}%</span> '
+                      f'{"in 12 months" if yr_ago else "since " + history[0]["filing_date"][:4]}')
+    clients_s = f"{f['clients_total']:,}" if f["clients_total"] is not None else "-"
+    team = (stats or {}).get("headcount", f["iar_count"])
+    net = ((stats or {}).get("hires_12m") or 0) - ((stats or {}).get("departures_12m") or 0)
+    stats_html = f"""<div class="stats">
+<div><div class="l">Assets under management</div><div class="v">{money(f['raum'])}</div><div class="d">{growth or "&nbsp;"}</div></div>
+<div><div class="l">Clients</div><div class="v">{clients_s}</div><div class="d">{hs:.0f}% of assets high net worth</div></div>
+<div><div class="l">Registered team</div><div class="v">{team if team is not None else '-'}</div><div class="d">{f'<span class="{"up" if net >= 0 else "dn"}">{net:+d}</span> net in 12 months' if stats else '&nbsp;'}</div></div>
+<div><div class="l">Reachable people</div><div class="v">{pc['email']:,}<small class="muted" style="font-size:13px;font-weight:500"> / {pc['people']:,}</small></div><div class="d">with a verified email</div></div>
+<div><div class="l">Last filing</div><div class="v" style="font-size:17px">{esc(f['filing_date'] or '-')}</div><div class="d">{d['filings_12m']} amendments in 12 months</div></div>
+</div>"""
+
     fit_cards = []
-    for r in scored[:3]:
-        missing = (f'{len(r.missing)} missing factor{"s" if len(r.missing) != 1 else ""}'
-                   if r.missing else "All factors known")
-        fit_cards.append(f'<a class="fit-preview" href="#fit-{r.product}">'
-                         f'<span>{esc(products.product(r.product)["name"])}</span>'
-                         f'<strong>{r.score:.0f}<small>/100</small></strong>'
-                         f'<div class="coverage-track" aria-hidden="true"><i style="width:{r.coverage:.0f}%"></i></div>'
-                         f'<span class="meta">{r.coverage:.0f}% known &middot; {missing}</span></a>')
-    profile_facts = f'''<dl class="kv">
-<dt>Services</dt><dd>{esc(", ".join(svc)) or "Not recorded"}</dd>
-<dt>Custodian</dt><dd>{esc(cust.get("primary_canonical") or "Not recorded")}</dd>
-<dt>Registered</dt><dd>{esc(f["registered_date"] or "Not recorded")}</dd>
-<dt>Latest filing</dt><dd>{esc(f["filing_date"] or "Not recorded")}</dd>
-</dl>'''
+    for r in sorted(results.values(), key=lambda r: ({"scored": 0, "disqualified": 1, "gated": 2}[r.status], -r.score)):
+        pn = esc(products.product(r.product)["name"])
+        if r.status == "scored":
+            rank = ranks.get(r.product)
+            cov = (f'{r.coverage:.0f}% known' + (f', could reach {r.potential:.0f}' if r.coverage < 99.5 else ""))
+            fit_cards.append(f'<a class="fitcard" href="#fit-{r.product}">{ui.ring(r.score, r.coverage, 52)}'
+                             f'<div><div class="pn">{pn}</div><div class="pm">{f"#{rank:,} on the list" if rank else "Scored"}</div>'
+                             f'<div class="pm{" part" if r.coverage < 80 else ""}">{cov}</div></div></a>')
+        else:
+            why = "Removed" if r.status == "disqualified" else "Not eligible"
+            fit_cards.append(f'<a class="fitcard off" href="#fit-{r.product}">{ui.ring(None, None, 52)}'
+                             f'<div><div class="pn">{pn}</div><div class="pm">{why}</div>'
+                             f'<div class="pm" title="{esc(r.reason)}">{esc((r.reason or "")[:60])}</div></div></a>')
+
     if ai.configured():
         if brief:
             from .api_view import brief_html
             brief_block = (f'<div id="brief">{brief_html(brief)}</div>'
                            f'<button class="sm ghost" data-post="/api/firm/{esc(crd)}/brief" '
-                           f'data-busy="Writing" data-target="#brief">Rewrite the brief</button>')
+                           f'data-busy="Writing" data-target="#brief">Rewrite</button>')
         else:
-            brief_block = (f'<div id="brief"><p class="muted">No brief yet.</p></div>'
+            brief_block = (f'<div id="brief"><p class="muted">No brief yet. Bellwether AI can '
+                           f'summarise everything on this page in a few lines.</p></div>'
                            f'<button class="sm" data-post="/api/firm/{esc(crd)}/brief" '
-                           f'data-busy="Writing" data-target="#brief">Write an AI brief</button>')
+                           f'data-busy="Writing" data-target="#brief">{ICONS["spark"]}Write a brief</button>')
     else:
         brief_block = ""
+
     # ---- rail
-    cur_status = (fs["status"] or "") if fs else ""
     status_opts = "".join(
         f'<option value="{esc(s)}"{" selected" if s == cur_status else ""}>'
         f'{esc(s.capitalize() if s else "Not set")}</option>' for s in [""] + STATUSES)
@@ -642,78 +825,94 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                            for l in in_lists)
     listopts = "".join(f'<option value="{l["id"]}">{esc(l["name"])}</option>'
                        for l in all_lists if l["id"] not in {x["id"] for x in in_lists})
-    star = ('<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" '
-            f'fill="{"currentColor" if watched else "none"}" stroke="currentColor" stroke-width="1.6">'
-            '<path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9Z"/></svg> '
+    star = (ICONS["star"].replace('fill="none"', f'fill="{"currentColor" if watched else "none"}"')
             + ('Watching' if watched else 'Watch'))
     saved_note = ('<div class="note good" style="margin:0 0 14px">Saved.</div>' if saved else "")
-    ai_state = ("Uses this firm's records" if ai.enabled("ask") else
-                "AI unavailable. An admin can review AI settings." if ai.configured() else
-                "An admin needs to connect an AI provider.")
-    ai_rail = f"""<div class="panel aipanel firm-chat" id="firm-ai" data-scope="firm:{esc(crd)}">
-<div class="aihead"><canvas data-orb="breathing" data-size="32" data-px="36" data-tint="#ef7e89" aria-label="Bellwether AI"></canvas>
-<div><div class="t">Bellwether AI</div><div class="s">{ai_state}</div></div></div>
-<div class="ai-context"><span class="context-dot" aria-hidden="true"></span><span>{esc(profile_name)}</span><small>CRD {esc(crd)}</small></div>
-<div class="ai-welcome"><h3>Explore this firm</h3>
-<div class="aisugs"><button type="button" data-question="Who should I contact first at this firm, and how?">Find the right contact <span aria-hidden="true">&nearr;</span></button>
-<button type="button" data-question="Which product fits this firm best and what evidence is missing?">Compare product fit <span aria-hidden="true">&nearr;</span></button>
-<button type="button" data-question="What changed at this firm recently?">Explain recent changes <span aria-hidden="true">&nearr;</span></button></div></div>
-<div class="aimsgs" role="log" aria-label="Conversation about {esc(profile_name)}" aria-live="polite" aria-relevant="additions text"></div>
-<form class="aiform"><label class="sr-only" for="firm-question">Ask about this firm</label>
-<textarea id="firm-question" rows="2" maxlength="1500" placeholder="Ask about this firm..." required></textarea>
-<div class="ai-compose-foot"><span>Enter to send &middot; Shift + Enter for a new line</span><button class="sm primary" type="submit">Send</button></div></form>
+    ai_state = ("Answers from this firm's records" if ai.enabled("ask") else
+                "AI unavailable right now" if ai.configured() else
+                "An admin needs to connect an AI provider")
+    ai_rail = f"""<div class="card aipanel firm-chat" id="firm-ai" data-scope="firm:{esc(crd)}">
+<div class="aihead"><canvas data-orb="breathing" data-size="32" data-px="30" data-tint="#f06b72" aria-hidden="true"></canvas>
+<div><div class="t">Ask about {esc(profile_name)}</div><div class="s">{ai_state}</div></div></div>
+<div class="ai-welcome" style="text-align:left;padding:0"><div class="aisugs">
+<button type="button" data-question="Who should I contact first at this firm, and how?">Who should I contact first, and how?</button>
+<button type="button" data-question="Which product fits this firm best and what evidence is missing?">Which product fits best, and what is missing?</button>
+<button type="button" data-question="What changed at this firm recently?">What changed here recently?</button></div></div>
+<div class="aimsgs" role="log" aria-live="polite"></div>
+<form class="aiform composer"><label class="sr-only" for="firm-question">Ask about this firm</label>
+<textarea id="firm-question" rows="1" maxlength="1500" placeholder="Ask anything about this firm" required></textarea>
+<div class="cfoot"><span class="model">Enter to send</span><button class="send" type="submit" aria-label="Send">{ICONS["send"]}</button></div></form>
 </div>"""
+    rail = f"""{ai_rail}
+<div class="card"><h3>Pipeline</h3>
+<form method="post" action="/firm/{esc(crd)}/status"><label>Status<select name="status">{status_opts}</select></label>
+<label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}" placeholder="Leave blank to assign yourself"></label>
+<button type="submit" class="sm primary">Save</button></form></div>
+<div class="card"><h3>Notes</h3><form method="post" action="/firm/{esc(crd)}/note">
+<textarea name="note" aria-label="Firm notes" placeholder="Notes and next steps">{esc(note[0]['note'] if note else '')}</textarea>
+<div class="row" style="margin-top:8px"><button class="sm" type="submit">Save note</button>
+{f'<span class="meta">Saved {esc(ui.ago(note[0]["updated_at"]))}</span>' if note else ''}</div></form></div>
+<div class="card"><h3>Saved lists</h3><div class="pills" style="margin-bottom:10px">{lists_chips or '<span class="muted small">On no saved list</span>'}</div>
+<form method="post" action="/firms/addtolist"><input type="hidden" name="crd" value="{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}"><input type="hidden" name="new_name" value="">
+<select name="list_id" aria-label="Add to saved list" onchange="addToList(this)" style="width:100%"><option value="">Add to a list</option>{listopts}<option value="__new">New list...</option></select></form></div>"""
 
-    description = (f'{nice_name(f["city"] or "")}, {f["state"] or ""}'.strip(', '))
-    headline_fact = (f'{profile_name} manages {money(f["raum"])} across {f["clients_total"]:,} clients.'
-                     if f['raum'] is not None and f['clients_total'] is not None else
-                     f'{profile_name} is based in {description}.' if description else profile_name)
-    latest_change = (f'<span class="chip lead">Latest signal</span><p>{esc(trigs[0]["description"])}</p>'
-                     f'<a href="#signals">View activity</a>' if trigs else
-                     f'<span class="subtle-label">Latest filing</span><strong>{esc(f["filing_date"] or "Not recorded")}</strong><a href="#compliance">View registration</a>')
-    body = f"""<div class="pg wide firm-page">
-<div class="firm-toolbar"><div class="crumb"><a href="/firms">Firms</a><span>/</span><span>{esc(profile_name)}</span></div>
+    subline = []
+    if place:
+        subline.append(f'<span>{ICONS["pin"]}{esc(place)}</span>')
+    if website:
+        subline.append(f'<span>{ICONS["globe"]}{website}</span>')
+    if f["phone"]:
+        subline.append(f'<span>{ICONS["phone"]}<a href="tel:{esc(f["phone"])}">{esc(f["phone"])}</a></span>')
+    if firm_li:
+        subline.append(f'<span>{ICONS["linkedin"]}<a href="{esc(firm_li)}" target="_blank" rel="noopener" '
+                       f'data-noprefetch>LinkedIn</a></span>')
+    subline.append(f'<span class="muted">CRD {esc(crd)}{" . " + esc(f["regulator"]) if f["regulator"] else ""}</span>')
+    signals_n = len(trigs)
+    # The overview repeats the first cards; without their ids, so each id stays unique.
+    overview_people = "".join(re.sub(r' id="(p-[^"]*|vs[0-9]+)"', "", x) for x in top_cards) or '<div class="card empty">No people on record yet.</div>'
+    recent = trow[:5]
+    body = f"""<div class="pg wide">
+<div class="firm-top"><div class="crumb"><a href="/firms">Firms</a><span class="sep">/</span><span>{esc(profile_name)}</span></div>
 <div class="acts"><form method="post" action="/watch/{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}"><button type="submit">{star}</button></form>
-<button type="button" class="primary" data-focus-ai>Ask Bellwether AI</button></div></div>
+<button type="button" class="primary" data-focus-ai>{ICONS["spark"]}Ask Bellwether AI</button></div></div>
 {saved_note}
-<div class="firm-workspace">
-<aside class="firm-profile">
-<div class="firm-monogram" aria-hidden="true">{esc(initials)}</div>
-<h1>{escn(f['legal_name'])}</h1><p class="firm-place">{esc(description)}</p>
-<div class="profile-links">{website or ''}{f'<a href="tel:{esc(f["phone"])}">{esc(f["phone"])}</a>' if f['phone'] else ''}</div>
-<div class="identity-metrics"><div><span>Assets managed</span><strong>{money(f['raum'])}</strong></div>
-<div><span>Clients</span><strong>{f['clients_total'] if f['clients_total'] is not None else 'Unknown'}</strong></div>
-<div><span>Registered team</span><strong>{(stats or {}).get('headcount', f['iar_count']) if (stats or {}).get('headcount', f['iar_count']) is not None else 'Unknown'}</strong></div></div>
-<details class="profile-management"><summary>Firm details and management</summary>
-<div class="profile-registration">CRD {esc(crd)} &middot; {esc(f['regulator'] or 'Registration unknown')}</div>
-<details class="profile-control"><summary>Status and owner<span>{esc(cur_status.capitalize() or 'Not set')}</span></summary>
-<form method="post" action="/firm/{esc(crd)}/status"><label>Status<select name="status">{status_opts}</select></label><label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}" placeholder="Assign to me"></label><button type="submit" class="sm primary">Save</button></form></details>
-<details class="profile-control"><summary>Notes<span>{'Saved' if note else 'Add'}</span></summary>
-<form method="post" action="/firm/{esc(crd)}/note"><textarea name="note" aria-label="Firm notes" placeholder="Notes and next steps">{esc(note[0]['note'] if note else '')}</textarea><button class="sm" type="submit">Save note</button></form></details>
-<details class="profile-control"><summary>Saved lists<span>{len(in_lists)}</span></summary>{lists_chips}
-<form method="post" action="/firms/addtolist"><input type="hidden" name="crd" value="{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}"><input type="hidden" name="new_name" value=""><select name="list_id" aria-label="Add to saved list" onchange="addToList(this)"><option value="">Add to a list</option>{listopts}<option value="__new">New list...</option></select></form></details>
-</details></aside>
-<div class="firm-content">
-<nav class="secnav" aria-label="Firm research"><a href="#overview">Overview</a><a href="#people">People &amp; contacts</a><a href="#fit">Product fit</a><a href="#activity">Activity</a><a href="#research">Research</a></nav>
+<header class="dhero"><div class="idrow">{ui.mono(profile_name, "lg")}<div>
+<h1>{escn(f['legal_name'])}</h1>
+<div class="sub">{"".join(subline)}</div>
+<div class="tags">{"".join(tags)}</div></div></div>
+{stats_html}
+<div class="fitcards">{"".join(fit_cards)}</div></header>
 <div class="dossier"><div>
-<section class="s anchor" id="overview"><div class="overview-intro"><h2>Company overview</h2><p>{esc(headline_fact)}</p></div>
-<div class="firm-highlights"><div class="firm-highlight">{latest_change}</div>
-<div class="firm-highlight"><span class="subtle-label">Contact intelligence</span><strong>{flags['verified']} verified emails <span class="muted">/</span> {flags['direct']} direct lines</strong><a href="#people">{'View contacts' if flags['verified'] or flags['direct'] else 'View contact discovery'}</a></div></div>
-<div class="workspace-section"><div class="s-head"><h2>Product fit</h2><a href="#fit" class="more">Review scoring</a></div><div class="fit-previews">{''.join(fit_cards) or '<p class="muted">Eligibility is available in Product fit.</p>'}</div></div>
-<div class="workspace-section"><h2>Business profile</h2>{profile_facts}{aum_chart(history) if len(history)>1 else ''}</div>
-{('<div class="workspace-section"><h2>AI analysis</h2>'+brief_block+'</div>') if brief_block else ''}
+<nav class="secnav" aria-label="Firm research"><a href="#overview">Overview</a>
+<a href="#people">People <span class="cnt">{pc['people']:,}</span></a>
+<a href="#fit">Product fit</a><a href="#activity">Activity <span class="cnt">{signals_n}</span></a>
+<a href="#assets">Assets and funds</a><a href="#profile">Technology and compliance</a></nav>
+<div class="dossier-tabs">
+<section class="anchor" id="overview">
+{('<div class="card dsec"><div class="card-head"><h2>' + ICONS["spark"].replace("<svg", '<svg style="width:16px;height:16px;display:inline;vertical-align:-2px;color:var(--red-hi)"') + ' AI brief</h2></div>' + brief_block + '</div>') if brief_block else ''}
+<div class="dsec"><div class="s-head"><h2>Key people</h2><a class="more" href="#people">All {pc['people']:,} people</a></div>
+<div class="people-grid">{overview_people}</div></div>
+<div class="cols-2 dsec"><div class="card"><div class="card-head"><h2>Recent signals</h2><a class="more" href="#activity">All activity</a></div>
+{('<div class="timeline">' + "".join(recent) + '</div>') if recent else '<p class="muted">No recorded signals yet.</p>'}</div>
+<div class="card"><div class="card-head"><h2>Hiring</h2><a class="more" href="#activity">Details</a></div>
+{_hiring_glance(stats, series)}</div></div>
+<div class="card dsec"><div class="card-head"><h2>Assets over time</h2><span class="sub">{esc(", ".join(svc[:3])) if svc else ""}</span></div>{aum_chart(history)}</div>
+<div class="card dsec"><div class="card-head"><h2>In their own words</h2></div>{tp_html}</div>
 </section>
-<section class="s anchor" id="people"><div class="s-head"><h2>People &amp; contacts</h2><button class="sm" data-post="/api/firm/{esc(crd)}/crawl" data-busy="Queuing">Find contacts</button></div>
-{people_html}<details class="research-disclosure" id="contacts"><summary>Contacts and sources</summary>{contacts_html}</details></section>
-<section class="s anchor" id="fit"><div class="s-head"><h2>Product fit</h2><span class="meta">Scores include missing-data penalties</span></div>{_fit_section(crd, results, ranks, focus)}</section>
-<section class="s anchor" id="activity"><h2>Firm activity</h2><section id="signals" class="workspace-section"><h3>Signals</h3>{trig_html}</section><section id="hiring" class="workspace-section"><h3>Hiring and departures</h3>{hiring_html}</section></section>
-<section class="s anchor" id="research"><h2>Research library</h2>
-<details class="research-disclosure" id="assets" open><summary>Assets and clients</summary>{assets_html}</details>
-<details class="research-disclosure" id="investments"><summary>Investments</summary>{invest_html}</details>
-<details class="research-disclosure" id="tech"><summary>Technology</summary>{tech_html}</details>
-<details class="research-disclosure" id="compliance"><summary>Compliance and registration</summary>{comp_html}</details></section>
-</div></div></div></div>
-<dialog id="firm-ai-drawer" class="ai-drawer"><div class="drawer-header"><span>Firm conversation</span><button type="button" data-close-ai aria-label="Close firm conversation">Close</button></div>{ai_rail}</dialog>
+<section class="anchor" id="people">
+<div class="dsec">{discovery_html}</div>
+<div class="dsec">{people_html}</div>
+</section>
+<section class="anchor" id="fit"><div class="s-head"><h2>Product fit</h2><span class="meta">Missing data earns nothing and is shown, never hidden</span></div>{_fit_section(crd, results, ranks, focus)}</section>
+<section class="anchor" id="activity"><div class="card dsec" id="signals"><div class="card-head"><h2>Signals <span class="h-cnt">{signals_n}</span></h2></div>{trig_html}</div>
+<div class="card dsec" id="hiring"><div class="card-head"><h2>Hiring and departures</h2></div>{hiring_html}</div></section>
+<section class="anchor" id="assets">{assets_html}<div class="card" style="margin-top:16px"><div class="card-head"><h2>Investments</h2></div>{invest_html}</div></section>
+<section class="anchor" id="profile"><div class="cols-2"><div class="card"><div class="card-head"><h2>Technology</h2></div>{tech_html}</div>
+<div class="card"><div class="card-head"><h2>Compliance and registration</h2></div>{comp_html}</div></div>
+{('<div class="card" style="margin-top:16px"><div class="card-head"><h2>Firm type</h2><span class="sub">How Bellwether classified this firm</span></div><p><span class="ftype">' + esc(ftype.get("label") or ftype.get("category") or "") + '</span> <span class="meta">' + esc(str(ftype.get("source_label") or ftype.get("source") or "")) + (", confidence " + str(ftype.get("confidence")) if ftype.get("confidence") is not None else "") + '</span></p><ul class="evidence-list">' + "".join("<li>" + esc(str(e)) + "</li>" for e in (ftype.get("evidence") or [])) + '</ul></div>') if ftype and ftype.get("category") else ''}
+{office_html}</section>
+</div></div>
+<aside class="rail">{rail}</aside></div>
 </div>"""
     return page(nice_name(f["legal_name"]) or crd, f"list:{focus}" if focus else "firms", body,
                 js=FIRM_JS, orbs=True)
@@ -771,17 +970,10 @@ def save_status(crd: str, status: str = Form(""), owner: str = Form("")):
 
 @router.post("/firm/{crd}/emails")
 def gen_emails(crd: str):
-    """Queue a new internal candidate after rejection; expose only verified contacts."""
+    """Older pages posted here to look for addresses; it now runs the whole
+    discovery chain for the firm, which only ever shows verified addresses."""
     if not CRD_RE.match(crd):
         return RedirectResponse("/", status_code=303)
-    from . import emailguess, jobs
-    from scripts.infer_emails import generate_for_firm
-    c = conn()
-    try:
-        firm_pat, fallback = emailguess.observed(c)
-        generate_for_firm(c, crd, firm_pat, fallback)
-        c.commit()
-        jobs.request_run(c, 'email_verify')
-    finally:
-        c.close()
+    from .api_view import api_hunt
+    api_hunt(crd)
     return RedirectResponse(f"/firm/{crd}#people", status_code=303)

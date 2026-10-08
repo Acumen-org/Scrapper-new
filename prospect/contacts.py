@@ -5,27 +5,37 @@ phone, brochure contacts, website contacts, pattern guesses), which meant every
 screen and export re-implemented the merge and none of them agreed. They now
 land in contact_point, one row per address or number per person, with:
 
-  source        where it came from: adv, brochure, website, vcard, directory,
-                pattern, ai, manual. `sources` keeps every source that has
-                reported the same value, so agreement between sources shows.
+  kind          email, phone or linkedin.
+  source        where it came from: adv, adv_office, adv_social, brochure,
+                website, vcard, directory, web_search, pattern, ai, manual.
+                `sources` keeps every source that has reported the same value,
+                so agreement between sources shows.
   confidence    0 to 100. A filed or published address is high; a pattern
                 guess is low until a mail server confirms it.
   is_role       a shared inbox (info@, compliance@) rather than a person. Kept,
                 because a firm inbox is still a way in, but never presented as
                 a named contact.
-  verify_status what an email check said: valid, invalid, risky, catch_all,
-                unknown, no_mail_server, or unverified. Only `valid` means a
-                mail server accepted that exact mailbox; everything else is
-                labelled for what it is.
+  verify_status for an email, what a check said: valid, invalid, risky,
+                catch_all, unknown, no_mail_server, or unverified. Only `valid`
+                means a mail server accepted that exact mailbox; everything
+                else is labelled for what it is. For a LinkedIn profile, how
+                well it was tied to the person: matched (strong evidence it is
+                this person at this firm) or probable.
 
 The provenance rule from the @linkedin.com incident still holds: a guessed
 address is always marked as one, and only verification can promote it.
+
+LinkedIn rows hold the canonical public URL (norm_linkedin): /in/<slug> for a
+person, /company/<slug> for the firm itself with person_key ''. They are only
+ever found, never built from a name: a profile URL is not guessable the way a
+mailbox is, and a wrong one sends a salesperson to a stranger.
 """
 
 from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from urllib.parse import unquote, urlparse
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS contact_point (
@@ -34,8 +44,8 @@ CREATE TABLE IF NOT EXISTS contact_point (
     person_key    TEXT NOT NULL DEFAULT '',  -- '' firm level; i:<indvl_pk>; n:<normalised name>
     person_name   TEXT,
     title         TEXT,
-    kind          TEXT NOT NULL,             -- email | phone
-    value         TEXT NOT NULL,             -- normalised, see norm_email / norm_phone
+    kind          TEXT NOT NULL,             -- email | phone | linkedin
+    value         TEXT NOT NULL,             -- normalised: norm_email / norm_phone / norm_linkedin
     label         TEXT,                      -- phone: direct | mobile | office | main | toll_free
     is_role       INTEGER NOT NULL DEFAULT 0,
     source        TEXT NOT NULL,
@@ -53,10 +63,23 @@ CREATE INDEX IF NOT EXISTS ix_cp_crd ON contact_point (crd);
 CREATE INDEX IF NOT EXISTS ix_cp_verify ON contact_point (kind, verify_status);
 CREATE INDEX IF NOT EXISTS ix_cp_value ON contact_point (value);
 CREATE INDEX IF NOT EXISTS ix_cp_person ON contact_point (crd, person_key);
-CREATE INDEX IF NOT EXISTS ix_cp_usable ON contact_point (crd, person_key, kind)
-    WHERE kind='phone' OR (kind='email' AND verify_status='valid');
+-- What a screen may show (usable_contact_point). Phones and LinkedIn profiles
+-- always. An email when a mail server confirmed it, or when a real source
+-- published it and no check has shown it bouncing or undeliverable: a firm
+-- printing an address is evidence, not a guess. A guessed address (pattern,
+-- or ai_web until checked) only once confirmed. The index carries the same
+-- predicate so the planner can use it for every query through the view.
+DROP INDEX IF EXISTS ix_cp_usable;
+DROP INDEX IF EXISTS ix_cp_usable2;
+CREATE INDEX IF NOT EXISTS ix_cp_usable3 ON contact_point (crd, person_key, kind)
+    WHERE kind IN ('phone', 'linkedin') OR (kind = 'email' AND (verify_status = 'valid'
+        OR (source IN ('website', 'vcard', 'brochure', 'directory', 'web_search', 'adv', 'manual')
+            AND verify_status NOT IN ('invalid', 'no_mail_server'))));
 CREATE OR REPLACE VIEW usable_contact_point AS
-    SELECT * FROM contact_point WHERE kind='phone' OR (kind='email' AND verify_status='valid');
+    SELECT * FROM contact_point
+    WHERE kind IN ('phone', 'linkedin') OR (kind = 'email' AND (verify_status = 'valid'
+        OR (source IN ('website', 'vcard', 'brochure', 'directory', 'web_search', 'adv', 'manual')
+            AND verify_status NOT IN ('invalid', 'no_mail_server'))));
 """
 
 # How much a source is trusted before any verification. Verification overrides:
@@ -64,7 +87,23 @@ CREATE OR REPLACE VIEW usable_contact_point AS
 SOURCE_CONFIDENCE = {
     "adv": 95, "brochure": 90, "vcard": 90, "website": 85, "directory": 70,
     "manual": 90, "ai": 60, "pattern": 35,
+    # A branch office line filed on Schedule D 1.F, tied to a person by the
+    # city their registration places them in: right office, not their desk.
+    "adv_office": 70,
+    # Social pages the firm itself filed on Form ADV Item 1.I.
+    "adv_social": 90,
+    # Found through a search engine: a profile matched by name and firm, or an
+    # address some public page printed. Checked before it is trusted.
+    "web_search": 60,
 }
+
+# Phone labels that name a shared line rather than one person's desk. The same
+# number on a person row does not make the firm-level row redundant: the main
+# number filed on Form ADV stays on the firm even when every person at the
+# principal office is also given it as their way in.
+SHARED_PHONE_LABELS = ("main", "office", "toll_free")
+
+LINKEDIN_STATUSES = ("matched", "probable")
 
 VERIFY_LABEL = {
     "valid": "Verified", "invalid": "Bounces", "risky": "Risky",
@@ -114,6 +153,50 @@ def norm_phone(v: str) -> str | None:
     return f"({d[:3]}) {d[3:6]}-{d[6:]}{ext}"
 
 
+_LI_SLUG = re.compile(r"^[^\s/?#&=]{2,100}$")
+_LI_RESERVED = {"in", "company", "feed", "jobs", "login", "signup", "search", "pub",
+                "posts", "pulse", "school", "showcase", "groups", "help", "legal"}
+
+
+def norm_linkedin(v: str | None) -> str | None:
+    """A LinkedIn profile or company page as one canonical URL:
+    https://www.linkedin.com/in/<slug> or https://www.linkedin.com/company/<slug>.
+
+    Lowercase, no query string or fragment, no trailing path (/about, /en,
+    /details/...), and a country subdomain (uk.linkedin.com) folded into www,
+    so the same page found by the website crawler, the filing and a search
+    engine lands on one row. Anything else (posts, /pub/ directory pages, short
+    links, school pages) comes back None: those do not identify a person or a
+    firm reliably."""
+    raw = (v or "").strip().strip("\"'<>()[]")
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = "https://" + raw.lstrip("/")
+    try:
+        u = urlparse(raw)
+    except ValueError:
+        return None
+    host = (u.hostname or "").lower()
+    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+        return None
+    parts = [unquote(p).strip().lower() for p in u.path.split("/") if p.strip()]
+    if len(parts) < 2 or parts[0] not in ("in", "company"):
+        return None
+    slug = parts[1]
+    if slug in _LI_RESERVED or not _LI_SLUG.match(slug):
+        return None
+    return f"https://www.linkedin.com/{parts[0]}/{slug}"
+
+
+def linkedin_kind(url: str | None) -> str | None:
+    """'person' for an /in/ profile, 'company' for a company page, else None."""
+    n = norm_linkedin(url)
+    if not n:
+        return None
+    return "person" if "/in/" in n else "company"
+
+
 def phone_label(d10: str) -> str | None:
     if d10[:3] in ("800", "833", "844", "855", "866", "877", "888"):
         return "toll_free"
@@ -145,13 +228,18 @@ def upsert(conn, crd: str, kind: str, value: str, source: str, *,
            person_key: str = "", person_name: str | None = None,
            title: str | None = None, label: str | None = None,
            source_ref: str | None = None, confidence: int | None = None,
-           is_role: bool | None = None) -> bool:
+           is_role: bool | None = None, verify_status: str | None = None) -> bool:
     """Record one contact detail. Returns True if it is new.
 
     Normalises the value, merges with an existing row for the same value and
     person (keeping the higher confidence and every source that reported it),
     and removes the firm-level copy once the same address is attributed to a
-    person, so one mailbox never appears twice on a firm page. The caller
+    person, so one mailbox never appears twice on a firm page. A shared phone
+    line (main, office) is the exception: it stays on the firm as well.
+
+    `verify_status` sets the status of a new row. On an existing row it only
+    ever raises a LinkedIn match from probable to matched; an email's status
+    belongs to the verification job and is never touched here. The caller
     commits."""
     if kind == "email":
         value = norm_email(value)
@@ -166,38 +254,116 @@ def upsert(conn, crd: str, kind: str, value: str, source: str, *,
         value = p
         if label is None:
             label = phone_label(re.sub(r"\D", "", value)[:10])
+    elif kind == "linkedin":
+        li = norm_linkedin(value)
+        if not li:
+            return False
+        # A profile belongs to a person and a company page to the firm; one
+        # filed the other way round is a mistake upstream, not a contact.
+        if ("/in/" in li) != bool(person_key):
+            return False
+        value, is_role, label = li, False, None
+        if verify_status not in LINKEDIN_STATUSES:
+            verify_status = "probable"
     else:
         raise ValueError(f"unknown contact kind {kind}")
     conf = confidence if confidence is not None else SOURCE_CONFIDENCE.get(source, 50)
     ts = now()
     row = conn.execute(
-        "SELECT id, sources, confidence FROM contact_point"
+        "SELECT id, sources, confidence, verify_status FROM contact_point"
         " WHERE crd=? AND kind=? AND value=? AND person_key=?",
         (crd, kind, value, person_key)).fetchone()
     if row:
         srcs = [s for s in (row["sources"] or "").split(",") if s]
         if source not in srcs:
             srcs.append(source)
+        status = row["verify_status"]
+        if kind == "linkedin" and verify_status == "matched":
+            status = "matched"
         conn.execute(
             "UPDATE contact_point SET sources=?, confidence=?, updated_at=?,"
             " person_name=COALESCE(?, person_name), title=COALESCE(title, ?),"
-            " label=COALESCE(label, ?),"
+            " label=COALESCE(label, ?), verify_status=?,"
             " source=CASE WHEN ? > confidence THEN ? ELSE source END,"
             " source_ref=CASE WHEN ? > confidence THEN ? ELSE source_ref END"
             " WHERE id=?",
             (",".join(srcs), max(conf, row["confidence"]), ts, person_name, title, label,
-             conf, source, conf, source_ref, row["id"]))
+             status, conf, source, conf, source_ref, row["id"]))
         return False
     conn.execute(
         "INSERT INTO contact_point (crd, person_key, person_name, title, kind, value,"
-        " label, is_role, source, sources, source_ref, confidence, found_at, updated_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+        " label, is_role, source, sources, source_ref, confidence, verify_status,"
+        " found_at, updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
         (crd, person_key, person_name, title, kind, value, label, 1 if is_role else 0,
-         source, source, source_ref, conf, ts, ts))
-    if person_key:
+         source, source, source_ref, conf, verify_status or "unverified", ts, ts))
+    if person_key and not (kind == "phone" and label in SHARED_PHONE_LABELS):
         conn.execute("DELETE FROM contact_point WHERE crd=? AND kind=? AND value=?"
                      " AND person_key=''", (crd, kind, value))
     return True
+
+
+def bulk_upsert(conn, rows: list[dict], *, batch: int = 5000) -> int:
+    """upsert() for tens of thousands of rows at once, set-based.
+
+    Each row is a dict with crd, kind, value, source and optionally
+    person_key, person_name, title, label, source_ref, confidence,
+    verify_status. Values must already be normalised (norm_phone,
+    norm_linkedin). Merge rules match upsert(): every reporting source is
+    kept, the higher confidence wins, labels and titles already held are not
+    overwritten, and a LinkedIn status only ever rises to matched. Unlike
+    upsert() it never removes firm-level copies, so it is meant for sources
+    that write shared lines and profiles, not mailboxes. Every touched row
+    gets the same updated_at, which lets a caller retire rows it no longer
+    derives. Returns the number of rows sent. The caller commits."""
+    ts = now()
+    seen: dict[tuple, tuple] = {}
+    for r in rows:
+        k = (r["crd"], r["kind"], r["value"], r.get("person_key") or "")
+        if k in seen:
+            continue          # one statement may not touch the same row twice
+        conf = r.get("confidence")
+        if conf is None:
+            conf = SOURCE_CONFIDENCE.get(r["source"], 50)
+        seen[k] = (r["crd"], r.get("person_key") or "", r.get("person_name"),
+                   r.get("title"), r["kind"], r["value"], r.get("label"), r["source"],
+                   r["source"], r.get("source_ref"), conf,
+                   r.get("verify_status") or "unverified", ts, ts)
+    sql = ("INSERT INTO contact_point (crd, person_key, person_name, title, kind, value,"
+           " label, is_role, source, sources, source_ref, confidence, verify_status,"
+           " found_at, updated_at) VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)"
+           " ON CONFLICT (crd, kind, value, person_key) DO UPDATE SET"
+           " sources = CASE WHEN (',' || contact_point.sources || ',')"
+           "   LIKE ('%,' || excluded.source || ',%') THEN contact_point.sources"
+           "   ELSE contact_point.sources || ',' || excluded.source END,"
+           # A row only this source vouches for is simply re-derived: today's
+           # label, confidence and match replace the last run's. A row another
+           # source also reported keeps the best of both.
+           " confidence = CASE WHEN contact_point.sources = excluded.source"
+           "   THEN excluded.confidence"
+           "   ELSE GREATEST(contact_point.confidence, excluded.confidence) END,"
+           " source = CASE WHEN excluded.confidence > contact_point.confidence"
+           "   THEN excluded.source ELSE contact_point.source END,"
+           " source_ref = CASE WHEN excluded.confidence > contact_point.confidence"
+           "   OR contact_point.source = excluded.source"
+           "   THEN excluded.source_ref ELSE contact_point.source_ref END,"
+           " person_name = COALESCE(contact_point.person_name, excluded.person_name),"
+           " title = CASE WHEN contact_point.sources = excluded.source"
+           "   THEN COALESCE(excluded.title, contact_point.title)"
+           "   ELSE COALESCE(contact_point.title, excluded.title) END,"
+           " label = CASE WHEN contact_point.sources = excluded.source"
+           "   THEN COALESCE(excluded.label, contact_point.label)"
+           "   ELSE COALESCE(contact_point.label, excluded.label) END,"
+           " verify_status = CASE WHEN contact_point.kind <> 'linkedin'"
+           "   THEN contact_point.verify_status"
+           "   WHEN contact_point.sources = excluded.source THEN excluded.verify_status"
+           "   WHEN excluded.verify_status = 'matched' THEN 'matched'"
+           "   ELSE contact_point.verify_status END,"
+           " updated_at = excluded.updated_at")
+    vals = list(seen.values())
+    for i in range(0, len(vals), batch):
+        conn.executemany(sql, vals[i:i + batch])
+    return len(vals)
 
 
 def set_verification(conn, cp_id: int, status: str, detail: str | None) -> None:
@@ -322,9 +488,11 @@ def backfill(conn) -> int:
             conn.execute("DELETE FROM contact_point WHERE id=?", (r["id"],))
         else:
             conn.execute("UPDATE contact_point SET person_key=? WHERE id=?", (k, r["id"]))
-    # A value attributed to a person no longer needs its firm-level copy.
+    # A value attributed to a person no longer needs its firm-level copy,
+    # unless it is a shared line (main, office) that is still the firm's.
     conn.execute("""DELETE FROM contact_point f WHERE f.person_key='' AND EXISTS (
         SELECT 1 FROM contact_point p WHERE p.crd=f.crd AND p.kind=f.kind
-        AND p.value=f.value AND p.person_key != '')""")
+        AND p.value=f.value AND p.person_key != ''
+        AND NOT (p.kind='phone' AND COALESCE(p.label, '') IN ('main','office','toll_free')))""")
     conn.commit()
     return n

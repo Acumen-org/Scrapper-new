@@ -37,7 +37,26 @@ SYSTEM = (
     "the data; if the data does not hold the answer, say so plainly and say what would. "
     "Scores are out of 100 and count missing data as zero; mention coverage when a score "
     "rests on little data. When you write any part of the answer from general knowledge "
-    "rather than from the data, say so.")
+    "rather than from the data, say so. Every firm has a firm type (independent RIA, "
+    "custodian, wirehouse, asset manager and so on) with a confidence and reasons; the type "
+    "decides which product lists it can be on, so say what kind of firm it is when that "
+    "matters, and never pitch a product to a type it is not sold to.")
+
+
+def system_prompt() -> str:
+    """SYSTEM plus a compact digest of the industry knowledge base (what Acumen
+    sells to whom, the firm types, the glossary, how Bellwether works), as
+    admins keep it in Settings, Industry knowledge. Falls back to SYSTEM alone
+    if the knowledge base cannot be read."""
+    try:
+        from . import knowledge
+        kb = knowledge.ai_context()
+    except Exception:
+        return SYSTEM
+    if not kb:
+        return SYSTEM
+    return (f"{SYSTEM}\n\nINDUSTRY KNOWLEDGE (background kept by Acumen's admins; facts about "
+            f"a particular firm come only from the data you are given)\n{kb}")
 
 PLAN_SCHEMA_KEYS = ("mode", "firm_name", "filters", "sort", "limit", "title")
 
@@ -113,8 +132,23 @@ def _rows_brief(rows: list[dict]) -> str:
             "best_list": r.get("best_product"), "headcount": r.get("headcount"),
             "hired_12m": r.get("hires_12m"), "left_12m": r.get("departures_12m"),
             "last_signal": r.get("last_signal"), "owner": r.get("owner"),
-            "status": r.get("status")}, default=str))
+            "status": r.get("status"), "firm_type": r.get("firm_type")}, default=str))
     return "\n".join(out)
+
+
+def _attach_types(c, rows: list[dict]) -> None:
+    """Add each row's firm type label, so a written answer can tell an
+    independent RIA from a custodian or an asset manager."""
+    try:
+        from . import firmtype
+        types = firmtype.get_many(c, [r["crd"] for r in rows[:30]])
+    except Exception:
+        c.rollback()
+        return
+    for r in rows[:30]:
+        t = types.get(r["crd"])
+        if t:
+            r["firm_type"] = f"{t['label']} ({t['confidence']}%)"
 
 
 def _find_firm(c, name: str) -> dict | None:
@@ -135,7 +169,8 @@ def ask_firm(c, crd: str, q: str, history: list[dict], who: str) -> dict:
     msgs = [{"role": h["role"], "content": str(h["content"])[:4000]}
             for h in history[-6:] if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")]
     msgs.append({"role": "user", "content": f"DATA ON THIS FIRM\n{text}\n\nQUESTION\n{q}"})
-    out = ai.complete(SYSTEM, msgs, feature="ask", tier="smart", max_tokens=2500, who=who)
+    out = ai.complete(system_prompt(), msgs, feature="ask", tier="smart", max_tokens=2500,
+                      who=who)
     return {"html": ai.md_to_html(out), "text": out}
 
 
@@ -167,7 +202,7 @@ def ask(c, q: str, scope: str = "global", history: list[dict] | None = None,
         f"best); 'search' when a list of firms answers it. Set every filter the question "
         f"implies and null the rest. title is a short description of the result.\n\n"
         f"QUESTION: {q}")})
-    plan = ai.complete(SYSTEM, msgs, feature="ask", tier="smart", schema=_plan_schema(),
+    plan = ai.complete(system_prompt(), msgs, feature="ask", tier="smart", schema=_plan_schema(),
                        max_tokens=1500, who=who)
     mode = plan.get("mode") or "search"
     if mode == "firm":
@@ -190,7 +225,9 @@ def ask(c, q: str, scope: str = "global", history: list[dict] | None = None,
             f"QUESTION: {q}\n\nBellwether searched for firms {desc} and found {total} in "
             f"total. The top {len(rows)}, one JSON object per line:\n{_rows_brief(rows)}\n\n"
             f"Answer the question from these rows.")}]
-        out = ai.complete(SYSTEM, msgs2, feature="ask", tier="smart", max_tokens=2000, who=who)
+        _attach_types(c, rows)
+        out = ai.complete(system_prompt(), msgs2, feature="ask", tier="smart", max_tokens=2000,
+                          who=who)
         return {"html": ai.md_to_html(out) + head + _table(rows, product),
                 "text": out}
     if not rows:
@@ -230,7 +267,7 @@ def brief(c, crd: str, force: bool = False, who: str = "") -> dict | None:
     if not ai.enabled("brief"):
         return dict(row) if row else None
     out = ai.complete(
-        SYSTEM,
+        system_prompt(),
         [{"role": "user", "content": (
             f"DATA ON THIS FIRM\n{text}\n\nWrite a brief for a salesperson about to "
             "contact this firm, in at most 170 words: who they are and how big, which of "

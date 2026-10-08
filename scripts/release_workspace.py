@@ -1,10 +1,15 @@
-﻿"""Apply the workspace release once and report only non-sensitive diagnostics."""
+"""Apply the workspace release once and report only non-sensitive diagnostics."""
 from __future__ import annotations
 
 import time
 from prospect import db, jobs, products, settings, msauth, ai, users
 
-RELEASE = 'workspace-2026-10-glynac-v3-audit'
+# Bumped when a release must re-read website signals and rescore every firm once.
+# v3 classify: firm types, Microsoft Dynamics and Salesforce-built CRMs for Glynac.
+RELEASE = 'workspace-2026-10-v3-classify'
+# Releases that also re-crawl every website and mail record; the v3 one does
+# not, because the October 5 release queued that full refresh already.
+FULL_REFRESH = False
 
 
 def main():
@@ -23,7 +28,15 @@ def main():
         counts = products.score_all(c, progress=lambda done, total: audit.update(done=done, total=total))
         assert audit.get('done') == audit.get('total'), 'Scoring did not finish the complete universe'
         print('All-firm rescoring complete:', counts, 'seconds:', round(time.monotonic()-started, 1), flush=True)
-        requested = jobs.request_full_refresh(c)
+        requested = jobs.request_full_refresh(c) if FULL_REFRESH else 0
+        # AI contact research is new in this release. A feature list saved in
+        # Settings before it existed would keep it off, so add it once; the
+        # daily AI limit still bounds what it can spend, and an admin can
+        # untick it under Settings, AI.
+        feats = settings.get_list('ai.features')
+        if feats and 'research' not in feats:
+            settings.set('ai.features', ','.join(feats + ['research']), by='release ' + RELEASE)
+            print('AI contact research switched on in Settings, AI', flush=True)
         c.execute('INSERT INTO app_release (version, applied_at, evaluated_firms) VALUES (?,?,?) ON CONFLICT DO NOTHING',
                   (RELEASE, jobs.now_iso(), audit['done']))
         c.commit()
@@ -31,10 +44,11 @@ def main():
     total = c.execute('SELECT COUNT(*) n FROM firm_current').fetchone()['n']
     scored = c.execute('SELECT COUNT(DISTINCT crd) n FROM product_score').fetchone()['n']
     hidden = c.execute("SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND verify_status!='valid'").fetchone()['n']
-    visible_bad = c.execute("SELECT COUNT(*) n FROM usable_contact_point WHERE kind='email' AND verify_status!='valid'").fetchone()['n']
+    # Addresses the firm itself published may show unconfirmed; a guess never may.
+    visible_bad = c.execute("SELECT COUNT(*) n FROM usable_contact_point WHERE kind='email' AND source IN ('pattern','ai_web') AND verify_status!='valid'").fetchone()['n']
     evaluated = c.execute('SELECT evaluated_firms FROM app_release WHERE version=?', (RELEASE,)).fetchone()['evaluated_firms']
     print('Firm universe:', total, 'evaluated on release:', evaluated, 'passing at least one product gate:', scored)
-    print('Internal email candidates:', hidden, 'unverified emails visible:', visible_bad)
+    print('Internal email candidates:', hidden, 'unverified guesses visible:', visible_bad)
     assert visible_bad == 0
     assert evaluated == total, 'The firm universe changed during release; run a fresh rescore'
     print('Microsoft configured:', msauth.configured())

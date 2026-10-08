@@ -22,6 +22,10 @@ came back with info@ and compliance@. This one:
   - learns the firm's email pattern from the addresses it found (jdoe@ for
     Jane Doe, twice, means flast) and writes a pattern guess, clearly labelled
     source 'pattern', for each known person still without an address.
+  - keeps the LinkedIn links a site shows: a profile in a person's team card
+    or on their bio page becomes that person's LinkedIn, and the company page
+    (usually in the footer) the firm's. Both are stored as kind 'linkedin',
+    verify_status 'matched', since the firm's own site put them side by side.
   - optionally asks the AI extractor about a team page the rules could not
     parse, when the AI module is configured for it.
 
@@ -278,6 +282,12 @@ class FirmRun:
     person_dial: dict = field(default_factory=dict)         # person_key -> their own number
     person_src: dict = field(default_factory=dict)          # person_key -> page that showed them
     known_of: dict = field(default_factory=dict)            # person_key -> roster name
+    firm_names: list = field(default_factory=list)          # business and legal name
+    company_li: Counter = field(default_factory=Counter)    # company page -> pages linking it
+    company_chrome: set = field(default_factory=set)        # company pages in headers and footers
+    company_src: dict = field(default_factory=dict)         # company page -> first page showing it
+    person_li: dict = field(default_factory=dict)           # person_key -> profile URL
+    li_keys: dict = field(default_factory=dict)             # profile URL -> person keys given it
     emails: set = field(default_factory=set)
     personal: set = field(default_factory=set)
     direct: set = field(default_factory=set)
@@ -359,6 +369,20 @@ def store_page(conn, run: FirmRun, page: Page) -> None:
     # Every read first: the person keys need lookups, and a failed statement
     # would roll back anything written before it.
     keyed = [(h, run.key_for(conn, h.name, h.known)) for h in hits]
+    li_links = {} if vcard else harvest.linkedin_links(page.html, url)
+    for u in li_links.get("company", []):
+        run.company_li[u] += 1
+        run.company_src.setdefault(u, url)
+    run.company_chrome.update(li_links.get("company_chrome", []))
+    # A profile in the header or footer of a one-adviser site is usually the
+    # founder's. It is kept only when its slug spells exactly one roster name.
+    chrome_li = []
+    for u in li_links.get("chrome_people", []):
+        fits = {contacts.name_key(n): n for n in run.roster.names
+                if harvest.linkedin_slug_fit(u, n) == "strong"}
+        if len(fits) == 1:
+            name = next(iter(fits.values()))
+            chrome_li.append((u, name, run.key_for(conn, name, name)))
     # Values already pinned on a person, by another source or earlier in this
     # crawl. A firm-level copy of those would show one mailbox twice. Rows a
     # previous crawl of this site left are not counted: they are about to be
@@ -414,6 +438,12 @@ def store_page(conn, run: FirmRun, page: Page) -> None:
                 run.direct.add(p)
                 run.person_dial.setdefault(key, p)
             best_phone = best_phone or p
+        if h.linkedin and run.person_li.get(key, h.linkedin) == h.linkedin:
+            contacts.upsert(conn, run.crd, "linkedin", h.linkedin, source, person_key=key,
+                            person_name=h.name, title=title, source_ref=url,
+                            verify_status="matched")
+            run.person_li[key] = h.linkedin
+            run.li_keys.setdefault(h.linkedin, {})[key] = h.name
         if title and not h.email and not all_phones:
             # Nothing to put in contact_point, but the title can still label
             # rows other sources hold for the same person.
@@ -421,6 +451,14 @@ def store_page(conn, run: FirmRun, page: Page) -> None:
                          " AND title IS NULL", (title, run.crd, key))
         if h.has_data():
             web_contact_row(conn, run.crd, h.name, title, h.email, best_phone, url, run.now)
+
+    for u, name, key in chrome_li:
+        if key and key not in run.person_li:
+            contacts.upsert(conn, run.crd, "linkedin", u, source, person_key=key,
+                            person_name=name, title=run.roster.titles.get(contacts.name_key(name)),
+                            source_ref=url, verify_status="matched")
+            run.person_li[key] = u
+            run.li_keys.setdefault(u, {})[key] = name
 
     # Firm-level details nobody on this page claimed.
     for e in emails:
@@ -636,6 +674,49 @@ def learn_and_guess(conn, run: FirmRun) -> int:
     return n
 
 
+def settle_shared_linkedin(conn, run: FirmRun) -> None:
+    """A profile this crawl gave to two or more people is nobody's own: some
+    team pages repeat the founder's link on every card. It stays only with
+    the one person its slug spells, if any."""
+    for url, keys in run.li_keys.items():
+        if len(keys) < 2:
+            continue
+        owners = [k for k, n in keys.items() if harvest.linkedin_slug_fit(url, n) == "strong"]
+        for key in keys:
+            if len(owners) == 1 and key == owners[0]:
+                continue
+            conn.execute("DELETE FROM contact_point WHERE crd=? AND kind='linkedin' AND value=?"
+                         " AND person_key=? AND sources='website' AND found_at >= ?",
+                         (run.crd, url, key, run.now))
+            if run.person_li.get(key) == url:
+                del run.person_li[key]
+    conn.commit()
+
+
+def store_firm_linkedin(conn, run: FirmRun) -> int:
+    """The firm's own LinkedIn company page, chosen once the whole site has
+    been read. One company page on the site is the firm's. Several (its own,
+    a parent's, a custodian's) are narrowed to those whose slug carries the
+    firm's name or domain, then to the one in the site-wide header or footer;
+    a choice that stays ambiguous stores nothing."""
+    pages = list(run.company_li)
+    if not pages:
+        return 0
+    if len(pages) > 1:
+        named = [u for u in pages if harvest.company_slug_fits(u, run.firm_names,
+                                                               run.site_domain)]
+        if not named:
+            named = [u for u in pages if u in run.company_chrome]
+        pages = named
+    if not pages or len(pages) > 2:
+        return 0
+    for u in pages:
+        contacts.upsert(conn, run.crd, "linkedin", u, "website",
+                        source_ref=run.company_src.get(u), verify_status="matched")
+    conn.commit()
+    return len(pages)
+
+
 def settle_shared_phones(conn, run: FirmRun) -> None:
     """A number that turned out to be printed beside two or more people, or in
     a footer seen only on a later page, is the firm's line, not anybody's
@@ -706,8 +787,10 @@ def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
     fetches (store_page), each callback commits before returning, and every
     database read a page needs happens before that page's writes."""
     run = FirmRun(crd=crd, now=_now(), people_mod=people)
-    r = conn.execute("SELECT phone FROM firm_current WHERE crd=?", (crd,)).fetchone()
+    r = conn.execute("SELECT phone, business_name, legal_name FROM firm_current WHERE crd=?",
+                     (crd,)).fetchone()
     run.main_phone = contacts.norm_phone(r["phone"]) if r and r["phone"] else None
+    run.firm_names = [n for n in ((r["business_name"], r["legal_name"]) if r else ()) if n]
     run.roster = load_roster(conn, crd, people)
     host = urlparse(website if "://" in website else "https://" + website).hostname or ""
     run.site_domain = harvest.registrable(host)
@@ -731,6 +814,8 @@ def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
         ask_ai(conn, run)
         attribute_leftovers(conn, run)
         settle_shared_phones(conn, run)
+        settle_shared_linkedin(conn, run)
+        store_firm_linkedin(conn, run)
         if not crawler.root_error:
             # Only a complete read may retire old rows; a site that stopped
             # answering halfway has not said those people are gone.
@@ -743,6 +828,7 @@ def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
     return {"status": status, "pages": run.pages_ok, "people": len(run.persons),
             "emails": len(run.emails), "personal": len(run.personal),
             "phones": len(run.direct), "guesses": guesses, "method": method,
+            "linkedin": len(run.person_li),
             "site": pages[0].final_url if pages else website,
             "error": crawler.root_error}
 
@@ -836,20 +922,21 @@ def main() -> int:
                                "personal": 0, "phones": 0, "guesses": 0, "method": None,
                                "site": website, "error": f"{type(e).__name__}: {e}"[:200]}
                 save_state(conn, crd, res)
-                for k in ("pages", "people", "personal", "phones", "guesses"):
-                    tot[k] += res[k]
+                for k in ("pages", "people", "personal", "phones", "guesses", "linkedin"):
+                    tot[k] += res.get(k, 0)
                 why = f" ({res['error']})" if res["status"] != "ok" and res.get("error") else ""
                 via = f", {res['method']}" if res["method"] and res["method"] != "static" else ""
                 print(f"  {crd}: {res['status']}{why}, {res['pages']} pages{via},"
                       f" {res['people']} people, {res['personal']} personal emails,"
-                      f" {res['phones']} direct phones, {res['guesses']} guesses"
+                      f" {res['phones']} direct phones, {res['guesses']} guesses,"
+                      f" {res.get('linkedin', 0)} LinkedIn profiles"
                       f" [{time.monotonic() - t0:.0f}s]", flush=True)
         jobs.request_run(conn, 'email_verify')
         jobs.request_run(conn, 'rescore')
         run.rows_out = len(rows)
         run.note(f"{len(rows)} firms, {tot['pages']} pages, {tot['people']} people,"
                  f" {tot['personal']} personal emails, {tot['phones']} direct phones,"
-                 f" {tot['guesses']} pattern guesses")
+                 f" {tot['guesses']} pattern guesses, {tot['linkedin']} LinkedIn profiles")
     return 0
 
 

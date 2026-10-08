@@ -64,6 +64,13 @@ JOBS: list[Job] = [
         "scripts.ingest_people", (), every_hours=24, timeout_s=3600,
         backlog_sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM person) THEN 0 ELSE 1 END n",
         done_sql="SELECT COUNT(*) n FROM firm_people_stats", group="filings"),
+    Job("people_index", "People screen",
+        "Folds the roster, officer titles and every usable email, phone and LinkedIn profile "
+        "into the table the People screen reads, so new contacts appear there within half an "
+        "hour and the screen stays instant.",
+        "scripts.build_people_index", (), every_hours=0.5, timeout_s=900,
+        backlog_sql="SELECT CASE WHEN to_regclass('people_index') IS NULL THEN 1 ELSE 0 END n",
+        group="contacts"),
     Job("brochures", "Brochures",
         "Downloads each firm's Part 2A brochure and reads it for what the firm does, in "
         "its own words. Best-scored firms first; failed downloads retry after a day.",
@@ -98,21 +105,49 @@ JOBS: list[Job] = [
         "scripts.crawl_directories", (), every_hours=1, timeout_s=3600,
         backlog_sql="SELECT COUNT(*) n FROM directory_source WHERE status != 'paused' AND (next_run_at IS NULL OR next_run_at <= '{now}')",
         group="contacts"),
-    Job("infer_emails", "Email patterns",
-        "Works out each firm's email pattern from addresses it has published and writes "
-        "a candidate address for every person who still has none. Candidates stay "
-        "internal until verification confirms them.",
-        "scripts.infer_emails", ("--limit", "150"), every_hours=1,
-        backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN email_guess_state g ON g.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE f.website IS NOT NULL AND f.website != '' AND (g.crd IS NULL OR r.requested_at > g.checked_at)",
-        done_sql="SELECT COUNT(*) n FROM email_guess_state g JOIN firm_scope s ON s.crd=g.crd",
+    # Backlog: the stamp scripts/ingest_offices.py records (STAMP_SQL there;
+    # keep the two identical) no longer matches the roster and feeds.
+    Job("offices", "Office phones",
+        "Gives everyone a line: the phone of the office their registration places them "
+        "in, from the offices each firm files on Form ADV, else the firm's main number. "
+        "Also stores each firm's LinkedIn page and the adviser profiles firms list on "
+        "Form ADV. Redone whenever the roster or the firm filings change.",
+        "scripts.ingest_offices", (), every_hours=168, timeout_s=1800,
+        backlog_sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM office_phone_state WHERE k='attach' AND stamp = (SELECT '1/' || (SELECT COALESCE(MAX(id), 0) FROM snapshot WHERE source_key IN ('adv_feed','adv_state_feed','ia_indvl_feed'))::text || '/' || (SELECT COUNT(*) FROM firm_office)::text || '/' || (SELECT COUNT(*) FROM firm_social)::text)) THEN 0 ELSE 1 END n",
+        group="contacts"),
+    Job("contact_search", "Web search",
+        "Looks up each person's public LinkedIn profile through free search engines, never "
+        "by signing in to LinkedIn, and keeps one only when the result names both the "
+        "person and the firm. Also finds addresses the firm's people published on the open "
+        "web, for verification. Best firms and their officers first; nobody is searched "
+        "twice in 60 days; the engines are asked at most once every 3 seconds.",
+        "scripts.search_contacts", ("--limit", "40", "--seconds", "420"), every_hours=0.5,
+        timeout_s=600,
+        backlog_sql="SELECT COUNT(*) n FROM person_employment e JOIN firm_scope s ON s.crd=e.org_pk WHERE e.kind='current' AND NOT EXISTS (SELECT 1 FROM contact_search_state x WHERE x.crd=e.org_pk AND x.person_key='i:'||e.indvl_pk) AND NOT EXISTS (SELECT 1 FROM contact_point c WHERE c.crd=e.org_pk AND c.person_key='i:'||e.indvl_pk AND c.kind='linkedin' AND c.verify_status='matched')",
+        done_sql="SELECT COUNT(*) n FROM contact_search_state x JOIN firm_scope s ON s.crd=x.crd WHERE x.person_key LIKE 'i:%'",
+        total_sql="SELECT COUNT(*) n FROM person_employment e JOIN firm_scope s ON s.crd=e.org_pk WHERE e.kind='current'",
+        group="contacts"),
+    # The email hunt replaced "infer_emails", which wrote unconfirmed guesses
+    # into contact_point. Its firm-page button now queues a firm here instead.
+    Job("email_hunt", "Email hunt",
+        "Finds a confirmed email for everyone at the best firms. Asks each firm's mail "
+        "server about a person's likely addresses one after another, without sending "
+        "anything, and keeps only an address the server confirms. A bounced guess moves on "
+        "to the next pattern, a 'try later' is retried, and when every pattern bounces the "
+        "person is looked at again after 60 days.",
+        "scripts.hunt_emails", ("--limit", "300", "--seconds", "540"), every_hours=0.25,
+        timeout_s=900,
+        backlog_sql="SELECT COUNT(*) n FROM firm_scope s LEFT JOIN email_hunt_firm h ON h.crd=s.crd LEFT JOIN firm_refresh_request r ON r.crd=s.crd WHERE h.crd IS NULL OR h.next_try_at IS NULL OR h.next_try_at <= '{now}' OR r.requested_at > h.checked_at",
+        done_sql="SELECT COUNT(*) n FROM email_hunt_firm h JOIN firm_scope s ON s.crd=h.crd",
         total_sql="SELECT COUNT(*) n FROM firm_scope", group="contacts"),
     Job("email_verify", "Email verification",
-        "Checks every address with the mail server that would receive it, without "
-        "sending anything, and re-checks after 90 days. Personal addresses first.",
+        "Checks every published address with the mail server that would receive it, "
+        "without sending anything, and re-checks after 90 days. Personal addresses first. "
+        "Guessed addresses are the email hunt's.",
         "scripts.verify_emails", ("--limit", "60"), every_hours=1, timeout_s=1800,
-        backlog_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND verify_status IN ('unverified','queued')",
-        done_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND verify_status NOT IN ('unverified','queued')",
-        total_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email'", group="contacts"),
+        backlog_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web') AND verify_status IN ('unverified','queued')",
+        done_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web') AND verify_status NOT IN ('unverified','queued')",
+        total_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web')", group="contacts"),
     Job("mail_platform", "Email platform",
         "Tells Microsoft 365 from Google from public mail records, re-checked every 90 days.",
         "scripts.mail_platform", ("--limit", "400"), every_hours=24,
@@ -126,6 +161,15 @@ JOBS: list[Job] = [
         backlog_sql="SELECT COUNT(*) n FROM firm_current f JOIN firm_scope s ON s.crd=f.crd WHERE (f.q5k3='Y' OR f.q7b='Y') AND f.crd NOT IN (SELECT crd FROM firm_refresh)",
         done_sql="SELECT COUNT(*) n FROM firm_refresh",
         group="filings"),
+    Job("classify", "Firm types",
+        "Sorts every firm into a type (independent RIA, custodian, wirehouse, asset "
+        "manager, private fund manager and the rest) from its Form ADV answers, its owners "
+        "and the known names in Industry knowledge. Types set by hand are kept. When any "
+        "type changes, the scores are recomputed.",
+        "scripts.classify_firms", ("--ai-limit", "40"), every_hours=24, timeout_s=1800,
+        backlog_sql="SELECT COUNT(*) n FROM firm_current f WHERE NOT EXISTS (SELECT 1 FROM firm_class c WHERE c.crd=f.crd)",
+        done_sql="SELECT COUNT(*) n FROM firm_class c JOIN firm_current f ON f.crd=c.crd",
+        total_sql="SELECT COUNT(*) n FROM firm_current", group="filings"),
     Job("rescore", "Scores",
         "Recomputes every product list from the latest data. Takes seconds.",
         "scripts.score_products", (), every_hours=3, timeout_s=1200, group="system"),
@@ -141,6 +185,14 @@ JOBS: list[Job] = [
         "Tidies people's titles and sorts them into roles where the rules could not.",
         "scripts.ai_jobs", ("clean", "--limit", "80"), every_hours=12, needs="ai:clean",
         group="ai"),
+    Job("ai_research", "AI contact research",
+        "For the best-placed people still missing a confirmed email, a direct phone or a "
+        "LinkedIn profile after every free source, asks the AI provider to find what they "
+        "or their firm published, then re-reads each cited page itself and keeps only what "
+        "is really there. Emails it finds still need the mail server's confirmation. A "
+        "person is researched at most once in 60 days, within the AI daily limit.",
+        "scripts.ai_research", ("--limit", "8"), every_hours=1, timeout_s=1500,
+        needs="ai:research", group="ai"),
 ]
 BY_KIND = {j.kind: j for j in JOBS}
 
@@ -268,7 +320,7 @@ def request_full_refresh(conn) -> int:
                  " ON CONFLICT(crd) DO UPDATE SET requested_at=excluded.requested_at",
                  (now_iso(),))
     conn.commit()
-    for kind in ('web_enrich', 'mail_platform', 'infer_emails', 'email_verify',
+    for kind in ('web_enrich', 'mail_platform', 'email_hunt', 'email_verify',
                  'brochure_retag', 'rescore'):
         request_run(conn, kind)
     return conn.execute('SELECT COUNT(*) n FROM firm_current').fetchone()['n']

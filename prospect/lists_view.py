@@ -46,7 +46,27 @@ def _key_or_none(key: str):
     return products.product(key)
 
 
-def _where(key, q, st, owner, stat, sig, reach, cov, status="scored"):
+SIZES = [("", "Any size"), ("100", "$100M+"), ("250", "$250M+"), ("500", "$500M+"),
+         ("1000", "$1B+"), ("5000", "$5B+")]
+
+
+def _has_table(c, name: str) -> bool:
+    try:
+        return bool(c.execute("SELECT to_regclass(?) t", (name,)).fetchone()["t"])
+    except Exception:
+        c.rollback()
+        return False
+
+
+def _categories() -> list[tuple[str, str]]:
+    try:
+        from . import firmtype
+        return [(c["key"], c["label"]) for c in firmtype.categories()]
+    except Exception:
+        return []
+
+
+def _where(key, q, st, owner, stat, sig, reach, cov, status="scored", size="", cat=""):
     where = ["p.product=?", "p.status=?"]
     args: list = [key, status]
     if q:
@@ -76,20 +96,31 @@ def _where(key, q, st, owner, stat, sig, reach, cov, status="scored"):
         args.append(signal_cutoff())
     if reach == "email":
         where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'"
-                     " AND x.person_key != '' AND x.is_role=0 AND x.source != 'pattern'"
-                     " AND x.verify_status NOT IN ('invalid','no_mail_server'))")
+                     " AND x.person_key != '' AND x.is_role=0)")
     elif reach == "verified":
         where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'"
                      " AND x.verify_status='valid')")
     elif reach == "phone":
         where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='phone'"
+                     " AND x.person_key != '' AND x.label IN ('direct','mobile'))")
+    elif reach == "linkedin":
+        where.append("EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='linkedin'"
                      " AND x.person_key != '')")
+    elif reach == "none":
+        where.append("NOT EXISTS (SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'"
+                     " AND x.person_key != '' AND x.is_role=0)")
     if cov == "full":
         where.append("p.coverage >= 90")
     elif cov == "most":
         where.append("p.coverage >= 70")
     elif cov == "gaps":
         where.append("p.coverage < 70")
+    if size in dict(SIZES) and size:
+        where.append("f.raum >= ?")
+        args.append(int(size) * 1_000_000)
+    if cat:
+        where.append("EXISTS (SELECT 1 FROM firm_class fc WHERE fc.crd=p.crd AND fc.category=?)")
+        args.append(cat)
     return " AND ".join(where), args
 
 
@@ -114,6 +145,7 @@ def can_edit(key: str) -> bool:
 def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
                  st: str = Query(""), owner: str = Query(""), stat: str = Query(""),
                  sig: str = Query(""), reach: str = Query(""), cov: str = Query(""),
+                 size: str = Query(""), cat: str = Query(""),
                  sort: str = Query("score"), page_n: int = Query(1, ge=1, alias="page"),
                  per: int = Query(50, ge=10, le=200), msg: str = Query(""),
                  err: str = Query("")):
@@ -133,23 +165,34 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
         JOIN trigger_event t ON t.crd=p.crd LEFT JOIN trigger_action a ON a.trigger_id=t.id
         WHERE p.product=? AND p.status='scored' AND t.suppressed=0 AND a.state IS NULL
           AND t.detected_date >= ?""", (key, signal_cutoff())).fetchone()["n"]
+    reach_n = 0
+    try:
+        reach_n = c.execute("""SELECT COUNT(DISTINCT p.crd) n FROM product_score p
+            JOIN usable_contact_point x ON x.crd=p.crd AND x.kind='email' AND x.person_key != ''
+             AND x.is_role=0 WHERE p.product=? AND p.status='scored'""", (key,)).fetchone()["n"]
+    except Exception:
+        c.rollback()
 
     qs = qs_join(q=q, st=st, owner=owner, stat=stat, sig=sig, reach=reach, cov=cov,
-                 sort=sort if sort != "score" else "")
+                 size=size, cat=cat, sort=sort if sort != "score" else "")
 
     def tab(v, label, n=None):
         cls = "on" if view == v else ""
-        cnt = f' <span class="muted">{n:,}</span>' if n is not None else ""
+        cnt = f'<span class="cnt">{n:,}</span>' if n is not None else ""
         return f'<a class="{cls}" href="/lists/{key}?view={v}">{label}{cnt}</a>'
 
-    strip = (f'<div class="strip">'
-             f'<a href="/lists/{key}"><div class="n">{stats["n"] or 0:,}</div><div class="l">Firms ranked</div></a>'
-             f'<a href="/lists/{key}?cov=full" class="{"on" if cov == "full" else ""}"><div class="n">{stats["full_n"] or 0:,}</div>'
-             f'<div class="l">Scored on 90%+ known data</div></a>'
-             f'<div class="k"><div class="n">{stats["cov"] or 0:.0f}%</div><div class="l">Average coverage</div></div>'
-             f'<div class="k"><div class="n">{stats["hi"] or 0:,}</div><div class="l">Score 60 or more</div></div>'
-             f'<a class="{"on" if sig else ""}" href="/lists/{key}?sig=1"><div class="n">{fresh_n:,}</div>'
-             f'<div class="l">With a new signal</div></a></div>')
+    kpis = (f'<div class="kpis" style="margin-bottom:22px">'
+            f'<a class="kpi" href="/lists/{key}"><div class="l">Firms ranked</div><div class="n">{stats["n"] or 0:,}</div>'
+            f'<div class="d">passed every gate</div></a>'
+            f'<a class="kpi{" accent" if sig else ""}" href="/lists/{key}?sig=1"><div class="l">New signal</div>'
+            f'<div class="n">{fresh_n:,}</div><div class="d">in the last 60 days</div></a>'
+            f'<a class="kpi" href="/lists/{key}?reach=email"><div class="l">Reachable</div><div class="n">{reach_n:,}</div>'
+            f'<div class="d">a named person\'s email</div></a>'
+            f'<div class="kpi"><div class="l">Score 60 or more</div><div class="n">{stats["hi"] or 0:,}</div>'
+            f'<div class="d">strong fit</div></div>'
+            f'<a class="kpi{" accent" if cov == "full" else ""}" href="/lists/{key}?cov=full"><div class="l">Data coverage</div>'
+            f'<div class="n">{stats["cov"] or 0:.0f}%</div><div class="d">{stats["full_n"] or 0:,} scored on 90%+ known data</div></a>'
+            f'</div>')
 
     if view == "scoring":
         body_main = scoring_html(key, msg, err)
@@ -157,23 +200,25 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
         body_main = _disq(c, key, q, page_n, per)
     else:
         body_main = _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n,
-                            per, qs)
+                            per, qs, size, cat)
     c.close()
 
-    note = (f'<details class="source-help"><summary>About this list</summary><p>{esc(p["note"].strip())}</p></details>'
+    note = (f'<details class="source-help"><summary>How this list is built</summary><p>{esc(p["note"].strip())}</p></details>'
             if p.get("note") and view == "ranked" else "")
     exp = ""
     if view == "ranked":
         exp = (f'<a class="btn" href="/lists/{key}/export.csv?{qs}" data-noprefetch>Export list</a>'
-               f'<a class="btn" href="/lists/{key}/export.xlsx?{qs}" data-noprefetch>Export contacts</a>')
-    scoring_tab = "Scoring" + (" (edit)" if can_edit(key) else "")
+               f'<a class="btn primary" href="/lists/{key}/export.xlsx?{qs}" data-noprefetch>Export contacts</a>')
+    scoring_tab = "Scoring" + (" and weights" if can_edit(key) else "")
+    from .webapp import FAMILY_COLOUR
+    dot = FAMILY_COLOUR.get(p["family"], "#888")
     body = f"""<div class="pg wide">
-<div class="crumb"><a href="/">Home</a> / Product lists</div>
-<div class="head"><div><h1>{esc(p["name"])}</h1>
+<div class="crumb"><a href="/">Home</a><span class="sep">/</span>Product lists</div>
+<div class="head"><div><h1><span class="dotc" style="background:{dot};width:12px;height:12px;border-radius:4px"></span>{esc(p["name"])}</h1>
 <div class="lede">{esc(p["audience"])}</div></div>
 <div class="acts">{exp}</div></div>
-{strip}
-<div style="margin:18px 0 4px" class="seg">{tab("ranked", "Ranked")}{tab("disqualified", "Disqualified", dq_n)}{tab("scoring", scoring_tab)}</div>
+{kpis}
+<nav class="tabs">{tab("ranked", "Ranked", stats["n"] or 0)}{tab("disqualified", "Removed", dq_n)}{tab("scoring", scoring_tab)}</nav>
 {note}
 {body_main}
 </div>"""
@@ -208,11 +253,33 @@ document.addEventListener('DOMContentLoaded',wsum);
 """
 
 
-def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, qs):
-    where, args = _where(key, q, st, owner, stat, sig, reach, cov)
+def _reach_cell(f: dict) -> str:
+    """How reachable the firm is, as pills: verified addresses, named people
+    with an address, direct lines; otherwise, that Bellwether is still looking."""
+    bits = []
+    if f["verified"]:
+        bits.append(f'<span class="pill ok" title="Addresses a mail server confirmed">'
+                    f'{f["verified"]} verified</span>')
+    elif f["personal"]:
+        bits.append(f'<span class="pill" title="Named people with an address the firm published">'
+                    f'{f["personal"]} named</span>')
+    if f["direct"]:
+        bits.append(f'<span class="pill" title="Direct or office lines tied to a person">'
+                    f'{f["direct"]} phone{"s" if f["direct"] != 1 else ""}</span>')
+    elif f["phone"] and not bits:
+        bits.append('<span class="pill" title="The main line the firm filed">Main line</span>')
+    if not f["verified"] and not f["personal"]:
+        bits.append('<span class="hunt" title="Website, web search, verified patterns and AI research '
+                    'are working on this firm"><i></i>Hunting</span>')
+    return f'<div class="pills">{"".join(bits)}</div>'
+
+
+def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, qs, size="", cat=""):
+    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat)
     base = BASE.format(where=where)
     total = c.execute(f"SELECT COUNT(*) n {base}", args).fetchone()["n"]
-    have_people = bool(c.execute("SELECT to_regclass('firm_people_stats') t").fetchone()["t"])
+    have_people = _has_table(c, "firm_people_stats")
+    have_cls = _has_table(c, "firm_class")
     order = {"signal": "fresh DESC NULLS LAST, p.rank",
              "potential": "p.potential DESC NULLS LAST, p.rank",
              "aum": "f.raum DESC NULLS LAST", "name": "f.legal_name",
@@ -230,7 +297,7 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
                      [signal_cutoff()] + args + [per, (page_n - 1) * per]).fetchall()
     crds = [r["crd"] for r in rows]
     flags = ui.contact_flags(c, crds)
-    trig = {}
+    trig, ftypes = {}, {}
     if crds:
         ph = ",".join("?" * len(crds))
         for r in c.execute(f"""SELECT DISTINCT ON (crd) crd, trigger_type, detected_date
@@ -238,6 +305,12 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
                   AND detected_date >= ? ORDER BY crd, detected_date DESC""",
                            tuple(crds) + (signal_cutoff(),)):
             trig[r["crd"]] = r
+        if have_cls:
+            try:
+                from . import firmtype
+                ftypes = firmtype.get_many(c, crds) or {}
+            except Exception:
+                c.rollback()
     lists = c.execute("SELECT id, name FROM user_list ORDER BY name").fetchall()
     listopts = "".join(f'<option value="{l["id"]}">{esc(l["name"])}</option>' for l in lists)
     back = f"/lists/{key}?{qs}&page={page_n}"
@@ -246,63 +319,74 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
     for r in rows:
         t = trig.get(r["crd"])
         tcell = (f'<span class="chip lead">{esc(TYPE_LABEL.get(t["trigger_type"], t["trigger_type"]))}</span>'
-                 f'<div class="meta">{esc(t["detected_date"])}</div>' if t else "")
-        who = ""
-        if r["owner"] or r["status"]:
-            who = (f'<span class="chip">{esc(r["status"] or "claimed")}</span>'
-                   f'<div class="meta">{esc(r["owner"] or "")}</div>')
+                 f'<div class="meta">{esc(ui.ago(t["detected_date"]))}</div>' if t else
+                 '<span class="dim small">None new</span>')
+        tags = []
+        ft = ftypes.get(r["crd"]) if ftypes else None
+        if ft and ft.get("category"):
+            tags.append(f'<span class="ftype">{esc(ft.get("short") or ft.get("label") or ft["category"])}</span>')
+        if r["status"] or r["owner"]:
+            tags.append(f'<span class="chip lead">{esc((r["status"] or "claimed").capitalize())}'
+                        f'{" . " + esc(r["owner"]) if r["owner"] else ""}</span>')
         add = (f'<form method="post" action="/firms/addtolist">'
                f'<input type="hidden" name="crd" value="{esc(r["crd"])}">'
                f'<input type="hidden" name="back" value="{esc(back)}">'
                f'<input type="hidden" name="new_name" value="">'
-               f'<select name="list_id" style="min-width:0;padding:3px 7px;font-size:12px" '
-               f'onchange="addToList(this)" title="Add to one of your saved lists">'
-               f'<option value="">+ list</option>{listopts}'
+               f'<select name="list_id" class="listpick" style="height:28px;font-size:12px;min-width:0;width:92px" '
+               f'onchange="addToList(this)" title="Add to one of your saved lists" aria-label="Add to a saved list">'
+               f'<option value="">+ List</option>{listopts}'
                f'<option value="__new">New list...</option></select></form>')
         body.append(
             f'<tr class="go" data-href="/firm/{esc(r["crd"])}?p={key}">'
-            f'<td><div class="firm"><span class="row-rank">{r["rank"] or ""}</span><a href="/firm/{esc(r["crd"])}?p={key}">'
-            f'{escn(r["legal_name"] or "(unnamed)")}</a></div>'
-            f'<div class="meta">{ui.firm_meta(r)}</div></td>'
-            f'<td>{score_cell(r["score"], r["coverage"], r["potential"])}'
-            f'</td>'
-            f'<td class="why">{ui.why_line(r["detail_json"])}</td>'
-            f'<td>{ui.contact_cell(flags[r["crd"]])}</td>'
-            f'<td>{tcell or "<span class=muted>No new signal</span>"}</td>'
-            f'<td><details class="row-actions"><summary>Manage</summary>{who}{add}</details></td></tr>')
-    empty = ('<tr><td colspan="6" class="empty">No firms match. Clear a filter, or open '
-             f'<a href="/lists/{key}?view=scoring">Scoring</a> to see what this list requires.</td></tr>')
+            f'<td class="rank">{r["rank"] or ""}</td>'
+            f'<td><div class="ent">{ui.mono(r["legal_name"])}<div><a class="t" href="/firm/{esc(r["crd"])}?p={key}">'
+            f'{escn(r["legal_name"] or "(unnamed)")}</a>'
+            f'<div class="meta">{ui.firm_meta(r)}</div>'
+            f'{("<div class=pills style=margin-top:6px>" + "".join(tags) + "</div>") if tags else ""}</div></div></td>'
+            f'<td>{score_cell(r["score"], r["coverage"], r["potential"])}</td>'
+            f'<td>{ui.why_cell(r["detail_json"], r["score"])}</td>'
+            f'<td>{_reach_cell(flags[r["crd"]])}</td>'
+            f'<td>{tcell}</td>'
+            f'<td>{add}</td></tr>')
+    empty = ('<tr><td colspan="7"><div class="empty"><b>No firms match these filters</b>Remove a '
+             f'filter above, or open <a href="/lists/{key}?view=scoring">Scoring</a> to see what this '
+             'list requires.</div></td></tr>')
     states = _states(c, key)
-    stat_opts = "".join(ui.opt(s, stat, s.capitalize()) for s in ui.STATUS_OPTIONS)
     pages = max(1, -(-total // per))
     prev = f'<a href="/lists/{key}?{qs}&page={page_n-1}">Previous</a>' if page_n > 1 else ""
     nxt = f'<a href="/lists/{key}?{qs}&page={page_n+1}">Next</a>' if page_n < pages else ""
-    return f"""
-<form class="filters" method="get" action="/lists/{key}">
-<label>Search<input type="search" name="q" value="{esc(q)}" placeholder="Firm, city or CRD"></label>
-<label>State<select name="st">{ui.opt("", st, "All states")}{"".join(ui.opt(s, st, s) for s in states)}</select></label>
-<label>Data<select name="cov">{ui.opt("", cov, "Any coverage")}{ui.opt("full", cov, "90%+ known")}{ui.opt("most", cov, "70%+ known")}{ui.opt("gaps", cov, "Big gaps")}</select></label>
-<label>Owner<select name="owner">{ui.opt("", owner, "Anyone")}{ui.opt("me", owner, "Mine")}{ui.opt("none", owner, "Unclaimed")}</select></label>
-<label>Status<select name="stat">{ui.opt("", stat, "Any")}{ui.opt("open", stat, "Still open")}{stat_opts}</select></label>
-<label>Signal<select name="sig">{ui.opt("", sig, "Any")}{ui.opt("1", sig, "New in 60 days")}</select></label>
-<label>Reach<select name="reach">{ui.opt("", reach, "Any")}{ui.opt("email", reach, "A named person's email")}{ui.opt("verified", reach, "A verified email")}{ui.opt("phone", reach, "A direct line")}</select></label>
-<label>Sort<select name="sort">{"".join(ui.opt(k, sort, v) for k, v in SORTS.items())}</select></label>
-<button class="primary" type="submit">Apply</button>
-<a class="btn ghost" href="/lists/{key}">Clear</a>
-</form>
-<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:10px 0 0;flex-wrap:wrap">
-<div class="legend"><span><b style="color:var(--ink)">{total:,}</b> firms</span>
-<span><i style="background:var(--ink)"></i>earned on known data</span>
-<span><i style="background:var(--hatch)"></i>unknown, could still be earned</span></div>
-<form method="post" action="/views/save" class="acts">
+    vals = dict(q=q, st=st, owner=owner, stat=stat, sig=sig, reach=reach, cov=cov, size=size,
+                cat=cat, sort=sort)
+    more = [("cov", "Data coverage", [("", "Any coverage"), ("full", "90%+ known"),
+                                      ("most", "70%+ known"), ("gaps", "Big gaps")]),
+            ("owner", "Owner", [("", "Anyone"), ("me", "Mine"), ("none", "Unclaimed")]),
+            ("stat", "Status", [("", "Any status"), ("open", "Still open")]
+             + [(s, s.capitalize()) for s in ui.STATUS_OPTIONS])]
+    cats = _categories()
+    if cats:
+        more.append(("cat", "Firm type", [("", "Any firm type")] + cats))
+    more.append(("sort", "Sort", list(SORTS.items())))
+    bar = ui.filter_bar(f"/lists/{key}", vals, search=("q", "Search firm, city or CRD"),
+                        quick=[("st", "State", [("", "All states")] + [(s, s) for s in states]),
+                               ("size", "Size", SIZES),
+                               ("reach", "Reach", [("", "Any reach"), ("email", "Named email"),
+                                                   ("verified", "Verified email"),
+                                                   ("phone", "Direct line"), ("linkedin", "LinkedIn"),
+                                                   ("none", "No email yet")]),
+                               ("sig", "Signal", [("", "Any signal"), ("1", "New signal, 60 days")])],
+                        more=more, defaults={"sort": "score"})
+    return f"""{bar}
+<div class="resbar"><span><b>{total:,}</b> firm{"s" if total != 1 else ""}</span>
+<span class="legend"><span><i style="background:linear-gradient(90deg,#9b9ba3,#d8d8de)"></i>earned</span>
+<span><i style="background:var(--hatch)"></i>no data yet</span>
+<span><i style="background:var(--raise3)"></i>not met</span>
+<details class="save-view"><summary>Save view</summary><form method="post" action="/views/save">
 <input type="hidden" name="page" value="list:{key}"><input type="hidden" name="qs" value="{esc(qs)}">
-<input type="text" name="name" placeholder="Name this view to save it" style="min-width:210px">
-<button type="submit" class="sm">Save view</button></form>
-</div>
-<table class="ranked-table"><thead><tr><th>Firm</th><th>Fit score</th><th>Key evidence</th>
-<th>Contacts</th><th>Activity</th><th></th></tr></thead>
-<tbody>{"".join(body) or empty}</tbody></table>
-<div class="pager">{prev} Page {page_n} of {pages} {nxt}</div>"""
+<input type="text" name="name" placeholder="Name this view" required><button type="submit" class="primary sm">Save</button></form></details></span></div>
+<div class="table-scroll"><table class="ranked-table"><thead><tr><th>#</th><th>Firm</th><th>Score</th><th>Why it scores</th>
+<th>Reach</th><th>New signal</th><th></th></tr></thead>
+<tbody>{"".join(body) or empty}</tbody></table></div>
+<div class="pager"><span>Page {page_n} of {pages:,}</span><span class="acts">{prev}{nxt}</span></div>"""
 
 
 def _disq(c, key, q, page_n, per):
@@ -323,8 +407,8 @@ def _disq(c, key, q, page_n, per):
     return (f'<p class="lede" style="margin:14px 0 4px">Firms that passed the gates and were '
             f'then removed. They stay visible so nobody calls them by mistake, and so a wrong '
             f'call can be spotted.</p>'
-            f'<table><thead><tr><th>Firm</th><th>Why it was removed</th></tr></thead>'
-            f'<tbody>{body or "<tr><td colspan=2 class=empty>None.</td></tr>"}</tbody></table>')
+            f'<div class="table-scroll"><table><thead><tr><th>Firm</th><th>Why it was removed</th></tr></thead>'
+            f'<tbody>{body or "<tr><td colspan=2 class=empty>None.</td></tr>"}</tbody></table></div>')
 
 
 # ------------------------------------------------------------------ scoring
@@ -382,6 +466,30 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
                      f'{esc(g["label"])} <label class="inline" style="display:inline-flex;margin-left:10px">'
                      f'<input type="checkbox" name="d-{i}-on" value="1"{" checked" if on else ""}{dis}> '
                      f'in force</label></div>')
+
+    # Which kinds of firm this product sells to. Unchecked types are removed
+    # from the list once Bellwether is sure enough of a firm's type; a firm
+    # not classified yet is never removed for it.
+    ftype_html = ""
+    try:
+        ft = products.firm_type_rule(key)
+    except Exception:
+        ft = None
+    if ft:
+        boxes = "".join(
+            f'<label class="inline ftbox" title="{esc(c.get("treatment") or c.get("description") or "")}">'
+            f'<input type="checkbox" name="ft-allow" value="{esc(c["key"])}"'
+            f'{" checked" if c.get("allowed") else ""}{dis}> {esc(c["label"])}</label>'
+            for c in ft["categories"] if c["key"] not in ("unknown",))
+        ftype_html = (f'<h3 style="margin-top:22px">Firm types {esc(p["name"])} sells to</h3>'
+                      f'<p class="meta" style="margin:-4px 0 10px">Unchecked types are moved to Removed, '
+                      f'with the reason, when Bellwether is at least this sure of the firm&rsquo;s type. '
+                      f'Firms not classified yet always stay.</p>'
+                      f'<input type="hidden" name="ft-present" value="1">'
+                      f'<div class="ftgrid">{boxes}</div>'
+                      f'<label class="inline" style="margin-top:10px">Confidence needed to remove '
+                      f'<input type="number" name="ft-min_conf" min="0" max="100" '
+                      f'value="{esc(_num(ft.get("min_confidence") or 60))}"{dis}>%</label>')
 
     rows = []
     for i, cr in enumerate(p["criteria"]):
@@ -493,6 +601,7 @@ other factors so the total stays 100.</p>
     return f"""<div class="rules editor">{flash}{intro}{who}
 <form method="post" action="/lists/{key}/scoring">
 <h3 style="margin-top:22px">Gates</h3>{"".join(gates) or '<p class="muted">None</p>'}
+{ftype_html}
 <h3 style="margin-top:22px">Scored factors</h3>
 <table><thead><tr><th>Factor</th><th>Weight</th><th>Points for each level</th></tr></thead>
 <tbody>{"".join(rows)}</tbody></table>
@@ -594,6 +703,8 @@ async def scoring_save(key: str, request: Request):
         p["criteria"] = kept
         for i, pe in enumerate(p.get("penalties", [])):
             pe["points"] = _clean(_float(form, f"p-{i}-points", pe["points"]))
+        if form.get("ft-present"):
+            products.apply_firm_types(p, form.getlist("ft-allow"), form.get("ft-min_conf"))
         note = (form.get("note") or "").strip()[:200]
         who = current_owner()
         if p["family"] == "PHH" and ("phh_focus_states" in form or "major_custodians" in form):
@@ -663,12 +774,13 @@ def scoring_reset(key: str):
 
 @router.get("/lists/{key}/export.csv")
 def export_list(key: str, q: str = "", st: str = "", owner: str = "", stat: str = "",
-                sig: str = "", reach: str = "", cov: str = ""):
+                sig: str = "", reach: str = "", cov: str = "",
+                size: str = "", cat: str = ""):
     p = _key_or_none(key)
     if p is None:
         return RedirectResponse("/", status_code=303)
     c = conn()
-    where, args = _where(key, q, st, owner, stat, sig, reach, cov)
+    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat)
     rows = c.execute(f"""
         SELECT p.rank, p.crd, f.legal_name, f.city, f.state, f.raum, f.website, f.phone,
                p.score, p.coverage, p.potential, p.missing, p.detail_json, s.owner, s.status
@@ -699,7 +811,8 @@ def export_list(key: str, q: str = "", st: str = "", owner: str = "", stat: str 
 
 @router.get("/lists/{key}/export.xlsx")
 def export_contacts(key: str, q: str = "", st: str = "", owner: str = "", stat: str = "",
-                    sig: str = "", reach: str = "", cov: str = ""):
+                    sig: str = "", reach: str = "", cov: str = "",
+                size: str = "", cat: str = ""):
     """The mail-merge sheet for exactly the firms on screen: one row per person
     and address, with where it came from and whether a mail server confirmed it."""
     from .firms_view import contacts_rows
@@ -707,7 +820,7 @@ def export_contacts(key: str, q: str = "", st: str = "", owner: str = "", stat: 
     if p is None:
         return RedirectResponse("/", status_code=303)
     c = conn()
-    where, args = _where(key, q, st, owner, stat, sig, reach, cov)
+    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat)
     crds = [r["crd"] for r in c.execute(
         f"SELECT p.crd {BASE.format(where=where)} ORDER BY p.rank LIMIT 5000", args)]
     ranks = {r["crd"]: (r["rank"], r["score"], r["coverage"]) for r in c.execute(

@@ -157,6 +157,37 @@ sources:
       local_offset: 534585078
       compressed_bytes: 72196383
 
+  # Every office other than the principal one, with its street address and
+  # telephone number (Schedule D 1.F). Joined to the city each person's
+  # registration places them in, this is how a person with no published direct
+  # line still gets their own office's number rather than headquarters'.
+  # Keyed on FilingID like the rest of Schedule D; reduced to each firm's
+  # latest filing. Offsets read from the archive's central directory and
+  # asserted on fetch (scripts/ingest_offices.py).
+  schedule_d_offices:
+    label: "Form ADV Schedule D 1.F, other offices with address and phone"
+    url: "https://www.sec.gov/files/adv-filing-data-20111105-20241231-part1.zip"
+    member: "IA_Schedule_D_1F_20111105_20241231.csv"
+    range_fetch:
+      local_offset: 622926849
+      compressed_bytes: 47363937
+    required_columns: ["FilingID", "Street 1", "Street 2", "City", "State", "Country",
+                       "Postal Code", "Private Residence", "Telephone Number",
+                       "Facsimile Number", "Branch Number", "Employees"]
+
+  # Websites and social media pages the firm lists (Schedule D 1.I). LinkedIn
+  # company pages become the firm's LinkedIn; a personal profile the firm
+  # filed goes to the roster person whose name it spells. The weekly feed's
+  # Item 1.I WebAddr list is read alongside it for current filings.
+  schedule_d_web:
+    label: "Form ADV Schedule D 1.I, websites and social media pages"
+    url: "https://www.sec.gov/files/adv-filing-data-20111105-20241231-part1.zip"
+    member: "IA_Schedule_D_1I_20111105_20241231.csv"
+    range_fetch:
+      local_offset: 670290942
+      compressed_bytes: 21640368
+    required_columns: ["FilingID", "Website"]
+
   # The Schedule D tables key on Filing ID, not CRD. Nothing in part 2 carries a
   # CRD, so this crosswalk is a hard prerequisite for using any of it. It lives in
   # part 1, which is 701 MB, but the member we need sits at a known offset and is

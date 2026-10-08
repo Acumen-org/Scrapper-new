@@ -62,6 +62,7 @@ def build(c, crd: str, max_people: int = 40) -> str:
     L.append(f"Advisors (Item 5.B): {f['iar_count'] or 0}; employees {f['total_employees'] or 0}")
     if f["disciplinary"] == "Y":
         L.append("Disclosures: the firm reports a disciplinary event (Item 11)")
+    L.extend(_firm_type(c, crd))
 
     hist = _rows(c, """SELECT filing_date, raum FROM firm_history WHERE crd=? AND raum IS NOT NULL
                        ORDER BY filing_date""", (crd,))
@@ -90,6 +91,10 @@ def build(c, crd: str, max_people: int = 40) -> str:
         mail = feats.get("mail") or {}
         if mail:
             L.append(f"Email platform: {mail.get('platform')} ({mail.get('evidence')})")
+        systems = products.glynac_systems(feats)
+        L.append("Systems Glynac works with, as seen: "
+                 + ("; ".join(f"{k}: {', '.join(v)}" for k, v in systems.items())
+                    if systems else "none confirmed yet (unknown, not absent)"))
         plats = products.platform_evidence(feats)
         if plats:
             L.append("Reporting platform: " + "; ".join(f"{k} ({v})" for k, v in plats.items()))
@@ -186,6 +191,28 @@ def build(c, crd: str, max_people: int = 40) -> str:
         if note and note[0]["note"]:
             L.append(f"Note: {note[0]['note'][:1200]}")
     return "\n".join(L)
+
+
+def _firm_type(c, crd: str) -> list[str]:
+    """What kind of firm this is, how sure Bellwether is and why, and what that
+    means for Acumen's products."""
+    try:
+        from . import firmtype
+        t = firmtype.get(c, crd)
+    except Exception:
+        c.rollback()
+        return []
+    if not t:
+        return ["Firm type: not classified yet"]
+    how = {"manual": "set by hand", "ai": "Bellwether AI", "rules": "rules"}.get(
+        t.get("source"), t.get("source"))
+    out = [f"Firm type: {t['label']} ({t['confidence']}% confident, {how}). Why: "
+           + "; ".join(t.get("evidence") or [])[:420]]
+    if t.get("treatment"):
+        out.append(f"What the type means for Acumen: {t['treatment']}")
+    if t.get("signal_labels"):
+        out.append("Traits: " + ", ".join(t["signal_labels"]))
+    return out
 
 
 def digest(text: str) -> str:

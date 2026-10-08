@@ -17,7 +17,9 @@
 # how investment decisions are made, real assets, 1031 and owner clients,
 # reporting platforms and compliance vendors. Brochures tagged under v1 are
 # re-tagged from their cached text by `python -m scripts.brochures --retag`.
-config_version: 3
+# v4 (2026-10) added the other systems Glynac works with: Microsoft Dynamics and
+# the Salesforce-built RIA CRMs Practifi, XLR8 and Salentica.
+config_version: 4
 
 # Which product a tag is a talking point for. Tags marked `signal` feed a score
 # (a platform, a process) but are not sales language.
@@ -41,6 +43,10 @@ products:
   platform_black_diamond: glynac
   platform_salesforce: glynac
   platform_redtail: glynac
+  platform_dynamics: glynac
+  platform_practifi: glynac
+  platform_xlr8: glynac
+  platform_salentica: glynac
   platform_orion: signal
   platform_tamarac: signal
   platform_addepar: signal
@@ -68,6 +74,10 @@ labels:
   platform_black_diamond: Black Diamond
   platform_salesforce: Salesforce
   platform_redtail: Redtail
+  platform_dynamics: Microsoft Dynamics
+  platform_practifi: Practifi
+  platform_xlr8: XLR8
+  platform_salentica: Salentica
   platform_orion: Orion
   platform_tamarac: Tamarac
   platform_addepar: Addepar
@@ -262,6 +272,19 @@ tags:
     phrases:
       - "Redtail Technology"
       - "Redtail CRM"
+  platform_dynamics:
+    phrases:
+      - "Microsoft Dynamics"
+      - "Dynamics 365"
+  platform_practifi:
+    phrases:
+      - "Practifi"
+  platform_xlr8:
+    phrases:
+      - "XLR8"
+  platform_salentica:
+    phrases:
+      - "Salentica"
   platform_orion:
     phrases:
       - "Orion Advisor"

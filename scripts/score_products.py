@@ -1,5 +1,12 @@
 """Score every firm for every product list and rebuild the product lists.
 
+Every firm in firm_current is checked against every product, not only the
+firms already on some list, so a rule change can bring a firm onto a list as
+well as take one off. This is the Scores job behind "Rescore all firms" in
+Settings and on each Scoring screen (products.request_rescore queues it), and
+it runs after every scoring save and after a reclassification changes any
+firm's type.
+
 The rules are config/products.yml, any edits saved on the Scoring screen, and
 prospect/products.py; this is only the command that runs them over the whole
 universe and prints what came out, so a change in the rules shows up as a
@@ -35,9 +42,13 @@ def main() -> int:
                 " WHERE product=? AND status='scored'", (key,)).fetchone()
             dq = conn.execute("SELECT COUNT(*) n FROM product_score WHERE product=?"
                               " AND status='disqualified'", (key,)).fetchone()["n"]
+            rule = products.firm_type_rule(key)
+            by_type = conn.execute(
+                "SELECT COUNT(*) n FROM product_score WHERE product=? AND status='disqualified'"
+                " AND reason LIKE ?", (key, (rule or {}).get("label", "-") + ":%")).fetchone()["n"]
             lines.append(f"{p['name']:<12} {counts[key]:>6,} scored   top={st['top'] or 0:.0f}"
                          f"  60+={st['hi'] or 0:,}  avg coverage={st['cov'] or 0:.0f}%"
-                         f"   disqualified={dq:,}")
+                         f"   disqualified={dq:,} ({by_type:,} by firm type)")
         scope = conn.execute("SELECT COUNT(*) n FROM firm_scope").fetchone()["n"]
         for ln in lines:
             print(ln)

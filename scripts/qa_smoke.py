@@ -128,9 +128,9 @@ ROUTES: list[tuple[str, str]] = [
     ("/", "Data coverage"),
     ("/ask", "Bellwether AI"),
     ("/lists/phh_fund", "PHH Fund I"),
-    ("/lists/phh_fund?cov=full", "Key evidence"),
+    ("/lists/phh_fund?cov=full", "Why it scores"),
     ("/lists/phh_fund?view=scoring", "Scored factors"),
-    ("/lists/phh_fund?view=disqualified", "Disqualified"),
+    ("/lists/phh_fund?view=disqualified", "Removed"),
     ("/lists/phh_1031", "PHH 1031"),
     ("/lists/phh_jv?cov=gaps", "PHH JV"),
     ("/lists/acubooth", "AcuBooth"),
@@ -313,9 +313,9 @@ def pass_roles(base: str) -> None:
 
 def pass_routes(base: str, detail_crd: str) -> None:
     print("\n[1] route matrix")
-    routes = ROUTES + [(f"/firm/{detail_crd}", "Status and owner"),
+    routes = ROUTES + [(f"/firm/{detail_crd}", "Pipeline"),
                        (f"/firm/{detail_crd}", "Hiring and departures"),
-                       (f"/firm/{detail_crd}", "Contacts and sources"),
+                       (f"/firm/{detail_crd}", "Contact discovery"),
                        (f"/firm/{detail_crd}", 'data-scope="firm:'),
                        (f"/firm/{detail_crd}?p=phh_fund", "Gates passed")]
     for path, marker in routes:

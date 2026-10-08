@@ -85,13 +85,15 @@ SPECS: list[Spec] = [
     Spec("ai.base_url", "Base URL", "ai",
          help="Only for OpenAI-compatible providers, for example https://api.openai.com/v1 or http://localhost:11434/v1."),
     Spec("ai.model_smart", "Model for answers and briefs", "ai",
-         help="Leave blank for the provider default."),
+         help="Leave blank for the provider default (Claude Opus 5.5). Answers are only as good as "
+              "this model: on Eden AI use anthropic/claude-opus-5-5 or anthropic/claude-sonnet-5-5; "
+              "small open models often return broken answers and fail contact research."),
     Spec("ai.model_fast", "Model for bulk extraction and cleaning", "ai",
          help="A cheaper, faster model. Leave blank to use the answers model."),
     Spec("ai.daily_limit", "Calls per day, at most", "ai", default="400",
          help="A hard ceiling across every AI feature, so a runaway job cannot run up a bill."),
-    Spec("ai.features", "Enabled features", "ai", default="ask,brief,extract,clean",
-         help="Comma separated: ask, brief, extract, clean."),
+    Spec("ai.features", "Enabled features", "ai", default="ask,brief,extract,clean,research",
+         help="Comma separated: ask, brief, extract, clean, research."),
     # ---- email verification
     Spec("verify.engine", "Verification engine", "verify", default="auto",
          choices=("auto", "reacher", "native", "dns"),
@@ -105,7 +107,10 @@ SPECS: list[Spec] = [
          default="verify@acumen-strategy.com",
          help="The sender used in SMTP checks. A real domain you own keeps checks from being refused."),
     Spec("verify.hello_name", "HELO name", "verify", default="acumen-strategy.com"),
-    Spec("verify.per_minute", "Checks per minute, at most", "verify", default="20"),
+    Spec("verify.per_minute", "Mail server conversations per minute, at most", "verify",
+         default="30",
+         help="Across all mail servers. One conversation can ask about several addresses, "
+              "and no server ever has two at once or two within two seconds."),
     # ---- crawling
     Spec("crawl.respect_robots", "Obey robots.txt", "crawl", default="on", choices=("on", "off")),
     Spec("crawl.use_browser", "Render JavaScript pages", "crawl", default="auto",

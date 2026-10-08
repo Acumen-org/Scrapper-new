@@ -85,6 +85,18 @@ CATCH_ALL_DAYS = 30
 MX_TTL_S = 3600
 BATCH = 20                  # verify_contacts commits after this many
 WORKERS = 4
+# Conversations per minute across every mail server, when Settings holds no
+# value. Each conversation may ask about several addresses (MailSession), so
+# this caps how often we knock, not how much we learn per knock.
+PER_MINUTE_DEFAULT = 30
+RCPT_PER_SESSION = 10       # questions per conversation, the made-up probes included
+# Providers whose many customer domains are answered by one shared fleet. The
+# one-at-a-time rule applies to the provider as a whole for these, so a run
+# across forty Microsoft 365 firms never holds forty conversations with
+# Microsoft at once, and never trips its directory-harvest defences.
+SHARED_GATES = {"google", "m365", "proofpoint", "mimecast", "barracuda", "cisco",
+                "symantec", "appriver", "sophos", "trendmicro", "godaddy", "rackspace",
+                "zoho", "intermedia"}
 
 # Test hooks only. _MX_OVERRIDE maps a domain to mail server entries ("host" or
 # "host:port") used instead of DNS, so a fake SMTP server on localhost can stand
@@ -185,9 +197,9 @@ def _explicit(key: str) -> str:
 
 def _per_minute() -> int:
     try:
-        return settings.get_int("verify.per_minute", 20)
+        return settings.get_int("verify.per_minute", PER_MINUTE_DEFAULT)
     except Exception:
-        return 20
+        return PER_MINUTE_DEFAULT
 
 
 def _reacher_url() -> str:
@@ -255,19 +267,29 @@ class _HostGate:
         self._lock = threading.Lock()
         self._hosts: dict[str, list] = {}
 
-    @contextmanager
-    def hold(self, host: str):
+    def acquire(self, host: str) -> None:
         with self._lock:
             entry = self._hosts.setdefault(host.lower(), [threading.Lock(), 0.0])
         entry[0].acquire()
+        wait = entry[1] + HOST_GAP_S - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+
+    def release(self, host: str) -> None:
+        with self._lock:
+            entry = self._hosts.get(host.lower())
+        if entry is None:
+            return
+        entry[1] = time.monotonic()
+        entry[0].release()
+
+    @contextmanager
+    def hold(self, host: str):
+        self.acquire(host)
         try:
-            wait = entry[1] + HOST_GAP_S - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
             yield
         finally:
-            entry[1] = time.monotonic()
-            entry[0].release()
+            self.release(host)
 
 
 _PACER = _Pacer()
@@ -430,10 +452,18 @@ _TABLE_READY = False
 
 
 def init(conn) -> None:
+    """mail_domain, and the email hunter's tables with it: the app calls this
+    at startup, so the screens can read what the hunter tried before it has
+    ever run."""
     global _TABLE_READY
     conn.executescript(SCHEMA)
     conn.commit()
     _TABLE_READY = True
+    try:
+        from . import hunt
+        hunt.init(conn)
+    except Exception:
+        conn.rollback()
 
 
 def _cutoff() -> str:
@@ -829,6 +859,200 @@ def _native(res: dict, email: str, domain: str, hosts: list[str]) -> dict:
                                  f"interpret, so this address is unchecked.")
 
 
+# ---------------------------------------------------------------- one conversation, many questions
+
+def gate_key(host: str, provider: str) -> str:
+    """What the one-conversation-at-a-time rule is keyed on: the provider for
+    the big shared fleets, the server itself for everyone else."""
+    return provider if provider in SHARED_GATES else (host or "").lower()
+
+
+def probe_address(domain: str) -> str:
+    """A mailbox nobody has: the made-up half of every confirmation."""
+    return f"bw{secrets.token_hex(8)}@{domain}"
+
+
+class MailSession:
+    """One SMTP conversation that asks about several addresses in turn.
+
+    The email hunter tries a person's likely addresses one after another, and
+    a new connection per address would multiply the knocks on someone else's
+    server by ten. So this opens one conversation (MX, EHLO, STARTTLS when
+    offered, MAIL FROM), then for each address: RSET, MAIL FROM, RCPT TO, and
+    reads the answer. RSET between questions keeps every RCPT in a transaction
+    of its own, which is what servers that cap recipients per message expect.
+    It never sends DATA, always ends with QUIT, holds the server's gate for its
+    whole life and asks at most `max_rcpt` questions.
+
+    ask() answers with _classify()'s words (ok, invalid, disabled, full, temp,
+    policy, other) plus two of its own: dropped (the server hung up, so ask
+    again in a new conversation) and blocked (it refused our sender mid-way)."""
+
+    def __init__(self, domain: str, hosts: list[str], *, max_rcpt: int = RCPT_PER_SESSION):
+        self.domain = domain
+        self.hosts = list(hosts)
+        self.provider = provider_for([_split_host(h)[0] for h in self.hosts])
+        self.max_rcpt = max_rcpt
+        self.rcpts = 0
+        self.host: str | None = None
+        self.tls = False
+        self.failure: dict | None = None
+        self._smtp = None
+        self._gate: str | None = None
+        self._fresh = True
+        self._sender = _setting("verify.from_email")
+        self._hello = _setting("verify.hello_name") or "localhost"
+
+    def __enter__(self) -> "MailSession":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self.close()
+        return False
+
+    @property
+    def left(self) -> int:
+        return self.max_rcpt - self.rcpts if self._smtp is not None else 0
+
+    def open(self) -> bool:
+        """Connect to the first mail server that talks. False with `failure`
+        set ({stage, code, message, connected}) when none would."""
+        for entry in self.hosts[:MAX_MX_TRIED]:
+            host, port = _split_host(entry)
+            key = gate_key(host, self.provider)
+            _GATE.acquire(key)
+            _PACER.wait(_per_minute())
+            ok = self._connect(host, port, tls=True)
+            if not ok and self.failure and self.failure.get("tls_failed"):
+                # Some old servers offer STARTTLS and cannot finish it; they
+                # still talk in plain text.
+                time.sleep(HOST_GAP_S)
+                ok = self._connect(host, port, tls=False)
+            if ok:
+                self._gate, self.host = key, host
+                return True
+            _GATE.release(key)
+            if self.failure and self.failure.get("connected"):
+                break     # a server that talked and refused: its backups share the policy
+        return False
+
+    def _connect(self, host: str, port: int, tls: bool) -> bool:
+        self.failure = {"stage": "connect", "code": None, "message": None,
+                        "connected": False, "tls_failed": False, "host": host}
+        try:
+            ip = _address_for(host, port)
+        except OSError as e:
+            self.failure["message"] = f"could not resolve {host} ({e})"
+            return False
+        s = smtplib.SMTP(local_hostname=self._hello, timeout=SMTP_TIMEOUT)
+        try:
+            code, msg = s.connect(ip, port)
+            self.failure["connected"] = True
+            if code != 220:
+                self.failure.update(stage="banner", code=code, message=_text(msg))
+                raise _Abort
+            code, msg = s.ehlo()
+            if not 200 <= code < 300:
+                code, msg = s.helo()
+                if not 200 <= code < 300:
+                    self.failure.update(stage="helo", code=code, message=_text(msg))
+                    raise _Abort
+            if tls and s.has_extn("starttls"):
+                s._host = host
+                try:
+                    code, msg = s.starttls(context=_tls_context())
+                except (ssl.SSLError, OSError, smtplib.SMTPException) as e:
+                    self.failure.update(stage="tls", tls_failed=True,
+                                        message=f"STARTTLS failed ({_text(str(e))})")
+                    raise _Abort
+                if code == 220:
+                    self.tls = True
+                    s.ehlo()
+            code, msg = s.mail(self._sender)
+            if code not in (250, 251) and 500 <= code < 600 and self._sender:
+                # Refused for who we said we were (an SPF check on the sender
+                # domain, most often): ask as the null sender, which bounces
+                # use and which no SPF record can rule out.
+                first = (code, msg)
+                s.rset()
+                code, msg = s.mail("")
+                if code in (250, 251):
+                    self._sender = ""
+                else:
+                    code, msg = first
+            if code not in (250, 251):
+                self.failure.update(stage="mail", code=code, message=_text(msg))
+                raise _Abort
+        except _Abort:
+            _quit(s)
+            return False
+        except (OSError, smtplib.SMTPException) as e:
+            self.failure["message"] = _text(str(e)) or type(e).__name__
+            _quit(s)
+            return False
+        self._smtp = s
+        self._fresh = True
+        self.failure = None
+        return True
+
+    def ask(self, address: str) -> tuple[str, int | None, str]:
+        """(kind, code, reply text) for one address."""
+        s = self._smtp
+        if s is None:
+            return "dropped", None, "no open conversation"
+        try:
+            if not self._fresh:
+                code, msg = s.rset()
+                if code != 250:
+                    self._drop()
+                    return "dropped", code, _text(msg)
+                code, msg = s.mail(self._sender)
+                if code not in (250, 251):
+                    self._drop()
+                    kind = "temp" if 400 <= code < 500 else "blocked"
+                    return kind, code, _text(msg)
+            self._fresh = False
+            self.rcpts += 1
+            code, msg = s.rcpt(address)
+        except (OSError, smtplib.SMTPException) as e:
+            self._drop()
+            return "dropped", None, _text(str(e)) or type(e).__name__
+        text = _text(msg)
+        if code == 421:
+            # "Service not available, closing channel": the server is going away.
+            self._drop()
+            return "temp", code, text
+        return _classify(code, text), code, text
+
+    def _drop(self) -> None:
+        if self._smtp is not None:
+            _quit(self._smtp)
+            self._smtp = None
+        self._release()
+
+    def _release(self) -> None:
+        if self._gate is not None:
+            _GATE.release(self._gate)
+            self._gate = None
+
+    def close(self) -> None:
+        self._drop()
+
+
+class _Abort(Exception):
+    """A conversation that ended on the server's refusal, already recorded."""
+
+
+def _quit(s) -> None:
+    try:
+        s.quit()
+    except Exception:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------- reacher engine
 
 class _ReacherDown(Exception):
@@ -1041,6 +1265,44 @@ def _domain_of(email: str) -> str:
 
 # ---------------------------------------------------------------- public
 
+def resolve_engine(engine: str | None = None) -> tuple[str, bool]:
+    """(engine that will run, chosen automatically?), as check_many decides."""
+    return _resolve(engine)
+
+
+def check_one(email: str, engine: str, auto: bool) -> dict:
+    """One check on an engine already resolved, with no database traffic: for
+    callers that keep the domain memory themselves (prospect.hunt)."""
+    return _check_one(email, engine, auto)
+
+
+def mail_hosts(domain: str) -> tuple[list[str], str]:
+    """(hosts, state) for a domain: state ok | none | null | dns."""
+    return _mail_hosts(domain)
+
+
+def cached_catch_all(domain: str) -> bool | None:
+    """What the last 30 days taught us: True accepts any address, False refuses
+    made-up ones, None not known (or too old to trust)."""
+    return _cached_catch_all(domain)
+
+
+def remember(domain: str, hosts: list[str], smtp_ok: bool | None,
+             catch_all: bool | None) -> None:
+    _remember(domain, hosts, provider_for([_split_host(h)[0] for h in hosts]),
+              smtp_ok, catch_all)
+
+
+def load_domains(conn, domains) -> None:
+    if _DB_CACHE:
+        _load_domains(conn, domains)
+
+
+def save_domains(conn) -> None:
+    if _DB_CACHE:
+        _save_domains(conn)
+
+
 def check(email: str, engine: str | None = None) -> dict:
     """Check one address. engine: auto | reacher | native | dns, default from
     Settings. Returns email, status, reason, engine, mx, smtp, misc, checked_at."""
@@ -1078,12 +1340,19 @@ def verify_contacts(conn, ids: list[int], engine: str | None = None) -> dict:
     ids = [int(i) for i in ids or []]
     init(conn)
     by_id: dict[int, str] = {}
+    guessed: dict[int, tuple] = {}
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
         for r in conn.execute(
-                f"SELECT id, value FROM contact_point WHERE kind='email'"
-                f" AND id IN ({','.join('?' * len(chunk))})", chunk).fetchall():
+                f"SELECT id, value, source, crd, person_key, source_ref FROM contact_point"
+                f" WHERE kind='email' AND id IN ({','.join('?' * len(chunk))})",
+                chunk).fetchall():
             by_id[int(r["id"])] = r["value"]
+            if r["source"] in ("pattern", "ai_web"):
+                # Addresses the email hunt also asks about: log the check so
+                # it never asks again.
+                label = "ai_web" if r["source"] == "ai_web" else r["source_ref"]
+                guessed[int(r["id"])] = (r["crd"], r["person_key"], label)
     conn.commit()                # end the read before the first network call
     rows = [(i, by_id[i]) for i in dict.fromkeys(ids) if i in by_id]
     if not rows:
@@ -1100,10 +1369,14 @@ def verify_contacts(conn, ids: list[int], engine: str | None = None) -> dict:
     for b in range(0, len(rows), BATCH):
         batch = rows[b:b + BATCH]
         results = _run([v for _, v in batch], eng, auto, WORKERS)
-        for (cid, _), res in zip(batch, results):
+        for (cid, value), res in zip(batch, results):
             contacts.set_verification(conn, cid, res["status"], detail_json(res))
             counts[res["status"]] = counts.get(res["status"], 0) + 1
             ran[res["engine"]] += 1
+            if cid in guessed:
+                # A guess checked here is an attempt the hunter must not
+                # repeat; its next run removes the row unless it was valid.
+                _note_guess(conn, value, guessed[cid], res)
         if eng != "dns" and _DB_CACHE:
             try:
                 _save_domains(conn)
@@ -1116,7 +1389,21 @@ def verify_contacts(conn, ids: list[int], engine: str | None = None) -> dict:
     counts["checked"] = len(rows)
     counts["engine"] = "+".join(e for e, _ in ran.most_common()) or eng
     if counts.get('invalid'):
+        # Someone lost an address: the hunter looks for the right one.
         from . import jobs
         jobs.init(conn)
-        jobs.request_run(conn, 'infer_emails')
+        jobs.request_run(conn, 'email_hunt')
     return counts
+
+
+def _note_guess(conn, value: str, who: tuple, res: dict) -> None:
+    # The verdict on the row is what matters; the attempt log must never cost
+    # it, so a failure here rolls back to just before it, not the whole batch.
+    conn.execute("SAVEPOINT note_guess")
+    try:
+        from . import hunt
+        label = "ai_web" if who[2] == "ai_web" else hunt.pattern_of(who[2])
+        hunt.note_check(conn, who[0], who[1], value, label, res)
+        conn.execute("RELEASE SAVEPOINT note_guess")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT note_guess")
