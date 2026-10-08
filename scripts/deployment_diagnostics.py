@@ -39,6 +39,18 @@ if running:
             if line.startswith(('Runtime jobs:', 'Runtime release:', 'Runtime custodians:',
                                 'Runtime custodian retries:', 'Runtime ai')):
                 print(line)
+    if os.environ.get('AI_CHECK') == 'true':
+        # Opt in only: this one calls the model (three calls at most).
+        check = subprocess.run(['nomad', 'alloc', 'exec', '-i', '-t=false', '-task', 'app',
+                                latest['ID'], 'python', '-'],
+                               input=Path(__file__).with_name('ai_live_check.py').read_text(),
+                               capture_output=True, text=True, timeout=240)
+        for line in check.stdout.splitlines():
+            if line.startswith('Runtime ai check'):
+                print(line)
+        if check.returncode:
+            tail = (check.stderr.strip().splitlines() or [''])[-1]
+            print('AI check exit:', check.returncode, safe(tail))
 for row in sorted(allocations, key=lambda x:x.get('CreateIndex',0), reverse=True)[:3]:
     print('Allocation:', row['ID'], row.get('ClientStatus'), row.get('DesiredStatus'))
     allocation = command('alloc', 'status', '-json', row['ID']) or {}

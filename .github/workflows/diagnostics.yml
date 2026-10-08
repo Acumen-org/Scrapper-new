@@ -1,6 +1,11 @@
 ﻿name: Deployment diagnostics
 on:
   workflow_dispatch:
+    inputs:
+      ai_check:
+        description: Also plan one question and stream one answer with the connected AI model
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -18,4 +23,5 @@ jobs:
         env:
           NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
           NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
+          AI_CHECK: ${{ inputs.ai_check }}
         run: python3 scripts/deployment_diagnostics.py
