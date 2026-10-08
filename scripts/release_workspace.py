@@ -143,10 +143,10 @@ def main():
     from prospect import webapp  # initialize routers before importing an individual view
     from prospect.people_view import people_page
     started = time.monotonic()
-    people_page(q='', st='', on='', officers='', reach='ready', joined='', cfp='', disc='', sort='name', page_n=1, per=25)
+    people_page(q='', st='', on='', view='', role='', joined='', desig='', disc='', size='', cat='', sort='', page_n=1, per=50, reach='', officers='', cfp='')
     print('People page first render seconds:', round(time.monotonic()-started, 3))
     started = time.monotonic()
-    people_page(q='', st='', on='', officers='', reach='ready', joined='', cfp='', disc='', sort='name', page_n=1, per=25)
+    people_page(q='', st='', on='', view='', role='', joined='', desig='', disc='', size='', cat='', sort='', page_n=1, per=50, reach='', officers='', cfp='')
     print('People page warm render seconds:', round(time.monotonic()-started, 3))
     if issues:
         raise SystemExit('Production checks requiring attention: ' + ', '.join(issues))

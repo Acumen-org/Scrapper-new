@@ -56,11 +56,34 @@ def _trgm(conn) -> bool:
         return False
 
 
+LOCK_ID = 424243   # one builder at a time, across the app and the job worker
+
+
 def build(conn) -> tuple[int, float]:
-    """Rebuild the index; returns (rows, seconds)."""
+    """Rebuild the index; returns (rows, seconds). When another process is
+    already building it, returns (0, 0.0) at once: two builders would both
+    create people_index_new and the second would fail."""
     t0 = time.monotonic()
     if not (_has(conn, "person") and _has(conn, "person_employment")):
         return 0, 0.0
+    got = conn.execute("SELECT pg_try_advisory_lock(?) ok", (LOCK_ID,)).fetchone()["ok"]
+    conn.commit()
+    if not got:
+        return 0, 0.0
+    try:
+        return _build(conn, t0)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        try:
+            conn.execute("SELECT pg_advisory_unlock(?)", (LOCK_ID,))
+            conn.commit()
+        except Exception:
+            pass
+
+
+def _build(conn, t0: float) -> tuple[int, float]:
     cls = _has(conn, "firm_class")
     cls_join = "LEFT JOIN firm_class fc ON fc.crd = cur.crd" if cls else ""
     cls_col = "fc.category" if cls else "NULL::text"
