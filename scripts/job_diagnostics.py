@@ -12,8 +12,7 @@ def main():
         conn.execute('SET TRANSACTION READ ONLY')
         jobs = conn.execute("""SELECT kind, desired_state, last_status, last_run_at,
             next_run_at, running_since, runs, force FROM auto_task
-            WHERE kind IN ('firm_refresh','contact_search','email_hunt','email_verify',
-                           'people_index','classify','rescore','ai_research') ORDER BY kind""").fetchall()
+            ORDER BY kind""").fetchall()
         for row in jobs:
             print('Runtime jobs:', json.dumps(dict(row)))
         releases = conn.execute("""SELECT version, applied_at, evaluated_firms

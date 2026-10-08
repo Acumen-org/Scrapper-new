@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import os
+from pathlib import Path
 import urllib.request
 
 
@@ -25,8 +26,11 @@ running = [row for row in allocations if row.get('ClientStatus') == 'running'
            and row.get('DesiredStatus') == 'run']
 if running:
     latest = max(running, key=lambda row: row.get('CreateIndex', 0))
-    runtime = subprocess.run(['nomad', 'alloc', 'exec', '-t=false', '-task', 'app',
-                              latest['ID'], 'python', '-m', 'scripts.job_diagnostics'],
+    # Use the checked-out read-only diagnostic, so observing a new job does not
+    # require restarting the app or interrupting its current enrichment slice.
+    runtime = subprocess.run(['nomad', 'alloc', 'exec', '-i', '-t=false', '-task', 'app',
+                              latest['ID'], 'python', '-'],
+                             input=Path(__file__).with_name('job_diagnostics.py').read_text(),
                              capture_output=True, text=True, timeout=60)
     if runtime.returncode:
         print('Runtime diagnostics unavailable; exit:', runtime.returncode)
