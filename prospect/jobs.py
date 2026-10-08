@@ -10,6 +10,11 @@ The registry here is the single description of the jobs. The background worker
 reads it to show the state of each one. Each slice is a separate Python
 process with a time limit, so a stuck website or a bad PDF can never wedge the
 worker or leak memory into the web server.
+
+Jobs run in lanes, side by side: mail servers, websites, search and AI, and
+the data jobs. Within a lane they take turns, so a long website slice never
+holds up the email hunt, which has a lane of its own. prospect/health.py
+watches all of it and repairs what it can.
 """
 
 from __future__ import annotations
@@ -34,7 +39,19 @@ CREATE TABLE IF NOT EXISTS firm_refresh_request (
 
 EXTRA_COLUMNS = (("last_run_at", "TEXT"), ("next_run_at", "TEXT"), ("last_status", "TEXT"),
                  ("running_since", "TEXT"), ("runs", "INTEGER DEFAULT 0"),
-                 ("force", "INTEGER DEFAULT 0"), ("last_output", "TEXT"))
+                 ("force", "INTEGER DEFAULT 0"), ("last_output", "TEXT"),
+                 ("fails", "INTEGER DEFAULT 0"), ("ok_at", "TEXT"))
+
+# Lanes run side by side, each with its own turn order. Mail and search wait on
+# other people's servers and use little memory; websites may start a headless
+# browser; the data jobs read and write the big tables, one at a time.
+LANES = ("mail", "web", "search", "data")
+LANE_LABEL = {"mail": "Mail servers", "web": "Websites", "search": "Search and AI",
+              "data": "Filings and data"}
+
+# A failing job waits longer each time, so a broken source is not hammered,
+# and is retried for ever: a fix on the other side is picked up by itself.
+RETRY_MINUTES = (15, 60, 180, 480)
 
 
 @dataclass(frozen=True)
@@ -49,9 +66,13 @@ class Job:
     done_sql: str | None = None      # for the progress bar
     total_sql: str | None = None
     timeout_s: int = 1800
-    needs: str = ""                  # "", "ai:<feature>"
+    needs: str = ""                  # "", "ai:<feature>", "ocr"
     group: str = "enrich"
     extra: dict = field(default_factory=dict)
+    lane: str = "data"               # jobs in one lane take turns; lanes run side by side
+    min_gap_minutes: float = 0       # a forced run waits this long after the last one
+    recent_sql: str | None = None    # what the job got done in the last day, for the screens
+    recent_label: str = ""
 
 
 SCOPE = "SELECT crd FROM firm_scope"
@@ -70,12 +91,15 @@ JOBS: list[Job] = [
         "hour and the screen stays instant.",
         "scripts.build_people_index", (), every_hours=0.5, timeout_s=900,
         backlog_sql="SELECT CASE WHEN to_regclass('people_index') IS NULL THEN 1 ELSE 0 END n",
-        group="contacts"),
+        group="contacts", min_gap_minutes=15),
     Job("brochures", "Brochures",
         "Downloads each firm's Part 2A brochure and reads it for what the firm does, in "
-        "its own words. Best-scored firms first; failed downloads retry after a day.",
+        "its own words. Best-scored firms first; failed downloads retry after a day. Every "
+        "30 days each firm is checked for a newer brochure, which replaces the old one.",
         "scripts.brochures", ("--scope", "scored", "--limit", "25"), every_hours=24,
-        backlog_sql=f"SELECT COUNT(*) n FROM firm_scope s WHERE NOT EXISTS (SELECT 1 FROM brochure b WHERE b.crd=s.crd)",
+        backlog_sql="SELECT COUNT(*) n FROM firm_scope s LEFT JOIN brochure b ON b.crd=s.crd WHERE b.crd IS NULL OR (b.status IN ('ok','no_brochure') AND b.fetched_at < to_char(NOW() - INTERVAL '30 days', 'YYYY-MM-DD\"T\"HH24:MI:SS'))",
+        recent_sql="SELECT COUNT(*) n FROM brochure WHERE fetched_at >= '{day_ago}'",
+        recent_label="brochures fetched or checked",
         done_sql="SELECT COUNT(*) n FROM brochure b JOIN firm_scope s ON s.crd=b.crd",
         total_sql="SELECT COUNT(*) n FROM firm_scope", group="filings"),
     Job("brochure_retag", "Brochure re-read",
@@ -98,13 +122,15 @@ JOBS: list[Job] = [
         backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN web_enrich_state w ON w.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE f.website IS NOT NULL AND f.website != '' AND (w.crd IS NULL OR w.scanned_at < '{recrawl_cutoff}' OR r.requested_at > w.scanned_at)",
         done_sql="SELECT COUNT(*) n FROM web_enrich_state",
         total_sql="SELECT COUNT(*) n FROM firm_current WHERE website IS NOT NULL AND website != ''",
-        group="contacts"),
+        group="contacts", lane="web",
+        recent_sql="SELECT COUNT(*) n FROM web_enrich_state WHERE scanned_at >= '{day_ago}'",
+        recent_label="websites read"),
     Job("directories", "Directories and sources",
         "Crawls the directories and websites added on the Enrichment screen, each on its "
         "own schedule, and matches what it finds to firms and people.",
         "scripts.crawl_directories", (), every_hours=1, timeout_s=3600,
         backlog_sql="SELECT COUNT(*) n FROM directory_source WHERE status != 'paused' AND (next_run_at IS NULL OR next_run_at <= '{now}')",
-        group="contacts"),
+        group="contacts", lane="web"),
     # Backlog: the stamp scripts/ingest_offices.py records (STAMP_SQL there;
     # keep the two identical) no longer matches the roster and feeds.
     Job("offices", "Office phones",
@@ -124,7 +150,9 @@ JOBS: list[Job] = [
         backlog_sql=None,
         done_sql="SELECT COUNT(*) n FROM contact_search_state x JOIN person_employment e ON e.org_pk=x.crd AND x.person_key='i:'||e.indvl_pk WHERE e.kind='current'",
         total_sql="SELECT COUNT(*) n FROM person_employment WHERE kind='current'",
-        group="contacts"),
+        group="contacts", lane="search",
+        recent_sql="SELECT COUNT(*) n FROM contact_search_state WHERE searched_at >= '{day_ago}'",
+        recent_label="people searched"),
     # The email hunt replaced "infer_emails", which wrote unconfirmed guesses
     # into contact_point. Its firm-page button now queues a firm here instead.
     Job("email_hunt", "Email hunt",
@@ -137,7 +165,9 @@ JOBS: list[Job] = [
         timeout_s=900,
         backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN email_hunt_firm h ON h.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE h.crd IS NULL OR h.next_try_at IS NULL OR h.next_try_at <= '{now}' OR r.requested_at > h.checked_at",
         done_sql="SELECT COUNT(*) n FROM email_hunt_firm h JOIN firm_current f ON f.crd=h.crd",
-        total_sql="SELECT COUNT(*) n FROM firm_current", group="contacts"),
+        total_sql="SELECT COUNT(*) n FROM firm_current", group="contacts", lane="mail",
+        recent_sql="SELECT COUNT(*) n FROM email_attempt WHERE status='valid' AND checked_at >= '{day_ago}'",
+        recent_label="emails confirmed"),
     Job("email_verify", "Email verification",
         "Checks every published address with the mail server that would receive it, "
         "without sending anything, and re-checks after 90 days. Personal addresses first. "
@@ -145,20 +175,27 @@ JOBS: list[Job] = [
         "scripts.verify_emails", ("--limit", "60"), every_hours=1, timeout_s=1800,
         backlog_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web') AND verify_status IN ('unverified','queued')",
         done_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web') AND verify_status NOT IN ('unverified','queued')",
-        total_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web')", group="contacts"),
+        total_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web')", group="contacts",
+        lane="mail", min_gap_minutes=10,
+        recent_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND verified_at >= '{day_ago}'",
+        recent_label="addresses checked"),
     Job("mail_platform", "Email platform",
         "Tells Microsoft 365 from Google from public mail records, re-checked every 90 days.",
         "scripts.mail_platform", ("--limit", "400"), every_hours=24,
         backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN firm_mail_platform m ON m.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE m.crd IS NULL OR r.requested_at > m.checked_at",
         done_sql="SELECT COUNT(*) n FROM firm_mail_platform m JOIN firm_scope s ON s.crd=m.crd",
-        total_sql="SELECT COUNT(*) n FROM firm_scope", group="filings"),
+        total_sql="SELECT COUNT(*) n FROM firm_scope", group="filings",
+        recent_sql="SELECT COUNT(*) n FROM firm_mail_platform WHERE checked_at >= '{day_ago}'",
+        recent_label="firms checked"),
     Job("firm_refresh", "Custodian refresh",
         "Reads today's custodian names from the current ADV for firms that report "
         "custody, since the bulk custodian archive ends December 2024.",
         "scripts.autopilot_slice", ("firm_refresh",), every_hours=24, timeout_s=600,
         backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN firm_refresh r ON r.crd=f.crd WHERE (f.q5k3='Y' OR f.q7b='Y') AND (r.crd IS NULL OR (r.status!='ok' AND r.fetched_at < to_char(NOW()-INTERVAL '1 day', 'YYYY-MM-DD\"T\"HH24:MI:SS')) OR r.fetched_at < to_char(NOW()-INTERVAL '30 days', 'YYYY-MM-DD\"T\"HH24:MI:SS'))",
         done_sql="SELECT COUNT(*) n FROM firm_refresh WHERE status='ok'",
-        group="filings"),
+        group="filings",
+        recent_sql="SELECT COUNT(*) n FROM firm_refresh WHERE fetched_at >= '{day_ago}'",
+        recent_label="filings read"),
     Job("classify", "Firm types",
         "Sorts every firm into a type (independent RIA, custodian, wirehouse, asset "
         "manager, private fund manager and the rest) from its Form ADV answers, its owners "
@@ -170,7 +207,8 @@ JOBS: list[Job] = [
         total_sql="SELECT COUNT(*) n FROM firm_current", group="filings"),
     Job("rescore", "Scores",
         "Recomputes every product list from the latest data. Takes seconds.",
-        "scripts.score_products", (), every_hours=3, timeout_s=1200, group="system"),
+        "scripts.score_products", (), every_hours=3, timeout_s=1200, group="system",
+        min_gap_minutes=30),
     Job("cusip_verify", "Security map check",
         "Re-checks the 13F security identifiers against real filings every 90 days.",
         "scripts.autopilot_slice", ("cusip_verify",), every_hours=24, group="filings"),
@@ -178,11 +216,11 @@ JOBS: list[Job] = [
         "Writes a short brief for the best firms on each list and refreshes it when "
         "their data changes. Uses the AI provider in Settings, within its daily limit.",
         "scripts.ai_jobs", ("briefs", "--limit", "15"), every_hours=12, needs="ai:brief",
-        group="ai"),
+        group="ai", lane="search"),
     Job("ai_clean", "AI clean-up",
         "Tidies people's titles and sorts them into roles where the rules could not.",
         "scripts.ai_jobs", ("clean", "--limit", "80"), every_hours=12, needs="ai:clean",
-        group="ai"),
+        group="ai", lane="search"),
     Job("ai_research", "AI contact research",
         "For the best-placed people still missing a confirmed email, a direct phone or a "
         "LinkedIn profile after every free source, asks the AI provider to find what they "
@@ -190,7 +228,16 @@ JOBS: list[Job] = [
         "is really there. Emails it finds still need the mail server's confirmation. "
         "Repeat interval is set in Crawling; the AI daily limit still applies.",
         "scripts.ai_research", ("--limit", "8"), every_hours=1, timeout_s=1500,
-        needs="ai:research", group="ai"),
+        needs="ai:research", group="ai", lane="search"),
+    Job("brochure_ocr", "Scanned brochures",
+        "Reads brochures filed as scanned images, which carry no text layer, with the "
+        "Unlimited-OCR model on the OCR server set in Settings, Crawling. Every other "
+        "brochure already has exact text and needs no OCR.",
+        "scripts.ocr_brochures", ("--limit", "4"), every_hours=24, timeout_s=1800,
+        needs="ocr", group="filings", lane="search",
+        backlog_sql="SELECT COUNT(*) n FROM brochure WHERE status='ok' AND COALESCE(ocr_status,'') = '' AND COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1)",
+        done_sql="SELECT COUNT(*) n FROM brochure WHERE ocr_status='ok'",
+        total_sql="SELECT COUNT(*) n FROM brochure WHERE status='ok' AND (ocr_status IS NOT NULL OR COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1))"),
 ]
 BY_KIND = {j.kind: j for j in JOBS}
 
@@ -225,6 +272,9 @@ def init(conn) -> None:
 
 def _fill(sql: str, tag_version: int) -> str:
     sql = sql.replace("{tag_version}", str(tag_version)).replace("{now}", now_iso())
+    if "{day_ago}" in sql:
+        sql = sql.replace("{day_ago}", (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(
+            timespec="seconds"))
     if "{recrawl_cutoff}" in sql:
         from . import settings
         days = settings.get_int("crawl.recrawl_days", 90) or 90
@@ -265,7 +315,33 @@ def requirement(job: Job) -> tuple[bool, str]:
             if feat not in ai.settings.get_list("ai.features"):
                 return False, "Switched off in Settings, AI"
             return False, "Today's AI allowance is used up"
+    if job.needs == "ocr":
+        from . import ocr
+        if not ocr.configured():
+            return False, "Waiting for an OCR server in Settings, Crawling"
     return True, ""
+
+
+def lane_jobs(lane: str) -> list[Job]:
+    return [j for j in JOBS if j.lane == lane]
+
+
+def retry_at(fails: int) -> str:
+    """When a job that has failed this many times in a row runs again."""
+    mins = RETRY_MINUTES[min(max(fails, 1), len(RETRY_MINUTES)) - 1]
+    return (datetime.now(timezone.utc) + timedelta(minutes=mins)).isoformat(timespec="seconds")
+
+
+def _age_minutes(stamp: str | None) -> float | None:
+    if not stamp:
+        return None
+    try:
+        t = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - t).total_seconds() / 60
 
 
 def states(conn) -> dict[str, dict]:
@@ -278,7 +354,11 @@ def states(conn) -> dict[str, dict]:
 
 def due(job: Job, st: dict, backlog: int | None) -> bool:
     if st.get("force"):
-        return True
+        # Other jobs ask for a rescore or a verification pass after every slice;
+        # those requests are folded together rather than run back to back.
+        age = _age_minutes(st.get("last_run_at"))
+        if not job.min_gap_minutes or age is None or age >= job.min_gap_minutes:
+            return True
     if st.get("desired_state") == "paused":
         return False
     nxt = st.get("next_run_at")
@@ -351,8 +431,11 @@ def overview(conn) -> list[dict]:
             state = "queued"
         else:
             state = "scheduled"
+        recent = count(conn, j.recent_sql, tv)
         out.append({"job": j, "state": state, "why": why, "done": done, "total": total,
-                    "backlog": backlog, "last_run_at": s.get("last_run_at"),
+                    "backlog": backlog, "recent": recent, "last_run_at": s.get("last_run_at"),
+                    "fails": s.get("fails") or 0, "ok_at": s.get("ok_at"),
+                    "running_since": s.get("running_since"),
                     "next_run_at": s.get("next_run_at"),
                     "last_status": s.get("last_status"), "message": s.get("message"),
                     "runs": s.get("runs") or 0, "force": s.get("force")})

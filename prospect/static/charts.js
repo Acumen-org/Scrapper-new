@@ -191,7 +191,10 @@
     // The highlight sits behind the bars; one transparent surface on top of
     // everything takes the pointer, so moving over a bar, a gap or a label
     // never drops the readout (the old per-column targets sat under the bars).
-    var shade = node("rect", { class: "colshade", x: -100, y: PT, width: band - 2, height: H - PT - PB, rx: 4 }, svg);
+    // Hidden outright until the pointer is over a year: parking it off to the
+    // left showed a sliver of it whenever a column was wider than the offset.
+    var shade = node("rect", { class: "colshade", x: PL, y: PT, width: band - 2, height: H - PT - PB, rx: 4,
+                               visibility: "hidden" }, svg);
     node("line", { class: "grid", x1: PL, x2: W - PR, y1: mid, y2: mid }, svg);
     node("text", { x: 0, y: PT + 10 }, svg).textContent = d.upName || "";
     if (mid < H - PB) node("text", { x: 0, y: H - PB - 2 }, svg).textContent = d.downName || "";
@@ -217,6 +220,7 @@
       if (i === shown) return;
       shown = i;
       shade.setAttribute("x", PL + band * i + 1);
+      shade.setAttribute("visibility", "visible");
       var r = svg.getBoundingClientRect(), net = (up[i] || 0) - (down[i] || 0);
       showTip("<b>" + esc(labels[i]) + "</b><span>" + (up[i] || 0) + " " + esc(d.upName || "") + ", " +
               (down[i] || 0) + " " + esc(d.downName || "") + "</span><span>" +
@@ -226,7 +230,7 @@
     hit.addEventListener("pointermove", show);
     hit.addEventListener("pointerdown", show);
     hit.addEventListener("pointerleave", function () {
-      shown = -1; shade.setAttribute("x", -100); hideTip();
+      shown = -1; shade.setAttribute("visibility", "hidden"); hideTip();
     });
     box.replaceChildren(svg);
   }

@@ -295,6 +295,33 @@ class AITransportChecks(unittest.TestCase):
                   'AcuBooth firms with an email','OK show me Glynac firms'):
             self.assertIsNone(quickplan.plan(q),q)
 
+    def test_forced_runs_are_folded_together(self):
+        from prospect import jobs
+        from datetime import datetime, timedelta, timezone
+        rescore=jobs.BY_KIND['rescore']
+        recent=(datetime.now(timezone.utc)-timedelta(minutes=5)).isoformat(timespec='seconds')
+        later=(datetime.now(timezone.utc)+timedelta(hours=2)).isoformat(timespec='seconds')
+        self.assertFalse(jobs.due(rescore,{'force':1,'last_run_at':recent,'next_run_at':later},None))
+        old=(datetime.now(timezone.utc)-timedelta(minutes=45)).isoformat(timespec='seconds')
+        self.assertTrue(jobs.due(rescore,{'force':1,'last_run_at':old,'next_run_at':later},None))
+        self.assertEqual({j.lane for j in jobs.JOBS} - set(jobs.LANES), set())
+        self.assertEqual(jobs.BY_KIND['email_hunt'].lane,'mail')
+        self.assertEqual(jobs.BY_KIND['web_enrich'].lane,'web')
+
+    def test_watchdog_names_the_fix_for_a_failure(self):
+        from prospect import health
+        level,what,href=health._reason('The AI provider returned an error (429): quota exceeded')
+        self.assertEqual((level,href),('bad','/settings/ai'))
+        self.assertIn('quota or credit',what)
+        self.assertEqual(health._reason('No mailbox check can run here: port 25 closed')[2],'/settings/verify')
+        self.assertEqual(health._reason('KeyError: x')[2],'/settings/jobs')
+
+    def test_ocr_markup_becomes_plain_text(self):
+        from prospect import ocr
+        raw=('<|det|>title [1,2,3,4]<|/det|># Item 4\n<|det|>text [1,2,3,4]<|/det|>Covered calls\n'
+             'on concentrated stock.\n<|det|>image [1,2,3,4]<|/det|>\n')
+        self.assertEqual(ocr.remove_det(raw),'# Item 4\n\nCovered calls\non concentrated stock.')
+
     def test_thinking_models_get_room_beyond_the_answer(self):
         _,body=ai._openai_request('System',[],'google/gemma',500,None,ai.EDEN_BASE,False)
         self.assertEqual(body['max_tokens'],500+ai.THINK_ROOM)

@@ -186,13 +186,19 @@ def overview(msg: str = Query("")):
     except Exception:
         c.rollback()
         ov = []
+    from . import health
+    open_alerts = health.alerts(c)
     run = sum(1 for j in ov if j["state"] == "running")
     paused = sum(1 for j in ov if j["state"] == "paused")
-    failed = sum(1 for j in ov if j.get("last_status") in ("failed", "timeout"))
-    rows.append(_status_row("Background jobs", (not failed) or None,
-                            f"{len(ov)} jobs running by themselves: {run} working now, "
-                            f"{paused} paused by an admin, {failed} whose last slice failed.",
-                            "/settings/jobs"))
+    bad = [a for a in open_alerts if a["level"] == "bad"]
+    if open_alerts:
+        txt = (f"{len(open_alerts)} need{'s' if len(open_alerts) == 1 else ''} a person: "
+               + esc("; ".join(a["title"] for a in open_alerts[:3])) + ".")
+    else:
+        txt = (f"{len(ov)} jobs running by themselves, {run} working now"
+               f"{', ' + str(paused) + ' paused by an admin' if paused else ''}. Nothing needs you.")
+    rows.append(_status_row("Background jobs", False if bad else (None if open_alerts else True),
+                            txt, "/settings/jobs"))
     feed = c.execute("SELECT published_at FROM snapshot WHERE source_key='adv_feed'"
                      " ORDER BY id DESC LIMIT 1").fetchone()
     sched = None
@@ -455,23 +461,44 @@ def crawl_page(msg: str = Query(""), err: str = Query("")):
 Scrapling, using a real browser's network fingerprint so ordinary sites answer as they would a
 person. Pages that only draw themselves with JavaScript are rendered in a headless browser when one
 is installed{"" if b else " (none is installed here, so those pages are skipped)"}.</p>
-{_group_form("crawl")}"""
-    return _frame("Crawling", "crawl", "How firm websites and directories are read.", inner, msg, err)
+{_group_form("crawl")}
+<section class="s"><h2>Scanned brochures</h2><p class="lede">A few brochures are filed as scanned
+images with no text. They are read with Baidu's Unlimited-OCR model, which needs an NVIDIA GPU and
+runs as its own server; set its address above. Every other brochure already has exact text.</p>
+<form method="post" action="/settings/ocr/test"><button class="sm" type="submit">Test the OCR server</button></form></section>"""
+    return _frame("Crawling", "crawl", "How firm websites, directories and scanned brochures are read.",
+                  inner, msg, err)
+
+
+@router.post("/settings/ocr/test")
+def ocr_test():
+    from . import ocr
+    ok, text = ocr.test_connection()
+    key = "msg" if ok else "err"
+    return RedirectResponse(f"/settings/crawl?{qs_join(**{key: text})}", status_code=303)
 
 
 # ------------------------------------------------------------------ jobs
 
 @router.get("/settings/jobs", response_class=HTMLResponse)
 def jobs_page(msg: str = Query("")):
+    from . import health
     c = conn()
     ov = jobs.overview(c)
     weekly = c.execute("SELECT * FROM scheduler_state WHERE id=1").fetchone()
-    wk = c.execute("SELECT * FROM auto_task WHERE kind='weekly_cycle'").fetchone()
+    open_alerts = health.alerts(c)
+    fixes = health.recent_fixes(c)
+    try:
+        lanes = {r["lane"]: dict(r) for r in c.execute("SELECT * FROM worker_lane")}
+    except Exception:
+        c.rollback()
+        lanes = {}
     c.close()
+    alert_of = {a["kind"]: a for a in open_alerts}
     groups: dict = {}
     for j in ov:
         groups.setdefault(j["job"].group, []).append(j)
-    chips = {"running": "lead", "queued": "warn", "scheduled": "line", "paused": "", "waiting": "dis"}
+    chips = {"running": "lead", "queued": "line", "scheduled": "line", "paused": "", "waiting": "dis"}
     words = {"running": "Working now", "queued": "Catching up", "scheduled": "Up to date",
              "paused": "Paused", "waiting": "Waiting"}
     sections = []
@@ -480,11 +507,14 @@ def jobs_page(msg: str = Query("")):
         for j in items:
             job = j["job"]
             pct = (j["done"] / j["total"] * 100) if j.get("total") and j.get("done") is not None else None
+            today = (f'<div class="meta"><b>{j["recent"]:,}</b> {esc(job.recent_label)} in the last day</div>'
+                     if job.recent_sql and j.get("recent") is not None else "")
             prog = (f'<div class="meter"><i style="width:{pct:.1f}%"></i></div>'
                     f'<div class="meta">{j["done"]:,} of {j["total"]:,}'
                     f'{" &middot; " + format(j["backlog"], ",") + " to go" if j.get("backlog") else ""}</div>'
                     if pct is not None else
                     (f'<div class="meta">{j["backlog"]:,} to go</div>' if j.get("backlog") else ""))
+            prog = today + prog
             last = ""
             if j["last_run_at"]:
                 lc = "bad" if j["last_status"] in ("failed", "timeout") else "muted"
@@ -499,10 +529,15 @@ def jobs_page(msg: str = Query("")):
                 nxt = esc(ui.ago(j["next_run_at"]))
                 nxt = "due now" if "ago" in nxt or nxt == "just now" else nxt
             pause = ("resume", "Resume") if j["state"] == "paused" else ("pause", "Pause")
+            al = alert_of.get(job.kind)
+            state_chip = (f'<span class="chip {"bad" if al["level"] == "bad" else "warn"}">'
+                          f'{"Needs you" if al["level"] == "bad" else "Check"}</span>' if al else
+                          f'<span class="chip {chips.get(j["state"], "")}">{words.get(j["state"], j["state"])}</span>')
+            lane = jobs.LANE_LABEL.get(job.lane, job.lane)
             rows.append(
                 f'<tr><td style="width:30%"><b>{esc(job.label)}</b>'
                 f'<details class="source-help"><summary>Details</summary><p>{esc(job.blurb)}</p></details></td>'
-                f'<td><span class="chip {chips.get(j["state"], "")}">{words.get(j["state"], j["state"])}</span>'
+                f'<td>{state_chip}<div class="meta">{esc(lane)} lane</div>'
                 f'{"<div class=meta>Next run " + nxt + "</div>" if nxt else ""}</td>'
                 f'<td style="min-width:200px">{prog}</td><td style="width:22%">{last}</td>'
                 f'<td class="num nowrap"><form method="post" action="/settings/jobs/{esc(job.kind)}/run" style="display:inline">'
@@ -521,8 +556,41 @@ signals and scores. Runs by itself when a new feed is due.</div></td>
 <td class="small">Last started {wlast}</td>
 <td class="num"><form method="post" action="/settings/jobs/weekly_cycle/run"><button class="sm" type="submit">Run now</button></form></td>
 </tr></tbody></table></section>"""
-    inner = f'{weekly_html}{"".join(sections)}'
-    return _frame("Jobs", "jobs", "Jobs run automatically. Use Run now to force a run.", inner, msg)
+    attention = ""
+    if open_alerts:
+        items = "".join(
+            f'<div class="alert-row {esc(a["level"])}"><div><b>{esc(a["title"])}</b>'
+            f'<p>{esc(a["detail"] or "")}</p><div class="meta">Raised {esc(ui.ago(a["since"]))}</div></div>'
+            f'{"<a class=btn href=" + esc(a["href"]) + ">Fix</a>" if a.get("href") and a["href"] != "/settings/jobs" else ""}</div>'
+            for a in open_alerts)
+        attention = (f'<section class="s attention"><h2>Needs your attention</h2>'
+                     f'<p class="lede">Bellwether repairs stuck and overdue jobs by itself. These it '
+                     f'cannot fix alone.</p>{items}</section>')
+    else:
+        attention = ('<section class="s"><div class="all-clear"><b>Everything is running.</b> '
+                     'Bellwether checks every job every five minutes, restarts anything stuck and '
+                     'moves overdue work to the front of its lane. Anything it cannot fix appears '
+                     'here and as a count on Settings.</div></section>')
+    fixed = ""
+    if fixes:
+        fixed = ('<section class="s"><h2>Fixed by itself in the last day</h2><table class="jobs-table"><tbody>'
+                 + "".join(f'<tr><td class="nowrap small" style="width:140px">{esc(ui.ago(e["at"]))}</td>'
+                           f'<td>{esc(e["detail"] or "")}</td></tr>' for e in fixes)
+                 + '</tbody></table></section>')
+    lane_line = ""
+    if lanes:
+        bits = []
+        for ln in jobs.LANES:
+            row = lanes.get(ln)
+            if not row:
+                continue
+            now_job = jobs.BY_KIND.get(row.get("job") or "")
+            bits.append(f'<span class="pill">{esc(jobs.LANE_LABEL.get(ln, ln))}: '
+                        f'{esc(now_job.label) if now_job else "idle"}</span>')
+        lane_line = f'<div class="pills" style="margin:0 0 18px">{"".join(bits)}</div>'
+    inner = f'{attention}{lane_line}{fixed}{weekly_html}{"".join(sections)}'
+    return _frame("Jobs", "jobs", "Jobs run by themselves, in four lanes side by side. "
+                  "Use Run now to put one first in its lane.", inner, msg)
 
 
 @router.post("/settings/jobs/{kind}/{action}")

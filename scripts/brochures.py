@@ -83,6 +83,7 @@ CREATE INDEX IF NOT EXISTS ix_bneg_status ON brochure_negation (status);
 """
 
 BROCHURE_DIR = config.DATA_DIR / "brochures"
+RECHECK_DAYS = 30         # a held brochure is checked for a newer version this often
 TEXT_DIR = config.DATA_DIR / "brochure_text"
 
 
@@ -432,14 +433,33 @@ def main() -> int:
     done = {r["crd"] for r in conn.execute(
         "SELECT crd FROM brochure WHERE status != 'fetch_failed' OR fetched_at >= ?",
         (retry_before,))}
-    todo = [c for c in crds if c not in done][:args.limit]
+    # Firms file a new brochure every year, and whenever their business
+    # changes. A brochure older than RECHECK_DAYS is looked up again; it is
+    # downloaded only when the SEC holds a newer version.
+    recheck_before = (datetime.now(timezone.utc) - timedelta(days=RECHECK_DAYS)).isoformat(
+        timespec="seconds")
+    held = {r["crd"]: r["version_id"] for r in conn.execute(
+        "SELECT crd, version_id FROM brochure WHERE status IN ('ok','no_brochure')"
+        " AND fetched_at < ?", (recheck_before,))}
+    new = [c for c in crds if c not in done]
+    stale = [c for c in crds if c in held]
+    todo = (new + stale)[:args.limit]
     print(f"scope={args.scope}: {len(crds)} firms, {len(done)} already processed, "
-          f"doing {len(todo)} now")
+          f"{len(stale)} due a version check, doing {len(todo)} now")
 
     cols = ("crd, version_id, brochure_name, date_submitted, fetched_at, pdf_path,"
             " bytes, pages, text_chars, status, tag_version")
-    upsert = f"INSERT OR REPLACE INTO brochure ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
-    ok = nobro = failed = 0
+    # Written out rather than INSERT OR REPLACE: the table also carries the
+    # OCR columns, which a fresh download resets, since a new version has to
+    # be read again (prospect/pg.py refuses a replace that leaves columns out).
+    from prospect import ocr
+    ocr.init(conn)
+    sets = ", ".join(f"{c.strip()}=excluded.{c.strip()}" for c in cols.split(",")
+                     if c.strip() != "crd")
+    upsert = (f"INSERT INTO brochure ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+              f" ON CONFLICT (crd) DO UPDATE SET {sets}, ocr_status=NULL, ocr_at=NULL,"
+              f" ocr_pages=NULL")
+    ok = nobro = failed = same = 0
     streak = 0            # consecutive download failures
     with runlog.Run(conn, "brochures", "ingest", stamp) as run:
         for i, crd in enumerate(todo, 1):
@@ -451,6 +471,12 @@ def main() -> int:
                 break
             meta = discover(fetch, crd)
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if crd in held and meta and meta.get("version_id") == held[crd]:
+                # Still the brochure we hold: note the check, keep everything.
+                conn.execute("UPDATE brochure SET fetched_at=? WHERE crd=?", (now, crd))
+                conn.commit()
+                same += 1
+                continue
             if not meta or not meta.get("version_id"):
                 conn.execute(upsert, (crd, None, None, None, now, None, None, None,
                                       None, "no_brochure", ver))
@@ -490,9 +516,9 @@ def main() -> int:
             if i % 10 == 0:
                 print(f"  {i}/{len(todo)}  ok={ok} no_brochure={nobro} failed={failed}")
         run.rows_out = ok
-        run.note(f"ok={ok} no_brochure={nobro} failed={failed}")
+        run.note(f"ok={ok} no_brochure={nobro} failed={failed} unchanged={same}")
 
-    print(f"\nok {ok} | no brochure {nobro} | failed {failed}")
+    print(f"\nok {ok} | no brochure {nobro} | failed {failed} | unchanged {same}")
     return 0
 
 

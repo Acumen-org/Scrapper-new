@@ -361,14 +361,16 @@ def ago(iso: str | None) -> str:
             return f"in {max(1, int(s // 60))} min"
         if s < 86400:
             return f"in {int(s // 3600)} h"
-        return f"in {int(s // 86400)} days"
+        days = int(s // 86400)
+        return "tomorrow" if days == 1 else f"in {days} days"
     if s < 90:
         return "just now"
     if s < 3600:
         return f"{int(s // 60)} min ago"
     if s < 86400:
         return f"{int(s // 3600)} h ago"
-    return f"{int(s // 86400)} days ago"
+    days = int(s // 86400)
+    return "yesterday" if days == 1 else f"{days} days ago"
 
 
 def spark(values: list[float], w: int = 120, h: int = 28, colour: str = "var(--ok)") -> str:

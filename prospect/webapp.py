@@ -263,7 +263,7 @@ def _init_once() -> None:
     settings.init(c)
     users.init(c)
     for mod in ("contacts", "jobs", "ai", "roles", "people", "verify", "directory",
-                "websignals", "firmtype", "knowledge", "websearch"):
+                "websignals", "firmtype", "knowledge", "websearch", "health", "ocr"):
         _init_optional(c, mod)
     c.close()
 
@@ -425,6 +425,10 @@ def _scheduler_loop() -> None:
                           (now_s,))
                 start_weekly()
             c.commit()
+            # The watchdog: repairs stuck or overdue jobs and keeps the list of
+            # what needs a person (Settings, Jobs) up to date.
+            from . import health
+            health.run(c, restart_worker=restart_worker, start_weekly=start_weekly)
             c.close()
         except Exception as exc:
             try:
@@ -456,6 +460,17 @@ def ensure_autopilot() -> bool:
                      cwd=str(config.ROOT), stdout=log, stderr=log,
                      creationflags=procs.SPAWN_FLAGS)
     return True
+
+
+def restart_worker() -> None:
+    """Stop the background worker and every slice it is running, then start
+    a fresh one. The watchdog calls this when a slice or a lane is stuck."""
+    apf = config.DATA_DIR / "autopilot.pid"
+    pid = procs.alive_pid(apf)
+    if pid is not None:
+        procs.kill_tree(pid)
+    apf.unlink(missing_ok=True)
+    ensure_autopilot()
 
 
 def stop_everything() -> None:
@@ -692,6 +707,8 @@ def _nav_counts() -> dict:
                          (signal_cutoff(),))
     out["review"] = (one("SELECT COUNT(*) n FROM adv_13f_match WHERE status='review'")
                      + one("SELECT COUNT(*) n FROM brochure_negation WHERE status='open'"))
+    # Background job problems the watchdog could not fix by itself.
+    out["alerts"] = one("SELECT COUNT(*) n FROM job_alert")
     feed = None
     try:
         feed = c.execute("SELECT published_at FROM snapshot WHERE source_key='adv_feed'"
@@ -746,7 +763,9 @@ def nav(active: str) -> str:
     if users.can_manage_enrichment(acct):
         data += item("enrichment", "/enrichment", "Enrichment", icon="enrich")
     if users.is_admin(acct):
-        data += item("settings", "/settings", "Settings", n.get("review"))
+        # A job that needs a person outranks the review queue on this count.
+        data += item("settings", "/settings/jobs" if n.get("alerts") else "/settings", "Settings",
+                     n.get("alerts") or n.get("review"), hot=bool(n.get("alerts")))
     if data:
         data = '<div class="grp">Data</div>' + data
     who = ""

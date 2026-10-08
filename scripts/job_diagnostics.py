@@ -41,6 +41,13 @@ def _health(conn):
             SUM(CASE WHEN COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1) THEN 1 ELSE 0 END) image_only,
             SUM(COALESCE(pages,0)) pages FROM brochure GROUP BY 1 ORDER BY 2 DESC"""), default=str))
     print('Runtime scheduler:', json.dumps(q("SELECT * FROM scheduler_state"), default=str))
+    print('Runtime lanes:', json.dumps(q("SELECT lane, beat_at, job FROM worker_lane ORDER BY lane"),
+                                       default=str))
+    for row in q("SELECT kind, level, title, detail, since FROM job_alert ORDER BY level, since"):
+        print('Runtime alert:', json.dumps({k: _scrub(v) for k, v in row.items()}, default=str))
+    for row in q("""SELECT at, kind, action, detail FROM job_event
+            ORDER BY id DESC LIMIT 10"""):
+        print('Runtime watchdog:', json.dumps({k: _scrub(v) for k, v in row.items()}, default=str))
     print('Runtime feeds:', json.dumps(q("""SELECT source_key, MAX(captured_at) latest FROM snapshot
             GROUP BY 1 ORDER BY 1"""), default=str))
     print('Runtime runs:', json.dumps(q("""SELECT source_key, status, COUNT(*) n, MAX(started_at) latest

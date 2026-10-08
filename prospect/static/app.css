@@ -976,3 +976,15 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ai-live .ai-draft{white-space:pre-wrap;line-height:1.6;color:var(--ink)}
 .ai-live .ai-draft:empty,.ai-live .ai-rows:empty{display:none}
 .ai-live .ai-draft+.ai-rows{margin-top:14px}
+
+/* Settings, Jobs: what the watchdog could not fix, and what it did. */
+.attention h2{margin-bottom:6px}
+.alert-row{display:flex;gap:16px;align-items:flex-start;justify-content:space-between;padding:14px 16px;
+border:1px solid var(--line);border-radius:12px;background:var(--card);margin-bottom:10px}
+.alert-row.bad{border-color:var(--red-line);background:var(--red-bg)}
+.alert-row.warn{border-color:var(--amber-line);background:var(--amber-bg)}
+.alert-row p{margin:4px 0 0;color:var(--soft);font-size:13px;max-width:80ch}
+.alert-row .btn{flex:none}
+.all-clear{padding:14px 16px;border:1px solid var(--ok-line);background:var(--ok-bg);border-radius:12px;
+font-size:13.5px;color:var(--soft)}
+.all-clear b{color:var(--ink)}

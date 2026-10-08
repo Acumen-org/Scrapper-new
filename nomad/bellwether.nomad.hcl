@@ -126,10 +126,14 @@ job "bellwether" {
       # 200: worker-5 has no CPU headroom (placement failed with cpu exhausted),
       # so the group keeps the 1000 it has always reserved. Docker CPU shares
       # are relative, not a ceiling: the app still uses idle CPU freely.
+      # memory_max rose from 1536 to 2560 when background jobs began running in
+      # four lanes side by side (mail, websites, search, data) instead of one
+      # at a time. The reservation is unchanged, so placement is unaffected;
+      # the app itself uses about 170MB.
       resources {
         cpu        = 800
         memory     = 512
-        memory_max = 1536
+        memory_max = 2560
       }
 
       kill_timeout = "30s"
