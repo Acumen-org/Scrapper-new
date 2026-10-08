@@ -150,7 +150,7 @@ def _person_row(r) -> str:
             f'{("<div class=pills style=margin-top:6px>" + "".join(badges) + "</div>") if badges else ""}</div></div></td>'
             f'<td>{esc(first_name(r["name"], r.get("first_name"))) or "<span class=muted>Unknown</span>"}</td>'
             f'<td><a class="firm" href="/firm/{esc(r["crd"])}">{escn(r["firm_name"])}</a>'
-            f'<div class="meta">{esc(place)}{" . " + money(r["raum"]) if r["raum"] else ""} {lists}</div></td>'
+            f'<div class="meta">{esc(place)}{" &middot; " + money(r["raum"]) if r["raum"] else ""} {lists}</div></td>'
             f'<td>{reach}</td>'
             f'<td><div class="small">{esc(since) or "<span class=muted>-</span>"}</div>'
             f'<div class="meta">{("From " + escn(r["prior_firm"])) if r["prior_firm"] else ""}</div></td></tr>')

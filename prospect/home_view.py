@@ -241,7 +241,7 @@ def _map(by_state: dict) -> str:
         bg = f"rgba(198,84,84,{a:.2f})" if n else "var(--raise)"
         cells.append(f'<a class="st" href="/firms?{qs_join(st=st, on="any")}" '
                      f'style="grid-column:{x + 1};grid-row:{y + 1};background:{bg}" '
-                     f'title="{st}: {n:,} firms on a list">{st}</a>')
+                     f'data-tip="<b>{st}</b><span>{n:,} firms on a product list</span>">{st}</a>')
     return f'<div class="usmap">{"".join(cells)}</div>'
 
 
@@ -309,7 +309,7 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
     hire_rows = "".join(
         f'<div class="r"><a href="/firm/{esc(h["crd"])}#activity">{escn(h["legal_name"])}</a>'
         f'<div class="b"><i style="width:{min(100, h["hires_12m"] / max(1, d["hire_firms"][0]["hires_12m"]) * 100):.0f}%;background:var(--ok)"></i></div>'
-        f'<div class="num">+{h["hires_12m"]}</div></div>' for h in d["hire_firms"])
+        f'<div class="num nowrap">{h["hires_12m"]} joined</div></div>' for h in d["hire_firms"])
 
     cov_rows = "".join(
         f'<div class="mrow"><div>{esc(lbl)}</div><div class="meter{" amber" if n / of < .5 else ""}">'
@@ -347,7 +347,7 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
     mine_html = "".join(
         f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="ent">{ui.mono(r["legal_name"], "sm")}<div>'
         f'<a class="t" href="/firm/{esc(r["crd"])}">{escn(r["legal_name"])}</a>'
-        f'<div class="meta">{esc(r["status"] or "claimed").capitalize()} . {esc(ui.product_name(r["best_product"]))}</div></div></div></td>'
+        f'<div class="meta">{esc(r["status"] or "claimed").capitalize()} &middot; {esc(ui.product_name(r["best_product"]))}</div></div></div></td>'
         f'<td class="num">{score_cell(r["best_score"], r["best_coverage"], show_cov=False)}</td></tr>' for r in mine)
     mine_html = (f'<table class="tight bare"><tbody>{mine_html}</tbody></table>' if mine_html else
                  '<div class="empty">No firms assigned. <a href="/firms">Find a firm</a></div>')
@@ -373,7 +373,7 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
         f'<div class="it"><div class="ic in">{ICONS["check"]}</div><div><b>{esc(f_["person_name"] or "A shared inbox")}</b>'
         f' <span class="muted">at</span> <a href="/firm/{esc(f_["crd"])}#people">{escn(f_["legal_name"])}</a>'
         f'<div class="meta">{"Verified email" if f_["kind"] == "email" else "LinkedIn profile" if f_["kind"] == "linkedin" else "Phone line"}'
-        f' . {esc(ui.SOURCE_LABEL.get(f_["source"], f_["source"]))}</div></div><div class="when">{esc(ui.ago(f_["at"]))}</div></div>'
+        f' &middot; {esc(ui.SOURCE_LABEL.get(f_["source"], f_["source"]))}</div></div><div class="when">{esc(ui.ago(f_["at"]))}</div></div>'
         for f_ in (d.get("finds") or [])[:6])
     discovery = f"""<div class="card"><div class="card-head"><div><h2>Contact discovery</h2>
 <div class="sub">People at firms on our lists with a usable email</div></div>

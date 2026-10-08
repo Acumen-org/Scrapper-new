@@ -382,12 +382,15 @@ def _weekly_due(c) -> tuple[bool, str]:
     age_days = (datetime.now(timezone.utc)
                 - datetime.fromisoformat(last)).total_seconds() / 86400
     if age_days < FEED_DUE_DAYS:
-        return False, f"feed captured {age_days:.1f} days ago; next pull due at {FEED_DUE_DAYS} days"
+        due = max(0.0, FEED_DUE_DAYS - age_days)
+        got = "today" if age_days < 1 else ("yesterday" if age_days < 2 else f"{age_days:.0f} days ago")
+        nxt = "today" if due < 1 else ("tomorrow" if due < 2 else f"in {due:.0f} days")
+        return False, f"SEC feed captured {got}; the next pull is due {nxt}"
     busy = c.execute("SELECT COUNT(*) n FROM run_log WHERE status='running'"
                      " AND started_at::timestamptz > NOW() - INTERVAL '2 hours'").fetchone()["n"]
     if busy:
         return False, "a run is already in flight"
-    return True, f"feed is {age_days:.1f} days old"
+    return True, f"the SEC feed is {age_days:.0f} days old"
 
 
 def start_weekly() -> None:
@@ -758,7 +761,7 @@ def nav(active: str) -> str:
                f'<form method="post" action="/logout"><button type="submit" title="Sign out" aria-label="Sign out">'
                f'{ICONS["out"]}</button></form></div>')
     quit_link = ("" if MANAGED or not users.is_admin(acct)
-                 else f' . <a href="/quit">Quit</a>')
+                 else f' &middot; <a href="/quit">Quit</a>')
     feed = esc(n["feed"]) if n.get("feed") else "none yet"
     pages = json.dumps(_pages_for(acct))
     return (f'<script>window.BW_PAGES={pages};</script>' + PALETTE_HTML +
@@ -789,12 +792,13 @@ def page(title: str, active: str, body: str, css: str = "", js: str = "",
     return HTMLResponse(
         f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>{esc(title)} . {APP_NAME}</title>{FAVICON}'
+        f'<title>{esc(title)} &middot; {APP_NAME}</title>{FAVICON}'
         f'<link rel="preload" href="/static/fonts/InstrumentSans.ttf" as="font" type="font/ttf" crossorigin>'
         f'<link rel="stylesheet" href="{asset("app.css")}">'
         f'{("<style>" + css + "</style>") if css else ""}{SPECULATION}</head>'
         f'<body>{nav(active)}<main id="main-content">{body}</main>'
-        f'<script src="{asset("app.js")}" defer></script>{orb}'
+        f'<script src="{asset("app.js")}" defer></script>'
+        f'<script src="{asset("charts.js")}" defer></script>{orb}'
         f'{("<script>" + js + "</script>") if js else ""}'
         f'</body></html>', status_code=status)
 
@@ -1021,11 +1025,18 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
                        f'<summary>Sign in with a password</summary>{form}</details>')
         else:
             pw_form = form
+    stats = dict((k, v) for k, v in _signin_stats())
+    caption = ""
+    if stats.get("advisory firms"):
+        caption = (f'<p class="signin-caption">Watching <b>{stats["advisory firms"]}</b> advisory firms'
+                   + (f' and <b>{stats["people"]}</b> people' if stats.get("people") else "")
+                   + ' across the United States</p>')
     return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to {APP_NAME}</title>{FAVICON}
 <link rel="stylesheet" href="{asset('app.css')}"></head>
 <body class="signin-page">
+<canvas id="signin-map" aria-hidden="true"></canvas>
 <div class="signin-wrap">
 <main class="signin">
 <div class="signin-brand">
@@ -1041,10 +1052,40 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
 {err}{ms_btn}{pw_form}
 </div>
 </main>
+{caption}
 <div class="signin-owner">Acumen Strategy</div>
 </div>
+<script src="{asset('signin.js')}" defer></script>
 </body></html>""",
                         status_code=status or (200 if not error else 401))
+
+
+_SIGNIN_CACHE: dict = {"t": 0.0, "v": []}
+
+
+def _signin_stats() -> list[tuple[str, str]]:
+    """The two headline numbers under the sign-in card, refreshed every ten
+    minutes; an estimate for people keeps the public page cheap."""
+    import time as _time
+    if _time.monotonic() - _SIGNIN_CACHE["t"] < 600 and _SIGNIN_CACHE["v"]:
+        return _SIGNIN_CACHE["v"]
+    out: list[tuple[str, str]] = []
+    try:
+        c = conn()
+        try:
+            firms = c.execute("SELECT COUNT(*) n FROM firm_current").fetchone()["n"]
+            people = c.execute("SELECT GREATEST(reltuples, 0)::bigint n FROM pg_class"
+                               " WHERE relname='person'").fetchone()
+            if firms:
+                out = [("advisory firms", f"{firms:,}")]
+            if people and people["n"]:
+                out.append(("people", f"{int(people['n']):,}"))
+        finally:
+            c.close()
+    except Exception:
+        out = []
+    _SIGNIN_CACHE.update(t=_time.monotonic(), v=out)
+    return out
 
 
 @app.get("/login", response_class=HTMLResponse)

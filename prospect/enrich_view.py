@@ -74,6 +74,12 @@ KINDS = {"directory": "Directory or listing of advisers", "website": "A single w
          "search": "Search results page"}
 
 
+def _every(days) -> str:
+    """How often a source is read, in words. 0 means once, never "every 0 days"."""
+    days = int(days or 0)
+    return "Read once" if days <= 0 else "Every day" if days == 1 else f"Every {days} days"
+
+
 def tabs(active: str) -> str:
     return ('<div class="seg" style="margin:4px 0 18px">' + "".join(
         f'<a class="{"on" if k == active else ""}" href="{href}">{esc(label)}</a>'
@@ -134,9 +140,10 @@ def sources(msg: str = Query(""), err: str = Query("")):
                     verdict = (f'<span class="chip warn" title="{esc(s.get("adapter_note") or "")}">'
                                f'needs a custom adapter</span>')
                 elif s.get("probe_json"):
-                    verdict = '<span class="chip lead">generic reader works</span>'
-                stats = (f'{s.get("records_found") or 0:,} records, {s.get("firms_matched") or 0:,} firms matched, '
-                         f'{s.get("emails_found") or 0:,} emails, {s.get("phones_found") or 0:,} phones')
+                    verdict = '<span class="chip lead">Generic reader works</span>'
+                stats = (f'{ui.plural(s.get("records_found"), "record")}, '
+                         f'{ui.plural(s.get("firms_matched"), "firm")} matched, '
+                         f'{ui.plural(s.get("emails_found"), "email")}, {ui.plural(s.get("phones_found"), "phone")}')
                 srows.append(
                     f'<tr class="go" data-href="/enrichment/source/{s["id"]}"><td style="width:30%">'
                     f'<a class="firm" href="/enrichment/source/{s["id"]}">{esc(s["name"])}</a>'
@@ -145,7 +152,7 @@ def sources(msg: str = Query(""), err: str = Query("")):
                     f'<td>{verdict} <span class="chip">{esc(s.get("status") or "")}</span>'
                     f'<div class="meta">{esc(stats)}</div></td>'
                     f'<td class="small">{esc(ui.ago(s.get("last_run_at")) or "not yet")}'
-                    f'<div class="meta">every {s.get("schedule_days") or 7} days</div></td></tr>')
+                    f'<div class="meta">{_every(s.get("schedule_days"))}</div></td></tr>')
         except Exception:
             c.rollback()
     c.close()
@@ -254,9 +261,9 @@ def source_page(sid: int, msg: str = Query(""), err: str = Query(""), only: str 
 <button class="sm ghost" type="submit">Remove</button></form></div>
 <dl class="kv"><dt>Addresses</dt><dd class="small">{"<br>".join(esc(u) for u in (s.get("urls") or "").splitlines()[:20])}</dd>
 <dt>Type</dt><dd>{esc(KINDS.get(s.get("kind"), s.get("kind") or ""))}</dd>
-<dt>Schedule</dt><dd>{"once" if not s.get("schedule_days") else "every " + str(s.get("schedule_days")) + " days"}; last read {esc(ui.ago(s.get("last_run_at")) or "never")}</dd>
-<dt>Found</dt><dd>{s.get("records_found") or 0:,} records; {s.get("firms_matched") or 0:,} matched to firms; {s.get("people_found") or 0:,} people; {s.get("emails_found") or 0:,} emails; {s.get("phones_found") or 0:,} phones</dd>
-<dt>Added by</dt><dd>{esc(s.get("created_by") or "")} {esc(ui.ago(s.get("created_at")))}</dd></dl>
+<dt>Schedule</dt><dd>{"Once" if not s.get("schedule_days") else "Every " + ("day" if s.get("schedule_days") == 1 else str(s.get("schedule_days")) + " days")} &middot; last read {esc(ui.ago(s.get("last_run_at")) or "never")}</dd>
+<dt>Found</dt><dd>{ui.plural(s.get("records_found"), "record")} &middot; {ui.plural(s.get("firms_matched"), "firm")} matched &middot; {ui.plural(s.get("people_found"), "person", "people")} &middot; {ui.plural(s.get("emails_found"), "email")} &middot; {ui.plural(s.get("phones_found"), "phone")}</dd>
+<dt>Added by</dt><dd>{esc(s.get("created_by") or "")} &middot; {esc(ui.ago(s.get("created_at")))}</dd></dl>
 {sample}
 <section class="s"><div class="s-head"><h2>Records</h2>
 <div class="seg"><a class="{"on" if only != "matched" else ""}" href="/enrichment/source/{sid}">All</a>

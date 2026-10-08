@@ -1501,7 +1501,11 @@ def flag_value(d, field: str):
 
 def flag_label(field: str) -> str:
     if field.startswith("tag:"):
-        return "Brochure mentions " + tag_label(field[4:]).lower()
+        label = tag_label(field[4:])
+        # Product names (Black Diamond, Redtail) keep their capitals; common
+        # phrases (Covered calls) read in lower case after "mentions".
+        brand = label[:1].isupper() and (" " not in label or label.istitle())
+        return "Brochure mentions " + (label if brand else label.lower())
     if field.startswith("web:"):
         return "Website shows " + field[4:].replace("_", " ")
     return FLAGS.get(field, (field,))[0]

@@ -103,7 +103,7 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
         if r["best_product"]:
             best = (f'{score_cell(r["best_score"], r["best_coverage"], show_cov=False)}'
                     f'<div class="meta">{esc(ui.product_name(r["best_product"]))}</div>')
-        acts = (f'<span class="chip">{esc(r["state"])}</span>' if r["state"] else
+        acts = (f'<span class="chip">{esc({"actioned": "Done", "snoozed": "Snoozed", "dismissed": "Dismissed"}.get(r["state"], r["state"]).capitalize())}</span>' if r["state"] else
                 f'<form method="post" action="/signals/action" class="act">'
                 f'<input type="hidden" name="tid" value="{r["id"]}">'
                 f'<input type="hidden" name="back" value="{esc(back)}">'
@@ -113,15 +113,15 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
                 f'</form>')
         body.append(
             f'<tr class="krow go{done}" data-tid="{r["id"]}" data-href="/firm/{esc(r["crd"])}">'
-            f'<td style="white-space:nowrap">{esc(r["detected_date"])}'
-            f'<div class="meta">{age} days ago{old}</div></td>'
+            f'<td><span class="nowrap">{esc(r["detected_date"])}</span>'
+            f'<div class="meta">{esc(ui.ago(r["detected_date"]))}{old}</div></td>'
             f'<td><span class="chip {kchip}">'
             f'{esc(TYPE_LABEL.get(r["trigger_type"], r["trigger_type"]))}</span></td>'
             f'<td><div class="firm"><a href="/firm/{esc(r["crd"])}">'
             f'{escn(r["legal_name"] or "(unnamed)")}</a></div>'
             f'<div class="meta">{ui.firm_meta(dict(r, state=r["st"]))}</div></td>'
             f'<td class="why">{esc(r["description"])}</td>'
-            f'<td>{best}</td><td>{acts}</td></tr>')
+            f'<td class="col-list">{best}</td><td>{acts}</td></tr>')
 
     alerts_html = ""
     if alerts:
@@ -129,8 +129,8 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
                        + "".join(
                            f'<div class="small" style="padding:4px 0"><a class="firm" '
                            f'href="/firm/{esc(a["crd"])}">{escn(a["legal_name"])}</a> '
-                           f'<span class="soft">{esc(a["description"])}</span> '
-                           f'<span class="muted">{esc(a["detected_date"])}</span></div>'
+                           f'<span class="soft">{esc(a["description"])}</span> &middot; '
+                           f'<span class="muted nowrap">{esc(a["detected_date"])}</span></div>'
                            for a in alerts) + "</div>")
 
     type_opts = "".join(ui.opt(k, ttype, f"{v} ({counts.get(k, 0):,})")
@@ -168,9 +168,10 @@ Keys: <b>j</b>/<b>k</b> move, <b>d</b> done, <b>s</b> snooze, <b>x</b> dismiss, 
 <input type="hidden" name="page" value="signals"><input type="hidden" name="qs" value="{esc(qs)}">
 <input type="text" name="name" placeholder="Name this view to save it" style="min-width:210px">
 <button type="submit" class="sm">Save view</button></form></div>
-<table><thead><tr><th style="width:110px">When</th><th style="width:150px">Signal</th>
-<th style="width:22%">Firm</th><th>What happened</th><th style="width:110px">Best list</th><th style="width:190px"></th></tr></thead>
-<tbody>{"".join(body) or empty}</tbody></table>
+<div class="table-scroll"><table class="signals-table wide"><colgroup><col style="width:108px"><col style="width:156px">
+<col style="width:22%"><col><col class="col-list" style="width:116px"><col style="width:104px"></colgroup>
+<thead><tr><th>When</th><th>Signal</th><th>Firm</th><th>What happened</th><th class="col-list">Best list</th><th></th></tr></thead>
+<tbody>{"".join(body) or empty}</tbody></table></div>
 <div class="pager">{prev} Page {page_n} of {pages} {nxt}</div>
 </div>"""
     return page("Signals", "signals", body_html, SIG_CSS, js=KEYS_JS)

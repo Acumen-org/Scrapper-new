@@ -27,6 +27,16 @@ FIRMS_CSS = """
 .listpick{min-width:0;padding:3px 7px;font-size:12px}
 """
 
+def _clean_title(t) -> str:
+    """A scraped title, minus any page markup that came with it (a JSON-LD
+    block glued to "CFP") and with dashes read as commas."""
+    import re
+    from . import roles
+    t = re.split(r"[{<]", str(t or ""), 1)[0]
+    t = re.sub(r"\s*[\u2013\u2014]\s*", ", ", t).strip(" ,;")
+    return roles.clean_title(t)
+
+
 def contacts_rows(c, crds: list[str]) -> list[dict]:
     """One row per address (and per direct line without an address) at these
     firms, people before shared inboxes, best evidence first. Dead addresses
@@ -325,8 +335,7 @@ def _firms(c, where, args, page_n, per, qs, sort=""):
         team = r["headcount"] if r["headcount"] is not None else (r["iar_count"] or 0)
         moves = ""
         if r["hires_12m"] or r["departures_12m"]:
-            moves = (f'<div class="meta"><span class="ok">+{r["hires_12m"] or 0}</span> '
-                     f'<span class="bad">-{r["departures_12m"] or 0}</span> in 12m</div>')
+            moves = f'<div class="meta">{ui.moves_text(r["hires_12m"], r["departures_12m"])}</div>'
         add = (f'<form method="post" action="/firms/addtolist">'
                f'<input type="hidden" name="crd" value="{esc(r["crd"])}">'
                f'<input type="hidden" name="back" value="/firms?{esc(qs)}">'
@@ -340,11 +349,11 @@ def _firms(c, where, args, page_n, per, qs, sort=""):
             f'<div class="meta">{ui.firm_meta(r)} &middot; {esc(reg)}</div>'
             f'{("<div class=pills style=margin-top:6px><span class=ftype>" + esc(ftypes[r["crd"]].get("short") or ftypes[r["crd"]].get("label") or ftypes[r["crd"]]["category"]) + "</span></div>") if ftypes.get(r["crd"], {}).get("category") else ""}</div></div></td>'
             f'<td class="num">{money(r["raum"])}<div class="meta">HNW {hs:.0f}%</div></td>'
-            f'<td class="num">{team}{moves}</td>'
+            f'<td class="num">{team:,} {"person" if team == 1 else "people"}{moves}</td>'
             f'<td>{best or "<span class=muted>-</span>"}</td>'
             f'<td>{ui.contact_cell(flags[r["crd"]])}</td><td>{who}{add}</td></tr>')
     empty = '<tr><td colspan="6" class="empty">No firms match these filters.</td></tr>'
-    return (f'<div class="table-scroll"><table><thead><tr><th>Firm</th><th class="num">AUM</th>'
+    return (f'<div class="table-scroll"><table class="firms-table wide"><thead><tr><th>Firm</th><th class="num">AUM</th>'
             f'<th class="num" title="People registered at the firm now, and job moves in 12 months">Team</th>'
             f'<th>Best fit</th><th>Reach</th><th></th></tr></thead>'
             f'<tbody>{"".join(body) or empty}</tbody></table></div>'), total
@@ -360,20 +369,21 @@ def _contacts(c, where, args, page_n, per):
     for r in rows[(page_n - 1) * per: page_n * per]:
         chip = f'v-{r["status_key"]}' if r["status_key"] else ""
         who = (f'<b>{esc(r["person"])}</b>' if r["person"] and r["person"] != "Shared inbox"
-               else '<span class="muted">Shared inbox</span>')
+               else '<span class="muted">Shared inbox</span>' if r["person"] == "Shared inbox"
+               else '<span class="muted">Name not on file</span>')
         em = ((f'<a href="mailto:{esc(r["email"])}">{esc(r["email"])}</a>'
-               f'<div class="meta"><span class="chip {chip}">{esc(r["status"])}</span> '
-               f'<span class="muted">{esc(r["source"])}</span></div>')
+               f'<div class="meta"><span class="chip {chip}">{esc(r["status"])}</span> &middot; '
+               f'<span class="muted">from {esc(ui.SOURCE_LABEL.get(r["source"], r["source"]))}</span></div>')
               if r["email"] else '<span class="muted">-</span>')
         body.append(
             f'<tr><td><a class="firm" href="/firm/{esc(r["crd"])}">{esc(r["firm"])}</a>'
             f'<div class="meta">CRD {esc(r["crd"])} &middot; {esc(r["state"] or "-")}</div></td>'
-            f'<td>{who}<div class="meta">{esc(r["title"] or "")}</div></td>'
+            f'<td>{who}<div class="meta">{esc(_clean_title(r["title"]))}</div></td>'
             f'<td>{esc(first_name(r["person"])) if r["person"] != "Shared inbox" else ""}</td>'
             f'<td>{em}</td><td class="nowrap">{esc(r["phone"] or "-")}</td></tr>')
     empty = ('<tr><td colspan="5" class="empty">No contacts for this set yet. The website, '
              'brochure and directory jobs fill them in by themselves.</td></tr>')
-    return (f'<div class="table-scroll"><table><thead><tr><th>Firm</th><th>Person</th><th>First name</th><th>Email</th>'
+    return (f'<div class="table-scroll"><table class="wide"><thead><tr><th>Firm</th><th>Person</th><th>First name</th><th>Email</th>'
             f'<th>Phone</th></tr></thead>'
             f'<tbody>{"".join(body) or empty}</tbody></table></div>'), total
 

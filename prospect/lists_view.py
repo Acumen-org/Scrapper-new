@@ -264,8 +264,8 @@ def _reach_cell(f: dict) -> str:
         bits.append(f'<span class="pill" title="Named people with an address the firm published">'
                     f'{f["personal"]} named</span>')
     if f["direct"]:
-        bits.append(f'<span class="pill" title="Direct or office lines tied to a person">'
-                    f'{f["direct"]} phone{"s" if f["direct"] != 1 else ""}</span>')
+        bits.append(f'<span class="pill" title="Direct or mobile lines tied to a person">'
+                    f'{f["direct"]:,} direct line{"s" if f["direct"] != 1 else ""}</span>')
     elif f["phone"] and not bits:
         bits.append('<span class="pill" title="The main line the firm filed">Main line</span>')
     if not f["verified"] and not f["personal"]:
@@ -327,7 +327,7 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
             tags.append(f'<span class="ftype">{esc(ft.get("short") or ft.get("label") or ft["category"])}</span>')
         if r["status"] or r["owner"]:
             tags.append(f'<span class="chip lead">{esc((r["status"] or "claimed").capitalize())}'
-                        f'{" . " + esc(r["owner"]) if r["owner"] else ""}</span>')
+                        f'{" &middot; " + esc(r["owner"]) if r["owner"] else ""}</span>')
         add = (f'<form method="post" action="/firms/addtolist">'
                f'<input type="hidden" name="crd" value="{esc(r["crd"])}">'
                f'<input type="hidden" name="back" value="{esc(back)}">'
@@ -383,7 +383,7 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
 <details class="save-view"><summary>Save view</summary><form method="post" action="/views/save">
 <input type="hidden" name="page" value="list:{key}"><input type="hidden" name="qs" value="{esc(qs)}">
 <input type="text" name="name" placeholder="Name this view" required><button type="submit" class="primary sm">Save</button></form></details></span></div>
-<div class="table-scroll"><table class="ranked-table"><thead><tr><th>#</th><th>Firm</th><th>Score</th><th>Why it scores</th>
+<div class="table-scroll"><table class="ranked-table wide"><thead><tr><th>#</th><th>Firm</th><th>Score</th><th>Why it scores</th>
 <th>Reach</th><th>New signal</th><th></th></tr></thead>
 <tbody>{"".join(body) or empty}</tbody></table></div>
 <div class="pager"><span>Page {page_n} of {pages:,}</span><span class="acts">{prev}{nxt}</span></div>"""
@@ -562,7 +562,7 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
         fopts += "".join(f'<option value="flag:{k}">{esc(v[0])} (yes or no)</option>'
                          for k, v in products.FLAGS.items())
         products._load_vocab()
-        fopts += "".join(f'<option value="flag:tag:{k}">Brochure mentions {esc(v.lower())}</option>'
+        fopts += "".join(f'<option value="flag:tag:{k}">{esc(products.flag_label("tag:" + k))}</option>'
                          for k, v in sorted(products.TAG_LABELS.items(), key=lambda x: x[1]))
         add = f"""<section class="s"><h2>Add a factor</h2>
 <p class="lede">Any number Bellwether holds about a firm can become a factor scored by bands, and
@@ -579,7 +579,7 @@ other factors so the total stays 100.</p>
                 f'<td class="small">{esc(x["updated_by"] or "")}</td>'
                 f'<td class="small soft">{esc(x["note"] or "")}</td></tr>' for x in h)
                 + '</tbody></table></section>')
-        actions = f"""<div class="row" style="margin-top:18px;position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--rule)">
+        actions = f"""<div class="savebar">
 <span class="muted small">Weights total</span><span id="wsum" class="wsum">100%</span>
 <button type="button" class="ghost sm" onclick="spread()">Scale to 100</button>
 <span class="spacer"></span>

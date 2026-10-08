@@ -55,7 +55,8 @@ def contact_flags(c, crds: list[str]) -> dict[str, dict]:
           COUNT(*) FILTER (WHERE kind='email' AND is_role=1) AS inbox,
           COUNT(*) FILTER (WHERE kind='email' AND source='pattern'
                 AND verify_status NOT IN ('valid','invalid','no_mail_server')) AS guess,
-          COUNT(*) FILTER (WHERE kind='phone' AND person_key != '') AS direct,
+          COUNT(*) FILTER (WHERE kind='phone' AND person_key != ''
+                AND label IN ('direct','mobile')) AS direct,
           COUNT(*) FILTER (WHERE kind='phone') AS phones
         FROM usable_contact_point WHERE crd IN ({ph}) GROUP BY crd""", put)
     each(f"SELECT crd, headcount FROM firm_people_stats WHERE crd IN ({ph})",
@@ -79,15 +80,15 @@ def contact_cell(f: dict) -> str:
                     f'{f["verified"]} verified</span>')
     if f["personal"]:
         bits.append(f'<span class="chip line" title="Named people with an address the firm '
-                    f'published">{f["personal"]} people</span>')
+                    f'published">{plural(f["personal"], "person", "people")}</span>')
     elif f["guess"]:
         bits.append(f'<span class="chip" title="Addresses built from the firm\'s pattern, '
                     f'not yet confirmed">{f["guess"]} guessed</span>')
     elif f["inbox"]:
-        bits.append('<span class="chip" title="Only shared inboxes such as info@">inbox only'
+        bits.append('<span class="chip" title="Only shared inboxes such as info@">Inbox only'
                     '</span>')
     if f["direct"]:
-        bits.append(f'<span class="meta" style="display:block">{f["direct"]} direct line'
+        bits.append(f'<span class="meta" style="display:block">{f["direct"]:,} direct line'
                     f'{"s" if f["direct"] > 1 else ""}</span>')
     elif f["phone"]:
         bits.append('<span class="meta" style="display:block">main phone</span>')
@@ -286,6 +287,26 @@ def options_is_self_describing(text: str, label: str) -> bool:
     return any(ch.isalpha() for ch in text) and len(text) > 3
 
 
+def plural(n, word: str, many: str | None = None) -> str:
+    """'1 firm', '2,410 firms': a count with its noun in the right number."""
+    n = int(n or 0)
+    return f"{n:,} {word if n == 1 else (many or word + 's')}"
+
+
+def moves_text(joined, left) -> str:
+    """A firm's people moves over the last 12 months, in plain words:
+    "5 joined, 2 left in the past year", "3 joined in the past year"."""
+    j, l_ = int(joined or 0), int(left or 0)
+    if not j and not l_:
+        return "No one joined or left in the past year"
+    parts = []
+    if j:
+        parts.append(f'<span class="ok">{j:,} joined</span>')
+    if l_:
+        parts.append(f'<span class="bad">{l_:,} left</span>')
+    return ", ".join(parts) + " in the past year"
+
+
 def pitch_of(detail_json: str | None) -> str:
     return detail(detail_json).get("pitch") or ""
 
@@ -412,6 +433,12 @@ def year_bars(series: list[dict], w: int = 640, h: int = 140) -> str:
                        f'{s.get("left")} left</title></rect>')
         out.append(f'<text x="{x + bw * 0.31:.1f}" y="{h - 3}" text-anchor="middle">'
                    f'{str(s["year"])[-2:] if n > 8 else s["year"]}</text>')
-    return (f'<svg class="chart" viewBox="0 0 {w} {h}" style="width:100%;height:{h}px">'
+    data = json.dumps({"labels": [s["year"] for s in series],
+                       "up": [int(s.get("joined") or 0) for s in series],
+                       "down": [int(s.get("left") or 0) for s in series],
+                       "upName": "joined", "downName": "left"})
+    return (f'<div class="ichart" data-chart="bars" data-height="{h + 20}" data-label="People who joined '
+            f'and left each year" data-series="{esc(data)}">'
+            f'<svg class="chart" viewBox="0 0 {w} {h}" style="width:100%;height:{h}px">'
             f'{"".join(out)}<text x="0" y="12">joined</text>'
-            f'<text x="0" y="{h - 16}">left</text></svg>')
+            f'<text x="0" y="{h - 16}">left</text></svg></div>')

@@ -106,16 +106,22 @@ def aum_chart(history) -> str:
     growth = ""
     if vals[0]:
         pct = (vals[-1] - vals[0]) / vals[0] * 100
-        growth = (f' &middot; {pct:+.0f}% over the span' if abs(pct) >= 1 else " &middot; roughly flat")
+        ratio = vals[-1] / vals[0]
+        growth = (f' &middot; {ratio:,.0f} times larger over the span' if ratio >= 10 else
+                  f' &middot; {pct:+,.0f}% over the span' if abs(pct) >= 1 else " &middot; roughly flat")
+    series = json.dumps({"points": [[h["filing_date"][:10], float(h["raum"])] for h in history],
+                         "format": "money", "what": "Filed"})
     return (
-        f'<div class="meta" style="margin-bottom:6px">{len(history)} filings from '
+        f'<div class="meta" style="margin-bottom:8px">{len(history)} filings from '
         f'{esc(history[0]["filing_date"][:4])} to {esc(history[-1]["filing_date"][:4])}. '
-        f'Now {money(vals[-1])}{growth}. Hover a point for its filing.</div>'
+        f'Now {money(vals[-1])}{growth}. Hover the chart to read any filing.</div>'
+        f'<div class="ichart" data-chart="line" data-height="230" data-label="Assets over time" '
+        f'data-series="{esc(series)}">'
         f'<svg class="chart" viewBox="0 0 {W} {H}" style="width:100%;height:{H}px;display:block">'
         f'{"".join(grid)}{"".join(ticks)}'
         f'<polygon points="{area}" fill="var(--ok)" opacity=".07"/>'
         f'<polyline points="{pts}" fill="none" stroke="var(--ok)" stroke-width="1.8"/>{dots}'
-        f'<circle cx="{X(xs[-1]):.1f}" cy="{Y(vals[-1]):.1f}" r="3.6" fill="var(--ok)"/></svg>')
+        f'<circle cx="{X(xs[-1]):.1f}" cy="{Y(vals[-1]):.1f}" r="3.6" fill="var(--ok)"/></svg></div>')
 
 
 FIRM_JS = """
@@ -149,10 +155,10 @@ def _fit_section(crd: str, results: dict, ranks: dict, focus: str) -> str:
                     f'{" &middot; " + esc(r.pitch) if r.pitch else ""}'
                     f'<span style="margin-left:8px">{missing_chip("|".join(r.missing), 2)}</span></span>')
         elif r.status == "disqualified":
-            head = (f'<span class="chip dis">removed</span>'
+            head = (f'<span class="chip dis">Removed</span>'
                     f'<span class="small soft">{esc(r.reason)}</span>')
         else:
-            head = (f'<span class="muted small">not eligible</span>'
+            head = (f'<span class="muted small">Not eligible</span>'
                     f'<span class="small soft">{esc(r.reason)}</span>')
         inner = _breakdown(crd, r) if r.status == "scored" else _gates_html(r)
         out.append(
@@ -166,7 +172,7 @@ def _fit_section(crd: str, results: dict, ranks: dict, focus: str) -> str:
 def _gates_html(r) -> str:
     lines = "".join(
         f'<div class="gline"><b class="{"" if g["passed"] else "x"}">'
-        f'{"Pass" if g["passed"] else ("Removed" if g.get("disqualifier") else "Fails")}</b> '
+        f'{"Pass" if g["passed"] else ("Removed" if g.get("disqualifier") else "Fail")}</b> '
         f'{esc(g["label"])}: <span class="muted">{esc(g["evidence"])}</span></div>'
         for g in r.gates)
     return lines or '<p class="muted small">No gate information.</p>'
@@ -246,11 +252,11 @@ def _contact_line(cp, show_verify=True) -> str:
         btn = ""
         if show_verify and status not in ("invalid", "no_mail_server", "valid"):
             btn = (f'<button class="sm ghost" data-post="/api/contact/{cp["id"]}/verify" '
-                   f'data-busy="Checking" data-target=".verify-result-{cp["id"]}">Check</button>')
+                   f'data-busy="Checking" data-target="[data-vr=v{cp["id"]}]">Check</button>')
         role = ' <span class="muted small">shared inbox</span>' if cp["is_role"] else ""
         return (f'<div class="cline{" ok" if status == "valid" else ""}">{ICONS["mail"]}'
                 f'<a href="mailto:{esc(cp["value"])}" title="{esc(cp["value"])}">{esc(cp["value"])}</a>{role}'
-                f'<span id="vs{cp["id"]}" class="verify-result-{cp["id"]}"><span class="chip v-{esc(status)}" title="From {esc(src)};'
+                f'<span id="vs{cp["id"]}" data-vr="v{cp["id"]}"><span class="chip v-{esc(status)}" title="From {esc(src)};'
                 f' confidence {cp["confidence"]}">{esc(label)}</span></span>{btn}</div>')
     if cp["kind"] == "linkedin":
         return (f'<div class="cline">{ICONS["linkedin"]}<a href="{esc(cp["value"])}" target="_blank" '
@@ -318,13 +324,13 @@ def _hunt_line(hunt: dict | None) -> str:
         return ('<div class="hunt" title="Website, web search, every common pattern checked '
                 'with the mail server, and AI research"><i></i>Finding a verified email</div>')
     tried = hunt.get("tried") or 0
-    extra = f" . {tried} address{'es' if tried != 1 else ''} checked" if tried else ""
+    extra = f" &middot; {tried} address{'es' if tried != 1 else ''} checked" if tried else ""
     when = ""
     if hunt.get("next_try_at") and hunt["state"] in HUNT_SETTLED:
-        when = f" . trying again {ui.ago(hunt['next_try_at'])}"
+        when = f" &middot; trying again {esc(ui.ago(hunt['next_try_at']))}"
     settled = hunt["state"] in HUNT_SETTLED
     return (f'<div class="hunt{" done" if settled else ""}" title="{esc(hunt.get("detail") or hunt["label"])}">'
-            f'<i></i>{esc(hunt["label"])}{esc(extra)}{esc(when)}</div>')
+            f'<i></i>{esc(hunt["label"])}{extra}{when}</div>')
 
 
 def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: list,
@@ -384,14 +390,7 @@ def _hiring_section(c, crd: str, stats, mv, series) -> str:
                 'appear once it has loaded.</p>')
     out = ""
     if stats:
-        d12 = (stats.get("hires_12m") or 0) - (stats.get("departures_12m") or 0)
-        out += (f'<div class="strip"><div class="k"><div class="n ok">+{stats.get("hires_12m") or 0}</div>'
-                f'<div class="l">Joined in 12 months</div></div>'
-                f'<div class="k"><div class="n bad">{-(stats.get("departures_12m") or 0) or 0}</div>'
-                f'<div class="l">Left in 12 months</div></div>'
-                f'<div class="k"><div class="n">{d12:+d}</div><div class="l">Net change</div></div>'
-                f'<div class="k"><div class="n">+{stats.get("hires_prev_12m") or 0}</div>'
-                f'<div class="l">Joined the 12 months before</div></div></div>')
+        out += _hiring_facts(stats, before=True)
     if series:
         out += f'<div style="margin:14px 0 6px">{ui.year_bars(series)}</div>'
 
@@ -426,6 +425,29 @@ def _hiring_section(c, crd: str, stats, mv, series) -> str:
     return out
 
 
+def _net_words(net: int) -> str:
+    if net > 0:
+        return f'<span class="ok">Grew by {net}</span>'
+    if net < 0:
+        return f'<span class="bad">Shrank by {-net}</span>'
+    return "No change"
+
+
+def _hiring_facts(stats: dict, before: bool = False) -> str:
+    """The year's people moves as plain numbers: who joined, who left, and
+    what that did to the team, with no bare plus and minus signs to decode."""
+    j = int(stats.get("hires_12m") or 0)
+    left = int(stats.get("departures_12m") or 0)
+    cells = [("Joined in the past year", f'<span class="{"ok" if j else ""}">{j}</span>'),
+             ("Left in the past year", f'<span class="{"bad" if left else ""}">{left}</span>'),
+             ("Team size change", _net_words(j - left))]
+    if before:
+        cells.append(("Joined the year before", str(int(stats.get("hires_prev_12m") or 0))))
+    return ('<div class="facts" style="margin-bottom:14px">' + "".join(
+        f'<div><div class="l">{label}</div><div class="v">{value}</div></div>' for label, value in cells)
+        + '</div>')
+
+
 def _hiring_glance(stats, series) -> str:
     """The overview's hiring card: the year's moves as three numbers, then the
     last decade as bars."""
@@ -433,12 +455,7 @@ def _hiring_glance(stats, series) -> str:
         return '<p class="muted">Joins and departures appear once the SEC roster loads.</p>'
     out = ""
     if stats:
-        net = (stats.get("hires_12m") or 0) - (stats.get("departures_12m") or 0)
-        out = (f'<div class="facts" style="margin-bottom:14px"><div><div class="l">Joined, 12 months</div>'
-               f'<div class="v ok">+{stats.get("hires_12m") or 0}</div></div>'
-               f'<div><div class="l">Left, 12 months</div><div class="v bad">'
-               f'{-(stats.get("departures_12m") or 0) or 0}</div></div>'
-               f'<div><div class="l">Net</div><div class="v">{net:+d}</div></div></div>')
+        out = _hiring_facts(stats)
     if series:
         out += ui.year_bars(series[-8:], w=420, h=130)
     return out
@@ -558,9 +575,9 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     for t in trigs[:60]:
         kind = products.trigger_products().get(t["trigger_type"], {}).get("kind")
         chip = "dis" if kind == "disqualifier" else "lead"
-        old = (" " + caveat("archive_as_of", "archive") if t["detected_date"] < "2025-01-01" else "")
-        trow.append(f'<div class="ev"><div class="nowrap">{esc(t["detected_date"])}{old}'
-                    f'<div class="meta">{esc(ui.ago(t["detected_date"]))}</div></div>'
+        old = (" &middot; " + caveat("archive_as_of", "archive") if t["detected_date"] < "2025-01-01" else "")
+        trow.append(f'<div class="ev"><div><span class="nowrap">{esc(t["detected_date"])}</span>'
+                    f'<div class="meta">{esc(ui.ago(t["detected_date"]))}{old}</div></div>'
                     f'<div><span class="chip {chip}">{esc(TYPE_LABEL.get(t["trigger_type"], t["trigger_type"]))}</span></div>'
                     f'<div class="why">{esc(t["description"])}'
                     f'{" <span class=chip>" + esc(t["state"]) + "</span>" if t["state"] else ""}</div></div>')
@@ -679,7 +696,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     tech_html = f"""<dl class="kv">
 <dt>Email platform</dt><dd>{esc(mail_s)}{f' <span class="meta">{esc(mail.get("evidence"))}</span>' if mail.get("evidence") else ""}</dd>
 <dt>Reporting and CRM</dt><dd>{esc(", ".join(f"{k}" for k in plats)) or "Not found"}{''.join(f'<div class="meta">{esc(v)}</div>' for v in plats.values())}</dd>
-<dt>Website</dt><dd>{website or "None on file"}{f'<div class="meta">{web_pages} pages read, last {esc(ui.ago(web_state["scanned_at"]))}</div>' if web_state else ""}</dd>
+<dt>Website</dt><dd>{website or "None on file"}{f'<div class="meta">{ui.plural(web_pages, "page")} read, last {esc(ui.ago(web_state["scanned_at"]))}</div>' if web_state else ""}</dd>
 <dt>Publishes</dt><dd>{"Blog or newsletter found" if "publishes" in d["web"] else "Nothing found"}</dd>
 <dt>Advertising (Item 5.L)</dt><dd>{esc(", ".join(mkt)) or ("None reported" if x else "-")}</dd>
 <dt>Social media</dt><dd>{esc(", ".join(socials)) or "None listed"}</dd>
@@ -691,7 +708,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <dt>Firm disclosures</dt><dd>{"<span class='bad'>Discloses a disciplinary event (Item 11)</span>" if f["disciplinary"] == "Y" else "None reported"}</dd>
 <dt>People with disclosures</dt><dd>{(stats or {}).get("disclosure_count") or 0} of {(stats or {}).get("headcount") or "?"} registered</dd>
 <dt>Registration</dt><dd>{esc(f['firm_type'] or '')}, {esc(f['regulator'] or '')}, since {esc(f['registered_date'] or '-')}</dd>
-<dt>Last ADV filed</dt><dd>{esc(f['filing_date'] or '-')} &middot; {d['filings_12m']} amendments in 12 months</dd>
+<dt>Last ADV filed</dt><dd>{esc(f['filing_date'] or '-')} &middot; {d['filings_12m']} amendment{'' if d['filings_12m'] == 1 else 's'} in the past year</dd>
 <dt>SEC number</dt><dd>{esc(f['sec_number'] or '-')}</dd>
 </dl>"""
 
@@ -699,7 +716,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     if offices:
         orows = "".join(
             f'<tr><td>{esc(nice_name(o.get("city") or ""))}{", " + esc(o["state"]) if o.get("state") else ""}</td>'
-            f'<td class="meta">{esc(o.get("street") or "")}</td>'
+            f'<td class="meta">{esc(o.get("street") or "Street not filed")}</td>'
             f'<td>{("<a href=" + chr(34) + "tel:" + esc(o["phone"]) + chr(34) + ">" + esc(o["phone"]) + "</a>") if o.get("phone") else "-"}</td></tr>'
             for o in offices)
         office_html = (f'<div class="card" style="margin-top:16px"><div class="card-head"><h2>Offices '
@@ -762,25 +779,29 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     cur_status = (fs["status"] or "") if fs else ""
     if cur_status:
         tags.append(f'<span class="chip lead">{esc(cur_status.capitalize())}'
-                    f'{" . " + esc(fs["owner"]) if fs and fs["owner"] else ""}</span>')
+                    f'{" &middot; " + esc(fs["owner"]) if fs and fs["owner"] else ""}</span>')
     if trigs and trigs[0]["detected_date"] >= (datetime.now(timezone.utc).date().isoformat()[:4] + "-01-01"):
         tags.append(f'<a class="chip good" href="#activity">{len(trigs)} signal{"s" if len(trigs) != 1 else ""}</a>')
     growth = ""
     if len(history) >= 2 and history[0]["raum"]:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=365)).date().isoformat()
         yr_ago = [h for h in history if h["filing_date"] <= cutoff]
-        base = (yr_ago[-1]["raum"] if yr_ago else history[0]["raum"]) or 0
+        ref = yr_ago[-1] if yr_ago else history[0]
+        base = ref["raum"] or 0
         if base:
+            # Name the filing compared against: firms file once a year or
+            # less, so "in 12 months" would often be wrong.
             pct = (history[-1]["raum"] - base) / base * 100
+            when = datetime.fromisoformat(ref["filing_date"][:10]).strftime("%b %Y")
             growth = (f'<span class="{"up" if pct >= 0 else "dn"}">{pct:+.0f}%</span> '
-                      f'{"in 12 months" if yr_ago else "since " + history[0]["filing_date"][:4]}')
+                      f'since the {when} filing')
     clients_s = f"{f['clients_total']:,}" if f["clients_total"] is not None else "-"
     team = (stats or {}).get("headcount", f["iar_count"])
     net = ((stats or {}).get("hires_12m") or 0) - ((stats or {}).get("departures_12m") or 0)
     stats_html = f"""<div class="stats">
 <div><div class="l">Assets under management</div><div class="v">{money(f['raum'])}</div><div class="d">{growth or "&nbsp;"}</div></div>
 <div><div class="l">Clients</div><div class="v">{clients_s}</div><div class="d">{hs:.0f}% of assets from high-net-worth clients</div></div>
-<div><div class="l">Registered team</div><div class="v">{team if team is not None else '-'}</div><div class="d">{f'<span class="{"up" if net >= 0 else "dn"}">{net:+d}</span> net in 12 months' if stats else '&nbsp;'}</div></div>
+<div><div class="l">Registered team</div><div class="v">{team if team is not None else '-'}</div><div class="d">{(_net_words(net) + " in the past year") if stats else '&nbsp;'}</div></div>
 </div>"""
 
     fit_cards = []
@@ -842,7 +863,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <button type="submit" class="sm primary">Save</button></form></section>
 <section><h2>Notes</h2><form method="post" action="/firm/{esc(crd)}/note">
 <textarea name="note" aria-label="Firm notes" placeholder="Notes and next steps">{esc(note[0]['note'] if note else '')}</textarea>
-<div class="row" style="margin-top:8px"><button class="sm" type="submit">Save note</button>
+<div class="row" style="margin-top:8px"><button class="sm primary" type="submit">Save note</button>
 {f'<span class="meta">Saved {esc(ui.ago(note[0]["updated_at"]))}</span>' if note else ''}</div></form></section>
 <section><h2>Saved lists</h2><div class="pills" style="margin-bottom:10px">{lists_chips or '<span class="muted small">No saved lists</span>'}</div>
 <form method="post" action="/firms/addtolist"><input type="hidden" name="crd" value="{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}#workspace"><input type="hidden" name="new_name" value="">
@@ -858,8 +879,28 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     if firm_li:
         subline.append(f'<span>{ICONS["linkedin"]}<a href="{esc(firm_li)}" target="_blank" rel="noopener" '
                        f'data-noprefetch>LinkedIn</a></span>')
-    subline.append(f'<span class="muted">CRD {esc(crd)}{" . " + esc(f["regulator"]) if f["regulator"] else ""}</span>')
+    subline.append(f'<span class="muted">CRD {esc(crd)}{" &middot; " + esc(f["regulator"]) if f["regulator"] else ""}</span>')
     signals_n = len(trigs)
+    # Recent filings: each Form ADV amendment on record, newest first, with
+    # how far reported assets moved from the filing before.
+    frows = []
+    for i in range(len(history) - 1, max(-1, len(history) - 13), -1):
+        h = history[i]
+        prev = history[i - 1]["raum"] if i > 0 else None
+        delta = ""
+        if prev:
+            pct = (h["raum"] - prev) / prev * 100
+            if abs(pct) >= 0.5:
+                delta = (f'<span class="{"ok" if pct > 0 else "bad"}">'
+                         f'{"+" if pct > 0 else ""}{pct:.0f}%</span>')
+            else:
+                delta = '<span class="muted">No change</span>'
+        frows.append(f'<tr><td class="nowrap">{esc(h["filing_date"])}<div class="meta">'
+                     f'{esc(ui.ago(h["filing_date"]))}</div></td>'
+                     f'<td class="num">{money(h["raum"])}</td><td class="num">{delta}</td></tr>')
+    filings_html = (f'<table class="tight bare"><thead><tr><th>Filed</th><th class="num">Assets reported</th>'
+                    f'<th class="num">Change</th></tr></thead><tbody>{"".join(frows)}</tbody></table>'
+                    if frows else '<p class="muted">No filing history on record yet.</p>')
     # The overview repeats the first cards; without their ids, so each id stays unique.
     overview_people = "".join(re.sub(r' id="(p-[^"]*|vs[0-9]+)"', "", x) for x in top_cards[:2]) or '<p class="empty">No people on record. <a href="#people">Find contacts</a></p>'
     recent = trow[:3]
@@ -876,8 +917,9 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <div class="dossier"><div>
 <nav class="secnav" aria-label="Firm research"><a href="#overview">Overview</a>
 <a href="#people">People &amp; contacts <span class="cnt">{pc['people']:,}</span></a>
-<a href="#fit">Product fit</a><a href="#activity">Activity</a>
-<a href="#assets">Assets &amp; funds</a><a href="#profile">Research</a><a href="#workspace">Workspace</a></nav>
+<a href="#fit">Product fit</a><a href="#activity">Activity <span class="cnt">{signals_n}</span></a>
+<a href="#hiring">Hiring</a><a href="#assets">Assets &amp; funds</a><a href="#profile">Firm profile</a>
+<a href="#workspace">Workspace</a></nav>
 <div class="dossier-tabs">
 <section class="anchor" id="overview">
 <div class="firm-overview-grid"><section class="overview-section"><div class="s-head"><h2>Key people</h2><a class="more" href="#people">All {pc['people']:,} people</a></div>
@@ -894,13 +936,14 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <div class="dsec">{people_html}</div>
 </section>
 <section class="anchor" id="fit"><div class="s-head"><h2>Product fit</h2><span class="meta">Missing factors score zero.</span></div>{_fit_section(crd, results, ranks, focus)}</section>
-<section class="anchor" id="activity"><div class="card dsec" id="signals"><div class="card-head"><h2>Signals <span class="h-cnt">{signals_n}</span></h2></div>{trig_html}</div>
-<div class="card dsec" id="hiring"><div class="card-head"><h2>Hiring and departures</h2></div>{hiring_html}</div></section>
+<section class="anchor" id="activity"><div class="card dsec" id="signals"><div class="card-head"><h2>Signals <span class="h-cnt">{signals_n}</span></h2><span class="sub">Changes Bellwether spotted in filings, people and assets</span></div>{trig_html}</div>
+<div class="card dsec" id="filings"><div class="card-head"><h2>Recent filings</h2><span class="sub">Form ADV amendments and what changed in assets</span></div>{filings_html}</div></section>
+<section class="anchor" id="hiring"><div class="card dsec"><div class="card-head"><h2>Hiring and departures</h2><span class="sub">From the SEC record of every registered person</span></div>{hiring_html}</div></section>
 <section class="anchor" id="assets">{assets_html}<div class="card" style="margin-top:16px"><div class="card-head"><h2>Investments</h2></div>{invest_html}</div></section>
 <section class="anchor" id="profile"><div class="cols-2"><div class="card"><div class="card-head"><h2>Technology</h2></div>{tech_html}</div>
 <div class="card" id="compliance"><div class="card-head"><h2>Compliance and registration</h2></div>{comp_html}</div></div>
 <details class="detail-section"><summary>In their own words</summary>{tp_html}</details>
-{('<div class="card" style="margin-top:16px"><div class="card-head"><h2>Firm type</h2><span class="sub">How Bellwether classified this firm</span></div><p><span class="ftype">' + esc(ftype.get("label") or ftype.get("category") or "") + '</span> <span class="meta">' + esc(str(ftype.get("source_label") or ftype.get("source") or "")) + (", confidence " + str(ftype.get("confidence")) if ftype.get("confidence") is not None else "") + '</span></p><ul class="evidence-list">' + "".join("<li>" + esc(str(e)) + "</li>" for e in (ftype.get("evidence") or [])) + '</ul></div>') if ftype and ftype.get("category") else ''}
+{('<div class="card" style="margin-top:16px"><div class="card-head"><h2>Firm type</h2><span class="sub">How Bellwether classified this firm</span></div><p><span class="ftype">' + esc(ftype.get("label") or ftype.get("category") or "") + '</span> <span class="meta">Classified by ' + esc(str(ftype.get("source_label") or ftype.get("source") or "rules").lower()) + (", " + str(ftype.get("confidence")) + "% confidence" if ftype.get("confidence") is not None else "") + '</span></p><ul class="evidence-list">' + "".join("<li>" + esc(str(e)) + "</li>" for e in (ftype.get("evidence") or [])) + '</ul></div>') if ftype and ftype.get("category") else ''}
 {office_html}</section>
 <section class="anchor" id="workspace">{rail}</section>
 </div></div>

@@ -42,9 +42,9 @@ def ask_page(q: str = Query("")):
         left = max(0, st["limit"] - st["used_today"])
         status = f"{left:,} questions left today"
         if admin:
-            status += f' . Model {esc(ai.model("smart"))} . <a href="/settings/ai">Change</a>'
+            status += f' &middot; Model {esc(ai.model("smart"))} &middot; <a href="/settings/ai">Change</a>'
         model = (f'<canvas data-orb="breathing" data-size="20" data-px="18" data-tint="#bdbdbd" '
-                 f'aria-hidden="true"></canvas>Bellwether AI . {esc(_provider_label())}')
+                 f'aria-hidden="true"></canvas>Bellwether AI &middot; {esc(_provider_label())}')
     else:
         status = ('AI is not connected, so questions run as a name search. '
                   + ('<a href="/settings/ai">Connect a provider</a>' if admin else "Ask an admin to connect one."))

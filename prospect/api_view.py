@@ -46,11 +46,11 @@ def api_search(q: str = ""):
     for r in rows:
         best = ""
         if r["best_product"]:
-            best = f" . {products.product(r['best_product'])['name']} {r['best_score']:.0f}"
+            best = f" \u00b7 {products.product(r['best_product'])['name']} {r['best_score']:.0f}"
         place = " ".join(x for x in (nice_name(r["city"] or ""), r["state"] or "") if x)
         bits = [x for x in (place, money(r["raum"]) if r["raum"] else "", best.lstrip(" .")) if x]
         out.append({"name": nice_name(r["legal_name"]), "href": f"/firm/{r['crd']}",
-                    "meta": " . ".join(bits) or f"CRD {r['crd']}"})
+                    "meta": " \u00b7 ".join(bits) or f"CRD {r['crd']}"})
     if len(q) >= 3:
         try:
             for r in c.execute("""
@@ -60,7 +60,7 @@ def api_search(q: str = ""):
                 WHERE p.name ILIKE ? ORDER BY f.raum DESC NULLS LAST LIMIT 5""",
                                (f"%{q}%",)):
                 out.append({"name": r["name"], "href": f"/firm/{r['org_pk']}#people",
-                            "meta": f"Person . {nice_name(r['legal_name'])}"})
+                            "meta": f"Person \u00b7 {nice_name(r['legal_name'])}"})
         except Exception:
             c.rollback()
     c.close()

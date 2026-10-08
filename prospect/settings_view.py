@@ -432,7 +432,7 @@ best from a server with a fixed address, a reverse DNS name matching the HELO na
 record on the MAIL FROM domain that allows it. From a home or office connection, Microsoft 365 and
 others often refuse to answer, which shows as "Could not tell", never as a bad address.</div>
 <h3 style="margin-top:18px">Right now</h3>{status}
-<h3 style="margin-top:18px">Addresses by result</h3><table class="tight" style="max-width:420px"><tbody>{cnt}</tbody></table>
+<h3 style="margin-top:18px">Addresses by result</h3><div class="table-scroll" style="max-width:480px"><table class="tight"><tbody>{cnt}</tbody></table></div>
 <section class="s"><h2>Settings</h2>{_group_form("verify")}</section>"""
     return _frame("Email verification", "verify", "How Bellwether confirms an email address exists.",
                   inner, msg, err)
@@ -480,7 +480,7 @@ def jobs_page(msg: str = Query("")):
             pct = (j["done"] / j["total"] * 100) if j.get("total") and j.get("done") is not None else None
             prog = (f'<div class="meter"><i style="width:{pct:.1f}%"></i></div>'
                     f'<div class="meta">{j["done"]:,} of {j["total"]:,}'
-                    f'{" . " + format(j["backlog"], ",") + " to go" if j.get("backlog") else ""}</div>'
+                    f'{" &middot; " + format(j["backlog"], ",") + " to go" if j.get("backlog") else ""}</div>'
                     if pct is not None else
                     (f'<div class="meta">{j["backlog"]:,} to go</div>' if j.get("backlog") else ""))
             last = ""
@@ -491,20 +491,24 @@ def jobs_page(msg: str = Query("")):
                         f'<div class="meta">{esc((j["message"] or "")[:140])}</div>')
             elif j["why"]:
                 last = f'<div class="meta warnc">{esc(j["why"])}</div>'
-            nxt = esc(ui.ago(j["next_run_at"])) if j["next_run_at"] and j["state"] == "scheduled" else ""
+            nxt = ""
+            if j["next_run_at"] and j["state"] == "scheduled":
+                # A next run already in the past means the worker will pick it up now.
+                nxt = esc(ui.ago(j["next_run_at"]))
+                nxt = "due now" if "ago" in nxt or nxt == "just now" else nxt
             pause = ("resume", "Resume") if j["state"] == "paused" else ("pause", "Pause")
             rows.append(
                 f'<tr><td style="width:30%"><b>{esc(job.label)}</b>'
                 f'<details class="source-help"><summary>Details</summary><p>{esc(job.blurb)}</p></details></td>'
                 f'<td><span class="chip {chips.get(j["state"], "")}">{words.get(j["state"], j["state"])}</span>'
-                f'{"<div class=meta>next " + nxt + "</div>" if nxt else ""}</td>'
+                f'{"<div class=meta>Next run " + nxt + "</div>" if nxt else ""}</td>'
                 f'<td style="min-width:200px">{prog}</td><td style="width:22%">{last}</td>'
                 f'<td class="num nowrap"><form method="post" action="/settings/jobs/{esc(job.kind)}/run" style="display:inline">'
                 f'<button class="sm" type="submit">Run now</button></form> '
                 f'<form method="post" action="/settings/jobs/{esc(job.kind)}/{pause[0]}" style="display:inline">'
                 f'<button class="sm ghost" type="submit">{pause[1]}</button></form></td></tr>')
         sections.append(f'<section class="s"><h2>{esc(jobs.GROUP_LABEL.get(g, g))}</h2>'
-                        f'<table><tbody>{"".join(rows)}</tbody></table></section>')
+                        f'<table class="jobs-table"><tbody>{"".join(rows)}</tbody></table></section>')
     wmsg = esc((weekly["message"] if weekly else "") or "not checked in yet")
     wlast = esc(ui.ago((weekly or {}).get("last_started")) or "never") if weekly else "never"
     weekly_html = f"""<section class="s"><h2>Weekly SEC cycle</h2><table><tbody><tr>
@@ -557,7 +561,7 @@ def _ft_badge(t: dict | None) -> str:
     src = {"manual": "set by hand", "ai": "AI", "rules": "rules"}.get(t.get("source"), "")
     return (f'<span class="chip {cls}">{esc(t["label"])}</span> '
             f'<span class="meta" style="text-transform:none;letter-spacing:0">'
-            f'{t["confidence"]}% . {esc(src)}</span>')
+            f'{t["confidence"]}% &middot; {esc(src)}</span>')
 
 
 def _ft_form(crd: str, current: str | None, back: str, compact: bool = False) -> str:
@@ -651,8 +655,8 @@ def firmtypes_page(q: str = Query(""), cat: str = Query(""), msg: str = Query(""
             ev = "; ".join((t or {}).get("evidence") or [])
             out.append(
                 f'<tr><td style="width:30%"><a href="/firm/{esc(r["crd"])}"><b>{esc(nice_name(r["legal_name"]))}</b></a>'
-                f'<div class="meta">CRD {esc(r["crd"])} . {esc(nice_name(r.get("city") or ""))} {esc(r.get("state") or "")}'
-                f' . {esc(firmtype._money(r.get("raum")))}</div></td>'
+                f'<div class="meta">CRD {esc(r["crd"])} &middot; {esc(nice_name(r.get("city") or ""))} {esc(r.get("state") or "")}'
+                f' &middot; {esc(firmtype._money(r.get("raum")))}</div></td>'
                 f'<td style="width:22%">{_ft_badge(t)}</td>'
                 f'<td class="small soft">{esc(ev[:260])}</td>'
                 f'<td style="width:30%">{_ft_form(r["crd"], (t or {}).get("category") if (t or {}).get("source") == "manual" else None, back)}</td></tr>')
@@ -870,7 +874,7 @@ def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str =
                 f'<input type="hidden" name="id" value="{it["id"]}"><input type="hidden" name="kind" value="{esc(kind)}">'
                 f'{_kn_fields(it, kind)}<button class="primary sm" type="submit">Save</button></form></details>')
         who = ("" if not it.get("edited") else
-               f'<div class="meta">{esc(it.get("updated_by") or "")} . {esc(ui.ago(it.get("updated_at")))}</div>')
+               f'<div class="meta">{esc(it.get("updated_by") or "")} &middot; {esc(ui.ago(it.get("updated_at")))}</div>')
         rows.append(
             f'<tr{" style=opacity:.55" if not it.get("active") else ""}><td style="width:30%"><b>{esc(it["title"])}</b>{who}</td>'
             f'<td><div class="small soft">{esc(it.get("body") or "")}</div>{detail}{edit}</td>'
@@ -1021,14 +1025,15 @@ def system_page():
     if sched and sched["last_check"]:
         mins = (datetime.now(timezone.utc) - datetime.fromisoformat(sched["last_check"])).total_seconds() / 60
         beat = (f'<p><b>Scheduler:</b> {"<span class=ok>on</span>" if mins < 15 else "<span class=bad>stalled</span>"}, '
-                f'last checked {mins:.0f} minutes ago. {esc(sched["message"] or "")}.</p>')
+                f'last checked {esc(ui.ago(sched["last_check"]))}. '
+                f'{esc((sched["message"] or "")[:1].upper() + (sched["message"] or "")[1:])}.</p>')
     rrow = []
     for r in runs:
         cls = {"ok": "ok", "failed": "bad", "skipped": "warnc", "running": "warnc"}.get(r["status"], "")
         flag = ' <b class="warnc">FLAGGED</b>' if r["flagged"] else ""
         rrow.append(f'<tr><td>{esc(r["source_key"])}</td><td>{esc(r["stage"])}</td>'
                     f'<td class="{cls}"><b>{esc(r["status"])}</b>{flag}</td>'
-                    f'<td class="num">{r["rows_out"] if r["rows_out"] is not None else "-"}</td>'
+                    f'<td class="num">{format(r["rows_out"], ",") if r["rows_out"] is not None else "-"}</td>'
                     f'<td class="small">{esc(ui.ago(r["finished_at"] or r["started_at"]))}</td>'
                     f'<td class="small soft">{esc((r["message"] or "")[:140])}</td></tr>')
     srow = "".join(f'<tr><td>{esc(s["source_key"])}</td><td>{esc(s["published_at"])}</td>'
