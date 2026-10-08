@@ -1,12 +1,13 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-05T19:53:01.832025+00:00",
+  "generatedAt": "2026-10-08T12:36:58Z",
   "title": "Design System: Bellwether",
   "extensions": {
     "colorMeta": {
       "canvas": {
         "displayName": "Canvas",
         "role": "neutral",
+        "canonical": "#151515",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -21,6 +22,7 @@
       "navigation": {
         "displayName": "Navigation",
         "role": "neutral",
+        "canonical": "#111111",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -35,6 +37,22 @@
       "surface": {
         "displayName": "Surface",
         "role": "neutral",
+        "canonical": "#1c1c1c",
+        "tonalRamp": [
+          "oklch(15% 0.0000 0.0)",
+          "oklch(26% 0.0000 0.0)",
+          "oklch(38% 0.0000 0.0)",
+          "oklch(49% 0.0000 0.0)",
+          "oklch(61% 0.0000 0.0)",
+          "oklch(72% 0.0000 0.0)",
+          "oklch(84% 0.0000 0.0)",
+          "oklch(95% 0.0000 0.0)"
+        ]
+      },
+      "field": {
+        "displayName": "Field",
+        "role": "neutral",
+        "canonical": "#222222",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -49,6 +67,7 @@
       "control": {
         "displayName": "Control",
         "role": "neutral",
+        "canonical": "#292929",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -63,6 +82,7 @@
       "control-hover": {
         "displayName": "Control Hover",
         "role": "neutral",
+        "canonical": "#363636",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -77,6 +97,7 @@
       "ink": {
         "displayName": "Ink",
         "role": "neutral",
+        "canonical": "#f0f0f0",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -91,6 +112,7 @@
       "secondary": {
         "displayName": "Secondary",
         "role": "neutral",
+        "canonical": "#bdbdbd",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -105,6 +127,22 @@
       "muted": {
         "displayName": "Muted",
         "role": "neutral",
+        "canonical": "#a0a0a0",
+        "tonalRamp": [
+          "oklch(15% 0.0000 0.0)",
+          "oklch(26% 0.0000 0.0)",
+          "oklch(38% 0.0000 0.0)",
+          "oklch(49% 0.0000 0.0)",
+          "oklch(61% 0.0000 0.0)",
+          "oklch(72% 0.0000 0.0)",
+          "oklch(84% 0.0000 0.0)",
+          "oklch(95% 0.0000 0.0)"
+        ]
+      },
+      "dim": {
+        "displayName": "Dim",
+        "role": "neutral",
+        "canonical": "#999999",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -119,6 +157,7 @@
       "rule": {
         "displayName": "Rule",
         "role": "neutral",
+        "canonical": "rgba(255,255,255,.07)",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -133,6 +172,22 @@
       "control-rule": {
         "displayName": "Control Rule",
         "role": "neutral",
+        "canonical": "rgba(255,255,255,.13)",
+        "tonalRamp": [
+          "oklch(15% 0.0000 0.0)",
+          "oklch(26% 0.0000 0.0)",
+          "oklch(38% 0.0000 0.0)",
+          "oklch(49% 0.0000 0.0)",
+          "oklch(61% 0.0000 0.0)",
+          "oklch(72% 0.0000 0.0)",
+          "oklch(84% 0.0000 0.0)",
+          "oklch(95% 0.0000 0.0)"
+        ]
+      },
+      "focus-rule": {
+        "displayName": "Focus Rule",
+        "role": "neutral",
+        "canonical": "rgba(255,255,255,.2)",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -145,8 +200,9 @@
         ]
       },
       "primary": {
-        "displayName": "Signal Red",
+        "displayName": "Primary",
         "role": "primary",
+        "canonical": "#b73545",
         "tonalRamp": [
           "oklch(15% 0.1656 18.1)",
           "oklch(26% 0.1656 18.1)",
@@ -159,8 +215,9 @@
         ]
       },
       "primary-hover": {
-        "displayName": "Pressed Red",
+        "displayName": "Primary Hover",
         "role": "primary",
+        "canonical": "#9f2c3b",
         "tonalRamp": [
           "oklch(15% 0.1501 17.8)",
           "oklch(26% 0.1501 17.8)",
@@ -173,8 +230,9 @@
         ]
       },
       "primary-readable": {
-        "displayName": "Readable Red",
+        "displayName": "Primary Readable",
         "role": "primary",
+        "canonical": "#ef939c",
         "tonalRamp": [
           "oklch(15% 0.1114 13.7)",
           "oklch(26% 0.1114 13.7)",
@@ -187,36 +245,39 @@
         ]
       },
       "primary-tint": {
-        "displayName": "Red Tint",
+        "displayName": "Primary Tint",
         "role": "primary",
+        "canonical": "rgba(230,72,80,.13)",
         "tonalRamp": [
-          "oklch(15% 0.1707 20.6)",
-          "oklch(26% 0.1707 20.6)",
-          "oklch(38% 0.1707 20.6)",
-          "oklch(49% 0.1707 20.6)",
-          "oklch(61% 0.1707 20.6)",
-          "oklch(72% 0.1707 20.6)",
-          "oklch(84% 0.1707 20.6)",
-          "oklch(95% 0.1707 20.6)"
+          "oklch(15% 0.1941 22.0)",
+          "oklch(26% 0.1941 22.0)",
+          "oklch(38% 0.1941 22.0)",
+          "oklch(49% 0.1941 22.0)",
+          "oklch(61% 0.1941 22.0)",
+          "oklch(72% 0.1941 22.0)",
+          "oklch(84% 0.1941 22.0)",
+          "oklch(95% 0.1941 22.0)"
         ]
       },
-      "selected-navigation": {
-        "displayName": "Selected Navigation",
+      "primary-rule": {
+        "displayName": "Primary Rule",
         "role": "primary",
+        "canonical": "rgba(240,107,114,.35)",
         "tonalRamp": [
-          "oklch(15% 0.0139 18.1)",
-          "oklch(26% 0.0139 18.1)",
-          "oklch(38% 0.0139 18.1)",
-          "oklch(49% 0.0139 18.1)",
-          "oklch(61% 0.0139 18.1)",
-          "oklch(72% 0.0139 18.1)",
-          "oklch(84% 0.0139 18.1)",
-          "oklch(95% 0.0139 18.1)"
+          "oklch(15% 0.1642 19.2)",
+          "oklch(26% 0.1642 19.2)",
+          "oklch(38% 0.1642 19.2)",
+          "oklch(49% 0.1642 19.2)",
+          "oklch(61% 0.1642 19.2)",
+          "oklch(72% 0.1642 19.2)",
+          "oklch(84% 0.1642 19.2)",
+          "oklch(95% 0.1642 19.2)"
         ]
       },
       "action-text": {
         "displayName": "Action Text",
         "role": "neutral",
+        "canonical": "#ffffff",
         "tonalRamp": [
           "oklch(15% 0.0000 0.0)",
           "oklch(26% 0.0000 0.0)",
@@ -231,235 +292,313 @@
       "verified": {
         "displayName": "Verified",
         "role": "semantic",
+        "canonical": "#45c08a",
         "tonalRamp": [
-          "oklch(15% 0.0995 154.4)",
-          "oklch(26% 0.0995 154.4)",
-          "oklch(38% 0.0995 154.4)",
-          "oklch(49% 0.0995 154.4)",
-          "oklch(61% 0.0995 154.4)",
-          "oklch(72% 0.0995 154.4)",
-          "oklch(84% 0.0995 154.4)",
-          "oklch(95% 0.0995 154.4)"
+          "oklch(15% 0.1353 160.9)",
+          "oklch(26% 0.1353 160.9)",
+          "oklch(38% 0.1353 160.9)",
+          "oklch(49% 0.1353 160.9)",
+          "oklch(61% 0.1353 160.9)",
+          "oklch(72% 0.1353 160.9)",
+          "oklch(84% 0.1353 160.9)",
+          "oklch(95% 0.1353 160.9)"
         ]
       },
       "verified-tint": {
         "displayName": "Verified Tint",
         "role": "semantic",
+        "canonical": "rgba(69,192,138,.12)",
         "tonalRamp": [
-          "oklch(15% 0.0995 154.4)",
-          "oklch(26% 0.0995 154.4)",
-          "oklch(38% 0.0995 154.4)",
-          "oklch(49% 0.0995 154.4)",
-          "oklch(61% 0.0995 154.4)",
-          "oklch(72% 0.0995 154.4)",
-          "oklch(84% 0.0995 154.4)",
-          "oklch(95% 0.0995 154.4)"
+          "oklch(15% 0.1353 160.9)",
+          "oklch(26% 0.1353 160.9)",
+          "oklch(38% 0.1353 160.9)",
+          "oklch(49% 0.1353 160.9)",
+          "oklch(61% 0.1353 160.9)",
+          "oklch(72% 0.1353 160.9)",
+          "oklch(84% 0.1353 160.9)",
+          "oklch(95% 0.1353 160.9)"
+        ]
+      },
+      "verified-rule": {
+        "displayName": "Verified Rule",
+        "role": "semantic",
+        "canonical": "rgba(69,192,138,.32)",
+        "tonalRamp": [
+          "oklch(15% 0.1353 160.9)",
+          "oklch(26% 0.1353 160.9)",
+          "oklch(38% 0.1353 160.9)",
+          "oklch(49% 0.1353 160.9)",
+          "oklch(61% 0.1353 160.9)",
+          "oklch(72% 0.1353 160.9)",
+          "oklch(84% 0.1353 160.9)",
+          "oklch(95% 0.1353 160.9)"
         ]
       },
       "missing-evidence": {
         "displayName": "Missing Evidence",
         "role": "semantic",
+        "canonical": "#e8ac4a",
         "tonalRamp": [
-          "oklch(15% 0.1057 83.5)",
-          "oklch(26% 0.1057 83.5)",
-          "oklch(38% 0.1057 83.5)",
-          "oklch(49% 0.1057 83.5)",
-          "oklch(61% 0.1057 83.5)",
-          "oklch(72% 0.1057 83.5)",
-          "oklch(84% 0.1057 83.5)",
-          "oklch(95% 0.1057 83.5)"
+          "oklch(15% 0.1329 76.7)",
+          "oklch(26% 0.1329 76.7)",
+          "oklch(38% 0.1329 76.7)",
+          "oklch(49% 0.1329 76.7)",
+          "oklch(61% 0.1329 76.7)",
+          "oklch(72% 0.1329 76.7)",
+          "oklch(84% 0.1329 76.7)",
+          "oklch(95% 0.1329 76.7)"
         ]
       },
       "missing-evidence-tint": {
         "displayName": "Missing Evidence Tint",
         "role": "semantic",
+        "canonical": "rgba(232,172,74,.11)",
         "tonalRamp": [
-          "oklch(15% 0.1057 83.5)",
-          "oklch(26% 0.1057 83.5)",
-          "oklch(38% 0.1057 83.5)",
-          "oklch(49% 0.1057 83.5)",
-          "oklch(61% 0.1057 83.5)",
-          "oklch(72% 0.1057 83.5)",
-          "oklch(84% 0.1057 83.5)",
-          "oklch(95% 0.1057 83.5)"
+          "oklch(15% 0.1329 76.7)",
+          "oklch(26% 0.1329 76.7)",
+          "oklch(38% 0.1329 76.7)",
+          "oklch(49% 0.1329 76.7)",
+          "oklch(61% 0.1329 76.7)",
+          "oklch(72% 0.1329 76.7)",
+          "oklch(84% 0.1329 76.7)",
+          "oklch(95% 0.1329 76.7)"
+        ]
+      },
+      "missing-evidence-rule": {
+        "displayName": "Missing Evidence Rule",
+        "role": "semantic",
+        "canonical": "rgba(232,172,74,.32)",
+        "tonalRamp": [
+          "oklch(15% 0.1329 76.7)",
+          "oklch(26% 0.1329 76.7)",
+          "oklch(38% 0.1329 76.7)",
+          "oklch(49% 0.1329 76.7)",
+          "oklch(61% 0.1329 76.7)",
+          "oklch(72% 0.1329 76.7)",
+          "oklch(84% 0.1329 76.7)",
+          "oklch(95% 0.1329 76.7)"
         ]
       }
     },
     "typographyMeta": {
       "display": {
-        "displayName": "AI Welcome",
-        "purpose": "Centered conversation entry; steps down on mobile."
+        "displayName": "Display",
+        "purpose": "Global AI welcome."
       },
       "headline": {
-        "displayName": "Page Headline",
-        "purpose": "General page identity."
+        "displayName": "Headline",
+        "purpose": "Page and firm identity."
       },
       "title": {
-        "displayName": "Section Title",
-        "purpose": "Evidence group headings."
+        "displayName": "Title",
+        "purpose": "General section headings."
       },
       "body": {
         "displayName": "Body",
-        "purpose": "Reading copy and general interface text."
+        "purpose": "General interface and reading text."
       },
       "table": {
         "displayName": "Table",
         "purpose": "Compact evidence rows."
       },
       "label": {
-        "displayName": "Control Label",
-        "purpose": "Ordinary action text; primary actions strengthen weight."
+        "displayName": "Label",
+        "purpose": "Standard actions."
       },
       "mono": {
-        "displayName": "Identifiers",
+        "displayName": "Mono",
         "purpose": "Identifiers and technical values only."
       }
     },
     "shadows": [
       {
-        "name": "command-overlay",
-        "value": "0 22px 70px rgba(0,0,0,.55)",
-        "purpose": "Command palette above its backdrop."
+        "name": "floating-overlay",
+        "value": "0 24px 80px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35)",
+        "purpose": "Command search, floating filters, bulk actions and transient feedback."
       },
       {
-        "name": "feedback",
-        "value": "0 14px 40px rgba(0,0,0,.4)",
-        "purpose": "Transient feedback above workspace content."
+        "name": "segmented-selection",
+        "value": "0 1px 2px rgba(0,0,0,.35)",
+        "purpose": "The active control inside a segmented selector."
       }
     ],
     "motion": [
       {
         "name": "control-state",
         "value": "120ms ease",
-        "purpose": "Color, background and border transitions."
+        "purpose": "Control color and border changes."
+      },
+      {
+        "name": "press",
+        "value": "60ms ease; transform:translateY(1px)",
+        "purpose": "Button press feedback."
+      },
+      {
+        "name": "disclosure-state",
+        "value": "150ms ease",
+        "purpose": "Disclosure and composer states."
       },
       {
         "name": "feedback-entry",
         "value": "200ms ease-out",
-        "purpose": "Small transient feedback entrance."
+        "purpose": "Transient feedback entry."
       },
       {
         "name": "reduced-motion",
-        "value": "animation:none;transition:none;scroll-behavior:auto",
-        "purpose": "Applied for prefers-reduced-motion: reduce."
+        "value": "animation:none!important;transition:none!important;scroll-behavior:auto",
+        "purpose": "Respect prefers-reduced-motion: reduce."
       }
     ],
     "breakpoints": [
       {
-        "name": "wide-firm",
-        "value": "1500px"
+        "name": "compact-overview",
+        "value": "1200px"
       },
       {
-        "name": "compact-desktop",
-        "value": "1200px"
+        "name": "single-column-research",
+        "value": "1100px"
       },
       {
         "name": "mobile-navigation",
         "value": "980px"
       },
       {
-        "name": "stacked-firm",
-        "value": "700px"
+        "name": "stacked-workspace",
+        "value": "760px"
       },
       {
-        "name": "compact-mobile",
-        "value": "480px"
+        "name": "compact-controls",
+        "value": "600px"
+      },
+      {
+        "name": "small-firm-stats",
+        "value": "390px"
       }
-    ]
+    ],
+    "focus": [
+      {
+        "name": "keyboard",
+        "value": "outline:2px solid var(--red-hi);outline-offset:2px"
+      },
+      {
+        "name": "field",
+        "value": "border-color:var(--red-hi);box-shadow:0 0 0 3px var(--red-bg)"
+      }
+    ],
+    "evidence": {
+      "stylesheet": "prospect/static/app.css",
+      "sources": [
+        "prospect/static/app.js",
+        "prospect/home_view.py",
+        "prospect/firm_view.py",
+        "prospect/webapp.py",
+        "prospect/static/mark.svg"
+      ],
+      "renderedSamples": "data/quiet-review/final",
+      "refreshScope": "Approved October 2026 solid-charcoal system and named-view refinement. workspace.css is unused. Token ramps are panel previews, not additional shipped CSS colors."
+    }
   },
   "components": [
     {
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "The shipped primary action treatment.",
-      "html": "<button type=\"button\" class=\"ds-button-primary\">Save changes</button>",
-      "css": ".ds-button-primary{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:9px 15px;border:1px solid var(--rule2,#4a4a4a);border-radius:8px;font-size:13px;font-weight:550;line-height:1.3;cursor:pointer;text-decoration:none;transition:border-color .12s,background .12s;background:var(--red,#b73545);color:#fff;border-color:transparent;font-weight:600;}.ds-button-primary:hover{background:var(--red-hover,#9f2c3b);}.ds-button-primary:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:3px;}.ds-button-primary:disabled{opacity:.5;cursor:default;}@media(prefers-reduced-motion:reduce){.ds-button-primary{transition:none;}}"
+      "description": "Standard compact primary action.",
+      "html": "<button type=\"button\" class=\"ds-button-primary\">Save</button>",
+      "css": ".ds-button-primary{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);height:36px;padding:0 14px;border:1px solid var(--rule2,rgba(255,255,255,.13));border-radius:8px;font-size:13px;font-weight:500;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;transition:background .12s,border-color .12s,color .12s,transform .06s;background:var(--red,#b73545);color:#fff;font-weight:600;border-color:transparent;}.ds-button-primary:hover{background:var(--red-hover,#9f2c3b);color:#fff;}.ds-button-primary:active{transform:translateY(1px);}.ds-button-primary:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}.ds-button-primary:disabled{opacity:.5;cursor:default;transform:none;}@media(prefers-reduced-motion:reduce){.ds-button-primary{transition:none;}}"
     },
     {
       "name": "Secondary Button",
       "kind": "button",
       "refersTo": "button-secondary",
-      "description": "The shipped secondary action treatment.",
+      "description": "Standard compact secondary action.",
       "html": "<button type=\"button\" class=\"ds-button-secondary\">Watch</button>",
-      "css": ".ds-button-secondary{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:9px 15px;border:1px solid var(--rule2,#4a4a4a);border-radius:8px;font-size:13px;font-weight:550;line-height:1.3;cursor:pointer;text-decoration:none;transition:border-color .12s,background .12s;background:var(--raise2,#272727);color:var(--ink,#f0f0f0);}.ds-button-secondary:hover{background:var(--raise3,#343434);border-color:var(--faint,#a0a0a0);}.ds-button-secondary:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:3px;}.ds-button-secondary:disabled{opacity:.5;cursor:default;}@media(prefers-reduced-motion:reduce){.ds-button-secondary{transition:none;}}"
+      "css": ".ds-button-secondary{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);height:36px;padding:0 14px;border:1px solid var(--rule2,rgba(255,255,255,.13));border-radius:8px;font-size:13px;font-weight:500;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;transition:background .12s,border-color .12s,color .12s,transform .06s;background:var(--raise2,#292929);color:var(--ink,#f0f0f0);font-weight:500;}.ds-button-secondary:hover{background:var(--raise3,#363636);color:var(--ink,#f0f0f0);}.ds-button-secondary:active{transform:translateY(1px);}.ds-button-secondary:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}.ds-button-secondary:disabled{opacity:.5;cursor:default;transform:none;}@media(prefers-reduced-motion:reduce){.ds-button-secondary{transition:none;}}"
     },
     {
       "name": "Ghost Button",
       "kind": "button",
       "refersTo": "button-ghost",
-      "description": "The shipped ghost action treatment.",
-      "html": "<button type=\"button\" class=\"ds-button-ghost\">New conversation</button>",
-      "css": ".ds-button-ghost{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:9px 15px;border:1px solid var(--rule2,#4a4a4a);border-radius:8px;font-size:13px;font-weight:550;line-height:1.3;cursor:pointer;text-decoration:none;transition:border-color .12s,background .12s;background:transparent;color:var(--soft,#bdbdbd);border-color:transparent;}.ds-button-ghost:hover{background:var(--raise,#1d1d1d);color:var(--ink,#f0f0f0);}.ds-button-ghost:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:3px;}.ds-button-ghost:disabled{opacity:.5;cursor:default;}@media(prefers-reduced-motion:reduce){.ds-button-ghost{transition:none;}}"
+      "description": "Standard compact ghost action.",
+      "html": "<button type=\"button\" class=\"ds-button-ghost\">Close</button>",
+      "css": ".ds-button-ghost{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);height:36px;padding:0 14px;border:1px solid var(--rule2,rgba(255,255,255,.13));border-radius:8px;font-size:13px;font-weight:500;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;transition:background .12s,border-color .12s,color .12s,transform .06s;background:transparent;color:var(--soft,#bdbdbd);font-weight:500;border-color:transparent;}.ds-button-ghost:hover{background:var(--raise2,#292929);color:var(--ink,#f0f0f0);}.ds-button-ghost:active{transform:translateY(1px);}.ds-button-ghost:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}.ds-button-ghost:disabled{opacity:.5;cursor:default;transform:none;}@media(prefers-reduced-motion:reduce){.ds-button-ghost{transition:none;}}"
     },
     {
-      "name": "Search Field",
+      "name": "Text Field",
       "kind": "input",
       "refersTo": "input",
-      "description": "Visible label, neutral field and red focus treatment.",
-      "html": "<label class=\"ds-field\">Search firms<input class=\"ds-search\" type=\"search\" placeholder=\"Firm name or location\"></label>",
-      "css": ".ds-field{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:flex;flex-direction:column;gap:6px;color:var(--soft,#bdbdbd);font-size:12px;}.ds-search{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);min-height:40px;padding:7px 10px;border:1px solid var(--rule2,#4a4a4a);border-radius:8px;background:var(--bg,#151515);color:var(--ink,#f0f0f0);font-size:14px;caret-color:var(--red-hi,#ef939c);}.ds-search::placeholder{color:var(--faint,#a0a0a0);opacity:1;}.ds-search:focus,.ds-search:focus-visible{outline:none;border-color:var(--red,#b73545);box-shadow:0 0 0 2px var(--red-bg,rgba(181,46,59,.15));}"
+      "description": "A labeled solid field with visible functional focus.",
+      "html": "<label class=\"ds-field\">Owner<input class=\"ds-input\" type=\"text\" placeholder=\"Name\"></label>",
+      "css": ".ds-field{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:flex;flex-direction:column;gap:6px;color:var(--faint,#a0a0a0);font-size:12px;font-weight:500;}.ds-input{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);height:36px;padding:0 11px;border:1px solid var(--rule2,rgba(255,255,255,.13));border-radius:8px;background:var(--raise,#222222);color:var(--ink,#f0f0f0);font-size:13.5px;caret-color:var(--red-hi,#ef939c);transition:border-color .12s,box-shadow .12s;}.ds-input::placeholder{color:var(--dim,#999999);opacity:1;}.ds-input:hover{border-color:var(--line3,rgba(255,255,255,.2));}.ds-input:focus,.ds-input:focus-visible{outline:none;border-color:var(--red-hi,#ef939c);box-shadow:0 0 0 3px var(--red-bg,rgba(230,72,80,.13));}@media(prefers-reduced-motion:reduce){.ds-input{transition:none;}}"
     },
     {
       "name": "Workflow Navigation",
       "kind": "nav",
       "refersTo": "navigation-item",
-      "description": "Equal workflow links with quiet active emphasis.",
-      "html": "<nav class=\"ds-nav\" aria-label=\"Workspace\"><a class=\"ds-nav-link\" href=\"#firms\" aria-current=\"page\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" aria-hidden=\"true\"><path d=\"M3 21h18M6 21V7l6-4 6 4v14M9 10h1m4 0h1m-6 4h1m4 0h1m-4 7v-4h2v4\"/></svg>Firms</a><a class=\"ds-nav-link\" href=\"#people\">People</a><a class=\"ds-nav-link\" href=\"#signals\">Signals</a></nav>",
-      "css": ".ds-nav{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:flex;flex-direction:column;gap:5px;background:var(--side,#111111);padding:14px;}.ds-nav-link{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:7px;color:var(--soft,#bdbdbd);font-size:14px;text-decoration:none;transition:background .12s,color .12s;}.ds-nav-link:hover{background:rgba(255,255,255,.04);color:var(--ink,#f0f0f0);}.ds-nav-link[aria-current=page]{background:#292020;color:var(--ink,#f0f0f0);font-weight:600;}.ds-nav-link svg{width:17px;height:17px;color:var(--red-hi,#ef939c);}.ds-nav-link:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:3px;}@media(prefers-reduced-motion:reduce){.ds-nav-link{transition:none;}}"
+      "description": "Equal workflow links with a neutral selected surface and red marker.",
+      "html": "<nav class=\"ds-navigation\" aria-label=\"Explore\"><a class=\"ds-nav-link\" href=\"#firms\" aria-current=\"page\">Firms</a><a class=\"ds-nav-link\" href=\"#people\">People</a><a class=\"ds-nav-link\" href=\"#signals\">Signals</a></nav>",
+      "css": ".ds-navigation{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:flex;flex-direction:column;background:var(--side,#111111);padding:12px;}.ds-nav-link{display:flex;align-items:center;position:relative;height:34px;padding:0 10px;border-radius:8px;color:var(--soft,#bdbdbd);font-size:13.5px;font-weight:500;text-decoration:none;transition:background .12s,color .12s;}.ds-nav-link:hover{background:rgba(255,255,255,.045);color:var(--ink,#f0f0f0);}.ds-nav-link[aria-current=page]{background:rgba(255,255,255,.075);color:var(--ink,#f0f0f0);}.ds-nav-link[aria-current=page]::before{content:\"\";position:absolute;left:-12px;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--red,#b73545);}.ds-nav-link:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}@media(prefers-reduced-motion:reduce){.ds-nav-link{transition:none;}}"
     },
     {
-      "name": "Verified Status",
+      "name": "Contact Status",
       "kind": "chip",
       "refersTo": "chip-verified",
-      "description": "A textual verification state with the semantic green treatment.",
-      "html": "<span class=\"ds-chip\">Verified</span>",
-      "css": ".ds-chip{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:inline-flex;align-items:center;gap:6px;font-size:10.5px;line-height:1.5;padding:3px 7px;border-radius:5px;background:var(--ok-bg,rgba(99,170,124,.13));color:var(--ok,#63aa7c);white-space:nowrap;}"
+      "description": "Verified and published remain visibly distinct evidence states.",
+      "html": "<div class=\"ds-statuses\"><span class=\"ds-chip ds-verified\">Verified</span><span class=\"ds-chip ds-published\">Published</span></div>",
+      "css": ".ds-statuses{display:flex;gap:8px;}.ds-chip{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:6px;font-size:11.5px;font-weight:500;line-height:1;white-space:nowrap;border:1px solid transparent;}.ds-verified{background:var(--ok-bg,rgba(69,192,138,.12));color:var(--ok,#45c08a);border-color:var(--ok-line,rgba(69,192,138,.32));}.ds-published{background:transparent;color:var(--faint,#a0a0a0);border-color:var(--rule2,rgba(255,255,255,.13));}"
     },
     {
-      "name": "Research Disclosure",
+      "name": "Contained Panel",
       "kind": "card",
-      "refersTo": "research-panel",
-      "description": "Secondary evidence stays accessible in a named disclosure.",
-      "html": "<details class=\"ds-research\"><summary class=\"ds-research-summary\">Contacts and sources</summary><p class=\"ds-research-copy\">Contact evidence and verification details appear here when available.</p></details>",
-      "css": ".ds-research{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);border:1px solid var(--rule,#333333);background:var(--raise,#1d1d1d);color:var(--ink,#f0f0f0);border-radius:12px;padding:20px;}.ds-research-summary{font-size:15px;font-weight:550;cursor:pointer;list-style:none;}.ds-research-summary::-webkit-details-marker{display:none;}.ds-research[open]>.ds-research-summary{margin-bottom:24px;}.ds-research-copy{color:var(--soft,#bdbdbd);font-size:13px;line-height:1.55;}.ds-research-summary:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:3px;}"
+      "refersTo": "panel",
+      "description": "Solid containment for detailed sections; summaries can remain open rows.",
+      "html": "<section class=\"ds-panel\"><h2>Technology</h2><p>No recorded technology.</p></section>",
+      "css": ".ds-panel{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);padding:20px;border:1px solid var(--line,rgba(255,255,255,.07));border-radius:12px;background:var(--card,#1c1c1c);color:var(--ink,#f0f0f0);}.ds-panel h2{margin:0 0 14px;font-size:17px;font-weight:600;line-height:1.35;letter-spacing:-.015em;}.ds-panel p{font-size:14px;line-height:1.55;color:var(--faint,#a0a0a0);}"
     },
     {
-      "name": "Fit and Coverage",
-      "kind": "custom",
-      "refersTo": "research-panel",
-      "description": "A neutral score summary preserves visible unknown coverage.",
-      "html": "<a class=\"ds-fit\" href=\"#fit\"><span class=\"ds-fit-label\">Product fit</span><strong class=\"ds-fit-score\">Unknown</strong><span class=\"ds-coverage\" role=\"img\" aria-label=\"No known coverage\"></span><span class=\"ds-fit-meta\">Evidence not recorded</span></a>",
-      "css": ".ds-fit{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:flex;flex-direction:column;gap:9px;padding:18px;border:1px solid var(--rule,#333333);border-radius:10px;color:var(--ink,#f0f0f0);background:transparent;text-decoration:none;}.ds-fit:hover{border-color:var(--rule2,#4a4a4a);background:var(--raise2,#272727);}.ds-fit-label{font-size:12px;}.ds-fit-score{font-size:30px;font-weight:550;line-height:1.2;font-variant-numeric:tabular-nums;}.ds-coverage{height:4px;border-radius:2px;background:var(--hatch,repeating-linear-gradient(135deg,rgba(207,169,92,.55) 0 3px,rgba(207,169,92,.12) 3px 6px));overflow:hidden;}.ds-fit-meta{font-size:11px;color:var(--amber,#cfa95c);}.ds-fit:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:3px;}"
+      "name": "Workspace Tabs",
+      "kind": "nav",
+      "refersTo": "workspace-tab",
+      "description": "Plain horizontally scrolling labels with a red selection underline.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\" aria-label=\"Dashboard views\"><button class=\"ds-tab\" type=\"button\" role=\"tab\" aria-selected=\"true\">Overview</button><button class=\"ds-tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">Product lists</button><button class=\"ds-tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">Your workspace</button></div>",
+      "css": ".ds-tabs{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:flex;gap:26px;border-bottom:1px solid var(--line,rgba(255,255,255,.07));overflow-x:auto;}.ds-tab{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);height:46px;padding:0 0 14px;border:0;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--faint,#a0a0a0);font-size:13px;font-weight:500;white-space:nowrap;cursor:pointer;}.ds-tab:hover{color:var(--ink,#f0f0f0);}.ds-tab[aria-selected=true]{color:var(--ink,#f0f0f0);border-bottom-color:var(--red,#b73545);}.ds-tab:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}"
     },
     {
-      "name": "AI Composer",
+      "name": "Fit Summary",
       "kind": "custom",
-      "refersTo": "ai-composer",
-      "description": "A restrained neutral composer with a single send action.",
-      "html": "<div class=\"ds-composer\"><textarea class=\"ds-question\" aria-label=\"Ask Bellwether\" placeholder=\"Ask about firms, people, or opportunities...\" rows=\"2\"></textarea><div class=\"ds-compose-foot\"><span>Bellwether AI</span><button type=\"button\" class=\"ds-compose-send\">Ask</button></div></div>",
-      "css": ".ds-composer{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);background:#222222;border:1px solid #494949;border-radius:16px;padding:18px 20px;}.ds-composer:focus-within{border-color:#888;}.ds-question{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:block;width:100%;min-height:70px;padding:0;border:0;background:none;color:var(--ink,#f0f0f0);resize:none;font-size:15px;}.ds-question::placeholder{color:var(--faint,#a0a0a0);opacity:1;}.ds-question:focus,.ds-question:focus-visible{outline:none;box-shadow:none;}.ds-compose-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;color:var(--faint,#a0a0a0);font-size:11px;}.ds-compose-send{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:9px 15px;border:1px solid var(--rule2,#4a4a4a);border-radius:8px;font-size:13px;font-weight:550;line-height:1.3;cursor:pointer;text-decoration:none;transition:border-color .12s,background .12s;background:var(--red,#b73545);color:#fff;border-color:transparent;font-weight:600;}.ds-compose-send:hover{background:var(--red-hover,#9f2c3b);}.ds-compose-send:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:3px;}@media(prefers-reduced-motion:reduce){.ds-compose-send{transition:none;}}"
+      "refersTo": "fit-summary",
+      "description": "An open row pairs a score with explicit known-data coverage.",
+      "html": "<a class=\"ds-fit\" href=\"#fit\"><span>AcuBooth<small>82% known data</small></span><strong>70<small>/100</small></strong></a>",
+      "css": ".ds-fit{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:flex;justify-content:space-between;align-items:center;gap:24px;padding:15px 0;border-bottom:1px solid var(--rule,rgba(255,255,255,.07));color:var(--ink,#f0f0f0);font-size:14px;text-decoration:none;}.ds-fit>span>small{display:block;margin-top:4px;color:var(--amber,#e8ac4a);font-size:12px;}.ds-fit strong{font-size:24px;font-weight:550;font-variant-numeric:tabular-nums;}.ds-fit strong small{margin-left:3px;color:var(--faint,#a0a0a0);font-size:12px;font-weight:400;}.ds-fit:hover{color:var(--red-hi,#ef939c);}.ds-fit:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}"
+    },
+    {
+      "name": "Microsoft Sign-in",
+      "kind": "button",
+      "refersTo": "microsoft-sign-in",
+      "description": "The prominent light authentication action in the centered sign-in panel.",
+      "html": "<button class=\"ds-microsoft\" type=\"button\"><svg aria-hidden=\"true\" viewBox=\"0 0 21 21\"><path fill=\"#f25022\" d=\"M0 0h10v10H0z\"/><path fill=\"#7fba00\" d=\"M11 0h10v10H11z\"/><path fill=\"#00a4ef\" d=\"M0 11h10v10H0z\"/><path fill=\"#ffb900\" d=\"M11 11h10v10H11z\"/></svg>Sign in with Microsoft</button>",
+      "css": ".ds-microsoft{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);height:36px;padding:0 14px;border:1px solid var(--rule2,rgba(255,255,255,.13));border-radius:8px;font-size:13px;font-weight:500;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;transition:background .12s,border-color .12s,color .12s,transform .06s;width:100%;height:48px;gap:12px;font-size:14px;font-weight:600;border:0;background:#f4f4f5;color:#151515;}.ds-microsoft svg{width:18px;height:18px;}.ds-microsoft:hover{background:#fff;color:#000;}.ds-microsoft:active{transform:translateY(1px);}.ds-microsoft:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}@media(prefers-reduced-motion:reduce){.ds-microsoft{transition:none;}}"
     }
   ],
   "narrative": {
     "northStar": "The Intelligence Workspace",
-    "overview": "Bellwether is a serious, neutral charcoal workspace in which firm identity, evidence and available actions are easy to scan. Restrained red supplies emphasis; hierarchy comes from type, spacing, thin borders and deliberate disclosure. The interface carries substantial information without making every fact compete in the first view.\n\nThe approved identity is the open geometric B with its red signal point, paired with a sans-serif wordmark. The self-hosted Instrument Sans is intentional. Preserve the professional, restrained character confirmed in PRODUCT.md: neutral dark grey surfaces, room to read, and a quiet sign-in experience.",
+    "overview": "Bellwether is a serious, neutral charcoal workspace in which firm identity, evidence and available actions are easy to scan. Restrained red supplies emphasis; hierarchy comes from type, space, fine rules and named views. Summary rows keep the first view quiet while complete research and operational detail remain reachable.\n\nThe October 2026 refinement keeps self-hosted Instrument Sans, solid surfaces and a professional sign-in experience. The shipped identity is the red rounded-square mark with three stacked white chevrons in `prospect/static/mark.svg`. Reuse that asset rather than rebuilding it.",
     "keyCharacteristics": [
-      "Neutral charcoal layers with restrained red emphasis.",
-      "Readable identity and evidence before secondary detail.",
-      "Flat panels, fine rules and compact rectangular controls.",
-      "Progressive disclosure with complete routes to every workflow.",
-      "Clear distinctions between verified, unknown and missing evidence."
+      "Solid charcoal surfaces with restrained red emphasis.",
+      "Plain summary rows and generous separation between evidence groups.",
+      "Named, directly addressable views for every major workflow.",
+      "Explicit contact provenance and score uncertainty.",
+      "Compact controls, visible keyboard focus and responsive layouts."
     ],
     "rules": [
       {
         "name": "The Signal Rule",
-        "body": "Use red for an action, selected state or meaningful status; keep large backgrounds neutral.",
+        "body": "Use red for actions, selection or meaningful status; keep large backgrounds neutral.",
         "section": "colors"
       },
       {
         "name": "The Evidence Rule",
-        "body": "Pair semantic color with explicit labels and values. Missing evidence remains visibly different from a known negative or a verified fact.",
+        "body": "Pair semantic color with explicit labels and values. Distinguish verified from published contacts, and missing evidence from known facts.",
         "section": "colors"
       },
       {
@@ -468,30 +607,30 @@
         "section": "typography"
       },
       {
-        "name": "The Progressive Disclosure Rule",
-        "body": "Keep identity, current evidence and the next action visible; put secondary filters, sources and management fields behind a clearly named control.",
+        "name": "The Named Views Rule",
+        "body": "Reduce simultaneous detail through clearly named views without removing supported workflows or their data.",
         "section": "layout"
       },
       {
         "name": "The Flat Workspace Rule",
-        "body": "Establish depth through tone and borders; reserve floating elevation for temporary overlays.",
+        "body": "Separate ordinary content through tone, space and rules; reserve strong elevation for temporary overlays.",
         "section": "elevation"
       }
     ],
     "dos": [
-      "**Do** keep major surfaces neutral charcoal and let red identify purposeful interaction.",
-      "**Do** retain the geometric B asset and self-hosted Instrument Sans.",
-      "**Do** disclose secondary detail while keeping every supported workflow reachable.",
-      "**Do** pair scores and contact states with visible evidence or uncertainty.",
-      "**Do** preserve visible keyboard focus and respect reduced-motion preferences.",
-      "**Do** reflow identity and action groups before reducing text or squeezing columns."
+      "**Do** keep major surfaces solid charcoal and use red for purposeful emphasis.",
+      "**Do** retain the shipped mark asset and self-hosted Instrument Sans.",
+      "**Do** keep every GTM workflow accessible through visible navigation or a named view.",
+      "**Do** label verified and published email distinctly and keep missing score evidence explicit.",
+      "**Do** use concise headings and show supporting explanation where it helps a decision.",
+      "**Do** preserve keyboard focus, hash navigation, responsive reflow and reduced-motion support."
     ],
     "donts": [
-      "**Don't** introduce blue-tinted surfaces, theatrical login graphics, halos or oversized AI ornaments.",
-      "**Don't** use decorative eyebrow labels, gratuitous glyph icons or a separate system display face.",
-      "**Don't** replace unknown values with invented data or present inferred email addresses as usable contacts.",
-      "**Don't** spread shadows, accent fills or nested cards across routine workspace content.",
-      "**Don't** use residual legacy CSS or isolated view-specific defects as rules for new screens."
+      "**Don't** add glass, backdrop blur, decorative glow, blue-tinted surfaces or theatrical login graphics.",
+      "**Don't** turn every fact into a card or add introductory copy that repeats a heading.",
+      "**Don't** introduce decorative eyebrows, glyph-based icon substitutes or a separate display font.",
+      "**Don't** hide uncertainty behind a score or style published email as verified.",
+      "**Don't** treat unused stylesheets, old screenshots or residual legacy declarations as the system for new work."
     ]
   }
 }

@@ -112,6 +112,12 @@
   });
 
   /* ------------------------------------------------------------ section bar */
+  function revealTab(nav, tab) {
+    if (!tab) return;
+    var frame = nav.getBoundingClientRect(), item = tab.getBoundingClientRect();
+    if (item.left < frame.left) nav.scrollLeft += item.left - frame.left;
+    else if (item.right > frame.right) nav.scrollLeft += item.right - frame.right;
+  }
   var secnav = document.querySelector(".secnav");
   if (secnav && document.querySelector(".dossier")) {
     var tabs = Array.from(secnav.querySelectorAll("a[href^='#']"));
@@ -139,6 +145,7 @@
         t.setAttribute("aria-selected", String(active));
         t.tabIndex = active ? 0 : -1;
       });
+      revealTab(secnav, tabs.find(function (t) { return t.getAttribute("aria-selected") === "true"; }));
       if (target && target.matches("details")) target.open = true;
     }
     document.addEventListener("click", function (e) {
@@ -183,8 +190,7 @@
       .then(function (d) {
         flash(d.message || (d.ok ? "Done" : "That did not work"), d.ok ? "good" : "bad");
         if (d.replace && b.dataset.target) {
-          var t = document.querySelector(b.dataset.target);
-          if (t) t.innerHTML = d.replace;
+          document.querySelectorAll(b.dataset.target).forEach(function (t) { t.innerHTML = d.replace; });
         }
         if (d.reload) setTimeout(function () { location.reload(); }, 600);
       })
@@ -354,7 +360,7 @@
   document.querySelectorAll("[data-workspace-tabs]").forEach(function (nav) {
     var tabs = Array.from(nav.querySelectorAll("button"));
     nav.setAttribute("role", "tablist");
-    function select(tab) {
+    function select(tab, navigate) {
       tabs.forEach(function (button) {
         var selected = button === tab;
         button.setAttribute("role", "tab");
@@ -364,19 +370,33 @@
         section.hidden = !selected;
         section.setAttribute("role", "tabpanel");
         section.setAttribute("aria-labelledby", button.id);
+        section.tabIndex = 0;
         button.setAttribute("aria-controls", section.id);
       });
+      revealTab(nav, tab);
+      if (navigate) history.pushState(null, "", "#" + tab.dataset.panel);
     }
     tabs.forEach(function (tab, i) {
       tab.id = "workspace-tab-" + tab.dataset.panel;
-      tab.addEventListener("click", function () { select(tab); });
+      tab.addEventListener("click", function () { select(tab, true); });
       tab.addEventListener("keydown", function (e) {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
         e.preventDefault();
         var next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length-1 : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-        select(tabs[next]); tabs[next].focus();
+        select(tabs[next], true); tabs[next].focus();
       });
     });
-    select(tabs[0]);
+    function fromHash() {
+      select(tabs.find(function (t) { return "#" + t.dataset.panel === location.hash; }) || tabs[0]);
+    }
+    document.addEventListener("click", function (e) {
+      var link = e.target.closest("a[href^='#']");
+      var tab = link && tabs.find(function (t) { return "#" + t.dataset.panel === link.hash; });
+      if (!tab) return;
+      e.preventDefault(); select(tab, true); tab.focus();
+    });
+    window.addEventListener("hashchange", fromHash);
+    window.addEventListener("popstate", fromHash);
+    fromHash();
   });
 })();

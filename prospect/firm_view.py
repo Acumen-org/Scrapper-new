@@ -19,8 +19,8 @@ stays at the top:
   Technology   email platform, reporting platform, website, social
   Compliance   who runs compliance, disclosures, registration
 
-The rail holds what you act on: status and owner, notes, saved lists, and
-Bellwether AI scoped to this firm.
+The Workspace tab holds status, owner, notes and saved lists. Bellwether AI
+opens in a drawer scoped to this firm.
 
 Rules this page enforces:
   1. A score is always shown with its inputs and its coverage; missing data is
@@ -250,11 +250,11 @@ def _contact_line(cp, show_verify=True) -> str:
         btn = ""
         if show_verify and status not in ("invalid", "no_mail_server", "valid"):
             btn = (f'<button class="sm ghost" data-post="/api/contact/{cp["id"]}/verify" '
-                   f'data-busy="Checking" data-target="#vs{cp["id"]}">Check</button>')
+                   f'data-busy="Checking" data-target=".verify-result-{cp["id"]}">Check</button>')
         role = ' <span class="muted small">shared inbox</span>' if cp["is_role"] else ""
         return (f'<div class="cline{" ok" if status == "valid" else ""}">{ICONS["mail"]}'
                 f'<a href="mailto:{esc(cp["value"])}" title="{esc(cp["value"])}">{esc(cp["value"])}</a>{role}'
-                f'<span id="vs{cp["id"]}"><span class="chip v-{esc(status)}" title="From {esc(src)};'
+                f'<span id="vs{cp["id"]}" class="verify-result-{cp["id"]}"><span class="chip v-{esc(status)}" title="From {esc(src)};'
                 f' confidence {cp["confidence"]}">{esc(label)}</span></span>{btn}</div>')
     if cp["kind"] == "linkedin":
         return (f'<div class="cline">{ICONS["linkedin"]}<a href="{esc(cp["value"])}" target="_blank" '
@@ -723,19 +723,13 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     hunting = max(0, pc["people"] - pc["email"])
     tried = (f'{attempts["n"]:,} candidate addresses checked with the mail server for '
              f'{attempts["p"]:,} people so far. ' if attempts and attempts["n"] else "")
-    discovery_html = f"""<div class="card"><div class="card-head"><div><h2>Contact discovery</h2>
-<div class="sub">{pc["email"]:,} of {pc["people"]:,} people have a verified or published email,
-{pc["direct"]:,} a direct line, {pc["linkedin"]:,} a LinkedIn profile.</div></div>
+    discovery_html = f"""<div class="contact-summary"><span><b>{pc["email"]:,} / {pc["people"]:,}</b> with email</span>
+<span><b>{pc["direct"]:,}</b> direct lines</span><span><b>{pc["linkedin"]:,}</b> LinkedIn profiles</span>
 <button class="primary sm" data-post="/api/firm/{esc(crd)}/hunt" data-busy="Starting">{ICONS["bolt"]}Find contacts now</button></div>
-<div class="reachbar" aria-hidden="true"><i style="flex:{pc['email']};background:var(--ok)"></i>
-<i style="flex:{max(0, pc['direct'] - 0)};background:var(--soft)"></i><i style="flex:{hunting};background:var(--raise3)"></i></div>
-<p class="small soft" style="margin:12px 0 0">{"Still hunting for " + f"{hunting:,}" + " people. " if hunting else ""}{tried}Bellwether keeps
-working on this firm by itself: its website, web search for published addresses and profiles, every common
-email pattern checked against the firm's mail server, and AI research. Only verified or published
-addresses are ever shown.</p>
-<div style="margin-top:16px">{fl_rows or '<p class="muted small">No firm-level phone or inbox on file.</p>'}</div>
-<details class="source-help"><summary>{n_em} email address{"es" if n_em != 1 else ""} on file . where they came from</summary>
-<p>{esc(src_line) or "None yet"}. Verified addresses passed a mailbox check with the firm's mail server.</p></details>
+<details class="detail-section"><summary>Discovery, sources and contact tools</summary>
+<p class="small soft">{hunting:,} people without email. {tried}Emails are labelled verified or published.</p>
+<div>{fl_rows or '<p class="muted small">No firm-level phone or inbox on file.</p>'}</div>
+<p class="small soft">{n_em} email address{"es" if n_em != 1 else ""}. {esc(src_line) or "No sources yet"}.</p>
 <div class="row" style="margin-top:6px">
 <button class="sm" data-post="/api/firm/{esc(crd)}/verify" data-busy="Starting">Re-check emails</button>
 <button class="sm ghost" data-post="/api/firm/{esc(crd)}/crawl" data-busy="Starting">Re-read website</button></div>
@@ -747,7 +741,7 @@ addresses are ever shown.</p>
 <details class="adj" style="margin-top:6px"><summary>Website is wrong or missing</summary>
 <form class="row" style="margin-top:10px" data-api-form action="/api/firm/{esc(crd)}/crawl" method="post">
 <label>Website<input type="url" name="url" placeholder="https://their-site.com" required></label>
-<button type="submit" class="sm" data-busy="Starting">Read website</button></form></details></div>"""
+<button type="submit" class="sm" data-busy="Starting">Read website</button></form></details></details>"""
 
     # ---- identity
     profile_name = nice_name(f["business_name"] or f["legal_name"])
@@ -766,8 +760,6 @@ addresses are ever shown.</p>
                     f'{" . " + esc(fs["owner"]) if fs and fs["owner"] else ""}</span>')
     if trigs and trigs[0]["detected_date"] >= (datetime.now(timezone.utc).date().isoformat()[:4] + "-01-01"):
         tags.append(f'<a class="chip good" href="#activity">{len(trigs)} signal{"s" if len(trigs) != 1 else ""}</a>')
-    for l in in_lists[:3]:
-        tags.append(f'<a class="chip" href="/firms?list={l["id"]}">{esc(l["name"])}</a>')
     growth = ""
     if len(history) >= 2 and history[0]["raum"]:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=365)).date().isoformat()
@@ -784,8 +776,6 @@ addresses are ever shown.</p>
 <div><div class="l">Assets under management</div><div class="v">{money(f['raum'])}</div><div class="d">{growth or "&nbsp;"}</div></div>
 <div><div class="l">Clients</div><div class="v">{clients_s}</div><div class="d">{hs:.0f}% of assets high net worth</div></div>
 <div><div class="l">Registered team</div><div class="v">{team if team is not None else '-'}</div><div class="d">{f'<span class="{"up" if net >= 0 else "dn"}">{net:+d}</span> net in 12 months' if stats else '&nbsp;'}</div></div>
-<div><div class="l">Reachable people</div><div class="v">{pc['email']:,}<small class="muted" style="font-size:13px;font-weight:500"> / {pc['people']:,}</small></div><div class="d">with a verified email</div></div>
-<div><div class="l">Last filing</div><div class="v" style="font-size:17px">{esc(f['filing_date'] or '-')}</div><div class="d">{d['filings_12m']} amendments in 12 months</div></div>
 </div>"""
 
     fit_cards = []
@@ -793,15 +783,14 @@ addresses are ever shown.</p>
         pn = esc(products.product(r.product)["name"])
         if r.status == "scored":
             rank = ranks.get(r.product)
-            cov = (f'{r.coverage:.0f}% known' + (f', could reach {r.potential:.0f}' if r.coverage < 99.5 else ""))
-            fit_cards.append(f'<a class="fitcard" href="#fit-{r.product}">{ui.ring(r.score, r.coverage, 52)}'
-                             f'<div><div class="pn">{pn}</div><div class="pm">{f"#{rank:,} on the list" if rank else "Scored"}</div>'
-                             f'<div class="pm{" part" if r.coverage < 80 else ""}">{cov}</div></div></a>')
+            cov = f'{r.coverage:.0f}% known data'
+            fit_cards.append(f'<a class="fit-summary" href="#fit-{r.product}"><span>{pn}'
+                             f'<small class="{"warnc" if r.coverage < 99.5 else "muted"}">{cov}</small></span>'
+                             f'<strong>{r.score:.0f}<small>/100</small></strong></a>')
         else:
             why = "Removed" if r.status == "disqualified" else "Not eligible"
-            fit_cards.append(f'<a class="fitcard off" href="#fit-{r.product}">{ui.ring(None, None, 52)}'
-                             f'<div><div class="pn">{pn}</div><div class="pm">{why}</div>'
-                             f'<div class="pm" title="{esc(r.reason)}">{esc((r.reason or "")[:60])}</div></div></a>')
+            fit_cards.append(f'<a class="fit-summary" href="#fit-{r.product}"><span>{pn}</span>'
+                             f'<span class="meta">{why}</span></a>')
 
     if ai.configured():
         if brief:
@@ -810,8 +799,7 @@ addresses are ever shown.</p>
                            f'<button class="sm ghost" data-post="/api/firm/{esc(crd)}/brief" '
                            f'data-busy="Writing" data-target="#brief">Rewrite</button>')
         else:
-            brief_block = (f'<div id="brief"><p class="muted">No brief yet. Bellwether AI can '
-                           f'summarise everything on this page in a few lines.</p></div>'
+            brief_block = (f'<div id="brief"></div>'
                            f'<button class="sm" data-post="/api/firm/{esc(crd)}/brief" '
                            f'data-busy="Writing" data-target="#brief">{ICONS["spark"]}Write a brief</button>')
     else:
@@ -843,18 +831,17 @@ addresses are ever shown.</p>
 <textarea id="firm-question" rows="1" maxlength="1500" placeholder="Ask anything about this firm" required></textarea>
 <div class="cfoot"><span class="model">Enter to send</span><button class="send" type="submit" aria-label="Send">{ICONS["send"]}</button></div></form>
 </div>"""
-    rail = f"""{ai_rail}
-<div class="card"><h3>Pipeline</h3>
+    rail = f"""<div class="workspace-forms"><section><h2>Pipeline</h2>
 <form method="post" action="/firm/{esc(crd)}/status"><label>Status<select name="status">{status_opts}</select></label>
 <label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}" placeholder="Leave blank to assign yourself"></label>
-<button type="submit" class="sm primary">Save</button></form></div>
-<div class="card"><h3>Notes</h3><form method="post" action="/firm/{esc(crd)}/note">
+<button type="submit" class="sm primary">Save</button></form></section>
+<section><h2>Notes</h2><form method="post" action="/firm/{esc(crd)}/note">
 <textarea name="note" aria-label="Firm notes" placeholder="Notes and next steps">{esc(note[0]['note'] if note else '')}</textarea>
 <div class="row" style="margin-top:8px"><button class="sm" type="submit">Save note</button>
-{f'<span class="meta">Saved {esc(ui.ago(note[0]["updated_at"]))}</span>' if note else ''}</div></form></div>
-<div class="card"><h3>Saved lists</h3><div class="pills" style="margin-bottom:10px">{lists_chips or '<span class="muted small">On no saved list</span>'}</div>
-<form method="post" action="/firms/addtolist"><input type="hidden" name="crd" value="{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}"><input type="hidden" name="new_name" value="">
-<select name="list_id" aria-label="Add to saved list" onchange="addToList(this)" style="width:100%"><option value="">Add to a list</option>{listopts}<option value="__new">New list...</option></select></form></div>"""
+{f'<span class="meta">Saved {esc(ui.ago(note[0]["updated_at"]))}</span>' if note else ''}</div></form></section>
+<section><h2>Saved lists</h2><div class="pills" style="margin-bottom:10px">{lists_chips or '<span class="muted small">No saved lists</span>'}</div>
+<form method="post" action="/firms/addtolist"><input type="hidden" name="crd" value="{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}#workspace"><input type="hidden" name="new_name" value="">
+<select name="list_id" aria-label="Add to saved list" onchange="addToList(this)" style="width:100%"><option value="">Add to a list</option>{listopts}<option value="__new">New list...</option></select></form></section></div>"""
 
     subline = []
     if place:
@@ -869,9 +856,9 @@ addresses are ever shown.</p>
     subline.append(f'<span class="muted">CRD {esc(crd)}{" . " + esc(f["regulator"]) if f["regulator"] else ""}</span>')
     signals_n = len(trigs)
     # The overview repeats the first cards; without their ids, so each id stays unique.
-    overview_people = "".join(re.sub(r' id="(p-[^"]*|vs[0-9]+)"', "", x) for x in top_cards) or '<div class="card empty">No people on record yet.</div>'
-    recent = trow[:5]
-    body = f"""<div class="pg wide">
+    overview_people = "".join(re.sub(r' id="(p-[^"]*|vs[0-9]+)"', "", x) for x in top_cards[:2]) or '<p class="empty">No people on record. <a href="#people">Find contacts</a></p>'
+    recent = trow[:3]
+    body = f"""<div class="pg firm-page">
 <div class="firm-top"><div class="crumb"><a href="/firms">Firms</a><span class="sep">/</span><span>{esc(profile_name)}</span></div>
 <div class="acts"><form method="post" action="/watch/{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}"><button type="submit">{star}</button></form>
 <button type="button" class="primary" data-focus-ai>{ICONS["spark"]}Ask Bellwether AI</button></div></div>
@@ -880,39 +867,41 @@ addresses are ever shown.</p>
 <h1>{escn(f['legal_name'])}</h1>
 <div class="sub">{"".join(subline)}</div>
 <div class="tags">{"".join(tags)}</div></div></div>
-{stats_html}
-<div class="fitcards">{"".join(fit_cards)}</div></header>
+{stats_html}</header>
 <div class="dossier"><div>
 <nav class="secnav" aria-label="Firm research"><a href="#overview">Overview</a>
-<a href="#people">People <span class="cnt">{pc['people']:,}</span></a>
-<a href="#fit">Product fit</a><a href="#activity">Activity <span class="cnt">{signals_n}</span></a>
-<a href="#assets">Assets and funds</a><a href="#profile">Technology and compliance</a></nav>
+<a href="#people">People &amp; contacts <span class="cnt">{pc['people']:,}</span></a>
+<a href="#fit">Product fit</a><a href="#activity">Activity</a>
+<a href="#assets">Assets &amp; funds</a><a href="#profile">Research</a><a href="#workspace">Workspace</a></nav>
 <div class="dossier-tabs">
 <section class="anchor" id="overview">
-{('<div class="card dsec"><div class="card-head"><h2>' + ICONS["spark"].replace("<svg", '<svg style="width:16px;height:16px;display:inline;vertical-align:-2px;color:var(--red-hi)"') + ' AI brief</h2></div>' + brief_block + '</div>') if brief_block else ''}
-<div class="dsec"><div class="s-head"><h2>Key people</h2><a class="more" href="#people">All {pc['people']:,} people</a></div>
-<div class="people-grid">{overview_people}</div></div>
-<div class="cols-2 dsec"><div class="card"><div class="card-head"><h2>Recent signals</h2><a class="more" href="#activity">All activity</a></div>
-{('<div class="timeline">' + "".join(recent) + '</div>') if recent else '<p class="muted">No recorded signals yet.</p>'}</div>
-<div class="card"><div class="card-head"><h2>Hiring</h2><a class="more" href="#activity">Details</a></div>
-{_hiring_glance(stats, series)}</div></div>
-<div class="card dsec"><div class="card-head"><h2>Assets over time</h2><span class="sub">{esc(", ".join(svc[:3])) if svc else ""}</span></div>{aum_chart(history)}</div>
-<div class="card dsec"><div class="card-head"><h2>In their own words</h2></div>{tp_html}</div>
+<div class="firm-overview-grid"><section class="overview-section"><div class="s-head"><h2>Key people</h2><a class="more" href="#people">All {pc['people']:,} people</a></div>
+<div class="people-preview">{overview_people}</div></section>
+<section class="overview-section"><div class="s-head"><h2>Product fit</h2><a class="more" href="#fit">Score details</a></div><div>{"".join(fit_cards)}</div></section></div>
+<div class="firm-overview-grid overview-secondary"><section class="overview-section"><div class="s-head"><h2>Recent signals</h2><a class="more" href="#activity">All activity</a></div>
+{('<div class="timeline">' + "".join(recent) + '</div>') if recent else '<p class="muted">No recorded signals.</p>'}</section>
+<section class="overview-section"><div class="s-head"><h2>Hiring</h2><a class="more" href="#hiring">Details</a></div>
+{_hiring_glance(stats, [])}</section></div>
+{('<details class="detail-section"><summary>AI brief</summary>' + brief_block + '</details>') if brief_block else ''}
 </section>
 <section class="anchor" id="people">
 <div class="dsec">{discovery_html}</div>
 <div class="dsec">{people_html}</div>
 </section>
-<section class="anchor" id="fit"><div class="s-head"><h2>Product fit</h2><span class="meta">Missing data earns nothing and is shown, never hidden</span></div>{_fit_section(crd, results, ranks, focus)}</section>
+<section class="anchor" id="fit"><div class="s-head"><h2>Product fit</h2><span class="meta">Missing factors score zero.</span></div>{_fit_section(crd, results, ranks, focus)}</section>
 <section class="anchor" id="activity"><div class="card dsec" id="signals"><div class="card-head"><h2>Signals <span class="h-cnt">{signals_n}</span></h2></div>{trig_html}</div>
 <div class="card dsec" id="hiring"><div class="card-head"><h2>Hiring and departures</h2></div>{hiring_html}</div></section>
 <section class="anchor" id="assets">{assets_html}<div class="card" style="margin-top:16px"><div class="card-head"><h2>Investments</h2></div>{invest_html}</div></section>
 <section class="anchor" id="profile"><div class="cols-2"><div class="card"><div class="card-head"><h2>Technology</h2></div>{tech_html}</div>
-<div class="card"><div class="card-head"><h2>Compliance and registration</h2></div>{comp_html}</div></div>
+<div class="card" id="compliance"><div class="card-head"><h2>Compliance and registration</h2></div>{comp_html}</div></div>
+<details class="detail-section"><summary>In their own words</summary>{tp_html}</details>
 {('<div class="card" style="margin-top:16px"><div class="card-head"><h2>Firm type</h2><span class="sub">How Bellwether classified this firm</span></div><p><span class="ftype">' + esc(ftype.get("label") or ftype.get("category") or "") + '</span> <span class="meta">' + esc(str(ftype.get("source_label") or ftype.get("source") or "")) + (", confidence " + str(ftype.get("confidence")) if ftype.get("confidence") is not None else "") + '</span></p><ul class="evidence-list">' + "".join("<li>" + esc(str(e)) + "</li>" for e in (ftype.get("evidence") or [])) + '</ul></div>') if ftype and ftype.get("category") else ''}
 {office_html}</section>
+<section class="anchor" id="workspace">{rail}</section>
 </div></div>
-<aside class="rail">{rail}</aside></div>
+</div>
+<dialog class="ai-drawer" id="firm-ai-drawer" aria-labelledby="firm-chat-title">
+<div class="drawer-header"><h2 id="firm-chat-title">Bellwether AI</h2><button type="button" class="ghost" data-close-ai aria-label="Close firm conversation">Close</button></div>{ai_rail}</dialog>
 </div>"""
     return page(nice_name(f["legal_name"]) or crd, f"list:{focus}" if focus else "firms", body,
                 js=FIRM_JS, orbs=True)
@@ -945,7 +934,7 @@ def save_note(crd: str, note: str = Form("")):
               (crd, note, datetime.now(timezone.utc).isoformat(timespec="seconds")))
     c.commit()
     c.close()
-    return RedirectResponse(f"/firm/{crd}?saved=1", status_code=303)
+    return RedirectResponse(f"/firm/{crd}?saved=1#workspace", status_code=303)
 
 
 @router.post("/firm/{crd}/status")
@@ -965,7 +954,7 @@ def save_status(crd: str, status: str = Form(""), owner: str = Form("")):
     # Status feeds the relationship criteria, so the lists move with it.
     products.rescore_firm(c, crd)
     c.close()
-    return RedirectResponse(f"/firm/{crd}?saved=1", status_code=303)
+    return RedirectResponse(f"/firm/{crd}?saved=1#workspace", status_code=303)
 
 
 @router.post("/firm/{crd}/emails")

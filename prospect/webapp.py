@@ -768,7 +768,7 @@ def nav(active: str) -> str:
             f'<a class="brand" href="/"><img src="/static/mark.svg" width="30" height="30" alt="">'
             f'<div class="t">{APP_NAME}<small>Acumen Strategy</small></div></a>'
             f'<button class="find" type="button" onclick="palShow()">{ICONS["search"]}'
-            'Search firms and people<kbd>Ctrl K</kbd></button>'
+            'Search<kbd>Ctrl K</kbd></button>'
             + item("home", "/", "Home")
             + item("ask", "/ask", "Bellwether AI", icon="spark")
             + '<div class="grp">Product lists</div><div class="lists">' + plist + '</div>'
@@ -1021,11 +1021,6 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
                        f'<summary>Sign in with a password</summary>{form}</details>')
         else:
             pw_form = form
-    if ms and pw_form:
-        pw_form = '<div class="or">or</div>' + pw_form
-    hint = (f'<p class="hint">{ICONS["shield"]}Secured by Microsoft Entra ID for Acumen Strategy</p>'
-            if ms else "")
-    caps = "".join(f'<span><b>{esc(v)}</b>{esc(k)}</span>' for k, v in _signin_stats())
     return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to {APP_NAME}</title>{FAVICON}
@@ -1033,45 +1028,14 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
 <body class="signin-page">
 <div class="signin-wrap">
 <main class="signin">
-<div class="logo-row"><a class="wm" href="/login"><img src="/static/mark.svg" width="34" height="34" alt="">{APP_NAME}</a>
-<span class="ai-dot"><canvas data-orb="breathing" data-size="20" data-px="18" aria-hidden="true"></canvas>AI ready</span></div>
-<h1>Sign in to {APP_NAME}</h1>
-<p class="sub">Go-to-market intelligence on every US advisory firm and the people who run them.</p>
+<div class="logo-row"><a class="wm" href="/login"><img src="/static/mark.svg" width="34" height="34" alt="">{APP_NAME}</a></div>
+<h1>Sign in</h1>
 {err}{ms_btn}{pw_form}
-{hint}
 </main>
-<div class="signin-caps">{caps}</div>
 <div class="signin-owner">Acumen Strategy</div>
 </div>
-<script type="module" src="{asset('orb.js')}"></script></body></html>""",
+</body></html>""",
                         status_code=status or (200 if not error else 401))
-
-
-_SIGNIN_CACHE: dict = {"t": 0.0, "v": []}
-
-
-def _signin_stats() -> list[tuple[str, str]]:
-    """Three headline numbers under the sign-in card, refreshed every ten
-    minutes; estimates are fine here and keep the public page cheap."""
-    import time as _time
-    if _time.monotonic() - _SIGNIN_CACHE["t"] < 600 and _SIGNIN_CACHE["v"]:
-        return _SIGNIN_CACHE["v"]
-    out: list[tuple[str, str]] = []
-    try:
-        c = conn()
-        try:
-            firms = c.execute("SELECT COUNT(*) n FROM firm_current").fetchone()["n"]
-            people = c.execute("SELECT GREATEST(reltuples, 0)::bigint n FROM pg_class"
-                               " WHERE relname='person'").fetchone()
-            out = [("advisory firms", f"{firms:,}")]
-            if people and people["n"]:
-                out.append(("people", f"{int(people['n']):,}"))
-        finally:
-            c.close()
-    except Exception:
-        out = []
-    _SIGNIN_CACHE.update(t=_time.monotonic(), v=out)
-    return out
 
 
 @app.get("/login", response_class=HTMLResponse)

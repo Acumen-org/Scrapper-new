@@ -315,7 +315,7 @@ def pass_routes(base: str, detail_crd: str) -> None:
     print("\n[1] route matrix")
     routes = ROUTES + [(f"/firm/{detail_crd}", "Pipeline"),
                        (f"/firm/{detail_crd}", "Hiring and departures"),
-                       (f"/firm/{detail_crd}", "Contact discovery"),
+                       (f"/firm/{detail_crd}", "Discovery, sources and contact tools"),
                        (f"/firm/{detail_crd}", 'data-scope="firm:'),
                        (f"/firm/{detail_crd}?p=phh_fund", "Gates passed")]
     for path, marker in routes:

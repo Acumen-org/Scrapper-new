@@ -1,72 +1,76 @@
 ---
 name: Bellwether
-description: A restrained charcoal workspace for evidence-led GTM intelligence.
+description: A quiet charcoal workspace for evidence-led GTM intelligence.
 colors:
   canvas: "#151515"
   navigation: "#111111"
-  surface: "#1d1d1d"
-  control: "#272727"
-  control-hover: "#343434"
+  surface: "#1c1c1c"
+  field: "#222222"
+  control: "#292929"
+  control-hover: "#363636"
   ink: "#f0f0f0"
   secondary: "#bdbdbd"
   muted: "#a0a0a0"
-  rule: "#333333"
-  control-rule: "#4a4a4a"
+  dim: "#999999"
+  rule: "rgba(255,255,255,.07)"
+  control-rule: "rgba(255,255,255,.13)"
+  focus-rule: "rgba(255,255,255,.2)"
   primary: "#b73545"
   primary-hover: "#9f2c3b"
   primary-readable: "#ef939c"
-  primary-tint: "rgba(181,46,59,.15)"
-  selected-navigation: "#292020"
+  primary-tint: "rgba(230,72,80,.13)"
+  primary-rule: "rgba(240,107,114,.35)"
   action-text: "#ffffff"
-  verified: "#63aa7c"
-  verified-tint: "rgba(99,170,124,.13)"
-  missing-evidence: "#cfa95c"
-  missing-evidence-tint: "rgba(207,169,92,.12)"
+  verified: "#45c08a"
+  verified-tint: "rgba(69,192,138,.12)"
+  verified-rule: "rgba(69,192,138,.32)"
+  missing-evidence: "#e8ac4a"
+  missing-evidence-tint: "rgba(232,172,74,.11)"
+  missing-evidence-rule: "rgba(232,172,74,.32)"
 typography:
   display:
-    fontFamily: '"Instrument Sans", "Segoe UI", sans-serif'
-    fontSize: "35px"
-    fontWeight: 500
-    lineHeight: 1.2
+    fontFamily: "\"Instrument Sans\", \"Segoe UI Variable Text\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+    fontSize: "38px"
+    fontWeight: 600
     letterSpacing: "-0.035em"
   headline:
-    fontFamily: '"Instrument Sans", "Segoe UI", sans-serif'
-    fontSize: "32px"
-    fontWeight: 550
-    lineHeight: 1.2
-    letterSpacing: "-0.03em"
+    fontFamily: "\"Instrument Sans\", \"Segoe UI Variable Text\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+    fontSize: "30px"
+    fontWeight: 600
+    lineHeight: 1.18
+    letterSpacing: "-0.028em"
   title:
-    fontFamily: '"Instrument Sans", "Segoe UI", sans-serif'
-    fontSize: "20px"
-    fontWeight: 550
+    fontFamily: "\"Instrument Sans\", \"Segoe UI Variable Text\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+    fontSize: "17px"
+    fontWeight: 600
     lineHeight: 1.35
     letterSpacing: "-0.015em"
   body:
-    fontFamily: '"Instrument Sans", "Segoe UI", sans-serif'
-    fontSize: "15px"
+    fontFamily: "\"Instrument Sans\", \"Segoe UI Variable Text\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+    fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.55
   table:
-    fontFamily: '"Instrument Sans", "Segoe UI", sans-serif'
-    fontSize: "13px"
-    fontWeight: 400
-    lineHeight: 1.5
+    fontFamily: "\"Instrument Sans\", \"Segoe UI Variable Text\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+    fontSize: "13.5px"
+    lineHeight: 1.55
   label:
-    fontFamily: '"Instrument Sans", "Segoe UI", sans-serif'
+    fontFamily: "\"Instrument Sans\", \"Segoe UI Variable Text\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
     fontSize: "13px"
-    fontWeight: 550
-    lineHeight: 1.3
+    fontWeight: 500
+    lineHeight: 1
   mono:
-    fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace'
+    fontFamily: "ui-monospace, \"Cascadia Mono\", Consolas, monospace"
     fontSize: "12.5px"
 rounded:
-  chip: "5px"
-  navigation: "7px"
+  chip: "6px"
   control: "8px"
   compact-panel: "10px"
   panel: "12px"
-  identity: "14px"
-  composer: "16px"
+  dialog-panel: "14px"
+  large: "16px"
+  composer: "20px"
+  pill: "99px"
 spacing:
   xs: "4px"
   sm: "8px"
@@ -75,14 +79,16 @@ spacing:
   panel: "20px"
   section: "24px"
   large: "32px"
+  page: "40px"
   wide: "48px"
 components:
   button-primary:
     backgroundColor: "{colors.primary}"
     textColor: "{colors.action-text}"
+    typography: "{typography.label}"
     rounded: "{rounded.control}"
-    padding: "9px 15px"
-    height: "40px"
+    padding: "0 14px"
+    height: "36px"
   button-primary-hover:
     backgroundColor: "{colors.primary-hover}"
   button-secondary:
@@ -90,41 +96,58 @@ components:
     textColor: "{colors.ink}"
     typography: "{typography.label}"
     rounded: "{rounded.control}"
-    padding: "9px 15px"
-    height: "40px"
+    padding: "0 14px"
+    height: "36px"
   button-ghost:
     backgroundColor: "transparent"
     textColor: "{colors.secondary}"
     rounded: "{rounded.control}"
-    padding: "9px 15px"
-    height: "40px"
+    padding: "0 14px"
+    height: "36px"
   input:
-    backgroundColor: "{colors.canvas}"
+    backgroundColor: "{colors.field}"
     textColor: "{colors.ink}"
     rounded: "{rounded.control}"
-    padding: "7px 10px"
-    height: "40px"
+    padding: "0 11px"
+    height: "36px"
   navigation-item:
     textColor: "{colors.secondary}"
-    rounded: "{rounded.navigation}"
-    padding: "11px 12px"
+    rounded: "{rounded.control}"
+    padding: "0 10px"
+    height: "34px"
   navigation-selected:
-    backgroundColor: "{colors.selected-navigation}"
+    backgroundColor: "rgba(255,255,255,.075)"
     textColor: "{colors.ink}"
+  workspace-tab:
+    textColor: "{colors.muted}"
+    padding: "0 0 14px"
+    height: "46px"
   chip-verified:
     backgroundColor: "{colors.verified-tint}"
     textColor: "{colors.verified}"
     rounded: "{rounded.chip}"
-    padding: "3px 7px"
-  research-panel:
+    padding: "0 8px"
+    height: "22px"
+  chip-published:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted}"
+    rounded: "{rounded.chip}"
+    padding: "0 8px"
+    height: "22px"
+  panel:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.ink}"
     rounded: "{rounded.panel}"
     padding: "20px"
-  ai-composer:
+  fit-summary:
     textColor: "{colors.ink}"
-    rounded: "{rounded.composer}"
-    padding: "18px 20px"
+    padding: "15px 0"
+  microsoft-sign-in:
+    backgroundColor: "#f4f4f5"
+    textColor: "{colors.canvas}"
+    rounded: "{rounded.control}"
+    height: "48px"
+    width: "100%"
 ---
 
 # Design System: Bellwether
@@ -133,147 +156,144 @@ components:
 
 **Creative North Star: "The Intelligence Workspace"**
 
-Bellwether is a serious, neutral charcoal workspace in which firm identity, evidence and available actions are easy to scan. Restrained red supplies emphasis; hierarchy comes from type, spacing, thin borders and deliberate disclosure. The interface carries substantial information without making every fact compete in the first view.
+Bellwether is a serious, neutral charcoal workspace in which firm identity, evidence and available actions are easy to scan. Restrained red supplies emphasis; hierarchy comes from type, space, fine rules and named views. Summary rows keep the first view quiet while complete research and operational detail remain reachable.
 
-The approved identity is the open geometric B with its red signal point, paired with a sans-serif wordmark. The self-hosted Instrument Sans is intentional. Preserve the professional, restrained character confirmed in PRODUCT.md: neutral dark grey surfaces, room to read, and a quiet sign-in experience.
+The October 2026 refinement keeps self-hosted Instrument Sans, solid surfaces and a professional sign-in experience. The shipped identity is the red rounded-square mark with three stacked white chevrons in `prospect/static/mark.svg`. Reuse that asset rather than rebuilding it.
 
 **Key Characteristics:**
 
-- Neutral charcoal layers with restrained red emphasis.
-- Readable identity and evidence before secondary detail.
-- Flat panels, fine rules and compact rectangular controls.
-- Progressive disclosure with complete routes to every workflow.
-- Clear distinctions between verified, unknown and missing evidence.
+- Solid charcoal surfaces with restrained red emphasis.
+- Plain summary rows and generous separation between evidence groups.
+- Named, directly addressable views for every major workflow.
+- Explicit contact provenance and score uncertainty.
+- Compact controls, visible keyboard focus and responsive layouts.
 
-This document reconciles the provisional brief with the shipped cascade: `prospect/static/app.css`, then `prospect/static/workspace.css`, plus the current rendered views. The frontmatter records reused values; isolated legacy styling is not a precedent for new work.
+Refreshed on 2026-10-08 from the active `prospect/static/app.css`, `app.js`, `home_view.py`, `firm_view.py`, `webapp.py` and final desktop/mobile renders in `data/quiet-review/final`. `workspace.css` is unused legacy material and is not part of the cascade.
 
 ## Colors
 
-The palette is achromatic in its surfaces, with red for emphasis and limited semantic green and amber.
+The palette is neutral charcoal with one red interaction accent and evidence-specific status colors. Frontmatter preserves the source's exact hex and rgba values.
 
 ### Primary
 
-- **Signal Red:** Filled primary actions and active tab underlines.
-- **Pressed Red:** Hover treatment for primary actions.
-- **Readable Red:** Hovered links, focus outlines, selected navigation icons and adverse status text.
-- **Red Tint:** Selection and adverse status backgrounds; inherited from the shared stylesheet.
-- **Selected Navigation:** A quiet red-charcoal fill supporting the current destination.
+- **Signal Red:** Filled primary actions and selected-tab or sidebar markers.
+- **Primary Hover:** The darker action state.
+- **Readable Red:** Links, focus outlines, active icons and adverse status text.
+- **Primary Tint and Rule:** Subtle action, focus and adverse-state boundaries.
 
 ### Neutral
 
-- **Canvas and Navigation:** Darkest layers separating the workspace from persistent navigation.
-- **Surface, Control and Control Hover:** Successive raised tones for panels and interactive elements.
-- **Ink, Secondary and Muted:** Primary content, supporting text and metadata. Essential identities and actions use Ink.
-- **Rule and Control Rule:** Hairline section boundaries and stronger input/control edges.
-- **Action Text:** White text on filled primary actions.
+- **Canvas and Navigation:** The page and its darker persistent navigation.
+- **Surface, Field, Control and Control Hover:** Solid tonal steps for containers, form fields and controls.
+- **Ink, Secondary, Muted and Dim:** Main content, supporting text, metadata and lower-priority context.
+- **Rule, Control Rule and Focus Rule:** Fine section dividers and progressively stronger control boundaries.
+- **Action Text:** White text on red actions.
 
-Green and its tint identify verified contacts or positive lead state. Amber and its tint identify risk, unknown coverage or missing evidence. These are semantic statuses, not additional decorative accents. The logo retains the literal colors in `prospect/static/mark.svg`; use the asset rather than rebuilding it from palette tokens.
+Green marks verified contacts and positive recorded states; amber marks missing coverage or risk. Both pair text with a restrained tint and border. Product identity dots use their existing data-defined colors without recoloring major surfaces.
 
-**The Signal Rule.** Use red for an action, selected state or meaningful status; keep large backgrounds neutral.
+**The Signal Rule.** Use red for actions, selection or meaningful status; keep large backgrounds neutral.
 
-**The Evidence Rule.** Pair semantic color with explicit labels and values. Missing evidence remains visibly different from a known negative or a verified fact.
+**The Evidence Rule.** Pair semantic color with explicit labels and values. Distinguish verified from published contacts, and missing evidence from known facts.
 
 ## Typography
 
-**Display and Body Font:** Instrument Sans, self-hosted as a variable font with Segoe UI and sans-serif fallbacks.
+**Display and Body Font:** Self-hosted Instrument Sans, variable weights 400–700, with the fallback stack in frontmatter.
 
-**Label/Mono Font:** The same sans-serif for interface labels; the mono stack is limited to identifiers and technical values.
+**Label/Mono Font:** Instrument Sans for controls; the mono stack is limited to identifiers and technical values.
 
-**Character:** One measured sans-serif voice connects navigation, research, tables and conversation. Moderate weights and tightened headings establish hierarchy without a separate decorative display face.
+One sans-serif voice connects navigation, research, tables and conversation. Headings use moderate weight and tight spacing; numbers use tabular figures where alignment matters.
 
 ### Hierarchy
 
-- **Display:** The centered AI welcome. It steps down at narrow widths rather than dominating the screen.
-- **Headline:** General page headings. Firm identity uses a smaller contextual heading so long legal names wrap within the profile.
-- **Title:** Section headings separating evidence groups.
-- **Body:** Reading copy and general interface text. Firm overview prose uses a relaxed line-height and a measure of approximately 65 characters.
-- **Table:** Compact data rows with greater vertical breathing room; firm names remain larger and more prominent than metadata.
-- **Label:** Standard action text. Supporting navigation and field labels remain sentence case.
-
-Tabular numerals align scores, counts and numeric columns. Primary buttons use a stronger weight (600) than ordinary control labels. Compact metadata is secondary and must not carry a critical action by itself.
+- **Display:** Global AI welcome, reduced to 29px on small screens.
+- **Headline:** General page identity, reduced to 25px on small screens. Firm titles retain the same desktop size with a lighter weight (550), and wrap long names.
+- **Title:** General section headings. Home and firm overview sections use 18px at weight 550.
+- **Body:** General interface and reading text.
+- **Table:** Compact evidence rows with vertical breathing room.
+- **Label:** Standard actions. Primary buttons strengthen the weight to 600; field labels are smaller (12px).
+- **Numeric summary:** Home totals use 25px; firm headline values and fit summaries use 24px at weight 550.
 
 **The One Voice Rule.** Keep Instrument Sans across headings, body and controls; express hierarchy with size, weight and spacing.
 
 ## Layout
 
-Desktop uses a fixed navigation column (216px) and a centered content area with a standard maximum width (1460px), or a wide research/table maximum (1660px). Standard desktop page insets are (42px 48px 72px). Space follows the frontmatter rhythm, with measured component-specific gaps where needed.
+Desktop uses a fixed sidebar (224px) and a centered page (1440px maximum), with narrow (1120px) and wide (1680px) variants. Standard page insets are 40px 40px 72px. Home and firm overview sections use a 1.25:1 column ratio with a 48px gap, tightened to 32px below 1200px.
 
-Firm research uses an identity column (248px) and a flexible main area separated by a gap (36px). The widest layout expands the column and gutter; intermediate widths tighten both. Context remains stable while five research destinations expose deeper evidence. Management fields and detailed research use disclosures.
+Home has four views: Overview, Product lists, Your workspace and Data coverage. Its overview begins with plain linked totals and two content columns. Product and coverage detail remain in their own views. Firm identity and three headline facts sit above seven views: Overview, People & contacts, Product fit, Activity, Assets & funds, Research and Workspace. Firm summaries use open rows and section rules; detailed people views may use bordered cards.
 
-At widths up to (980px), navigation becomes an expandable Menu under the mobile header. At (700px), firm identity stacks above the research tabs; the identity summary becomes compact, with its management section collapsed. The overview places contact intelligence before product fit, then the latest filing or signal. At (480px), fit summaries stack vertically and action groups wrap. Research tabs and large tables scroll within their own region rather than forcing the page wider.
+Below 980px the sidebar becomes an expandable Menu under a mobile header; page insets become 22px 16px 64px. Below 760px overview and workspace columns stack, the Home search fills the width and product summaries reflow. Below 600px fit statuses and reasons continue under their product name; evidence tables scroll inside their own region. Tab strips scroll horizontally and reveal the selected tab.
 
-Home uses a split overview and separate tab destinations. AI starts around a centered conversation panel with a maximum width (760px); after the first message, the conversation grows while the composer remains available. Sign-in is one centered panel with a maximum width (432px), comfortable internal padding and a restrained brand mark.
+The global AI conversation is centered in a 780px maximum column. Firm AI opens contextually in a right-hand dialog, 500px wide and constrained to the viewport. Sign-in is one centered 420px maximum panel with a mark, heading, Microsoft action and an optional password disclosure.
 
-**The Progressive Disclosure Rule.** Keep identity, current evidence and the next action visible; put secondary filters, sources and management fields behind a clearly named control.
+**The Named Views Rule.** Reduce simultaneous detail through clearly named views without removing supported workflows or their data.
 
 ## Elevation & Depth
 
-Core workspace surfaces are flat. Tonal steps and fine borders separate panels; the sign-in panel and firm monogram have no shadow. A dimmed backdrop and a stronger boundary establish the on-demand AI sheet. Shadows remain functional on temporary overlays such as command search and feedback, not on every card.
+Ordinary surfaces are flat and solid. Home summaries and firm overview rows sit directly on the canvas; other panels use tonal changes and fine borders. Decorative glass, blur and glow are absent. Input focus rings and small status outlines communicate state and are not ambient decoration.
 
-### Shadow Vocabulary
+One shared soft shadow lifts command search, floating filters, bulk actions and transient feedback. A small shadow identifies a selected segmented control. The AI drawer uses a solid surface, border and dimmed backdrop. Exact shadow and focus values live in the sidecar.
 
-- **Command overlay:** A broad soft shadow isolates the command palette from its backdrop; exact CSS is recorded in the sidecar.
-- **Feedback:** A smaller soft shadow lifts transient feedback above page content; exact CSS is recorded in the sidecar.
-
-**The Flat Workspace Rule.** Establish depth through tone and borders; reserve floating elevation for temporary overlays.
+**The Flat Workspace Rule.** Separate ordinary content through tone, space and rules; reserve strong elevation for temporary overlays.
 
 ## Shapes
 
-Controls are compact rounded rectangles. Navigation uses a slightly tighter radius than fields and buttons; panels have softer corners, with the identity panel and composer one step softer again. Chips are small rounded rectangles rather than large pills. One-pixel borders are structural; selected tabs use a two-pixel underline. Circular geometry is reserved for small avatars, status points and the small AI activity indicator.
+Standard controls are rounded rectangles; panels soften the corners one step further. Chips use small rectangular corners, while filter pills and compact avatars use circular rounding. Tabs are square-ended text controls with a two-pixel selected underline. Row summaries have no enclosing card shape.
 
-The geometric B is the binding identity asset. Icons are simple inline strokes and must remain visually subordinate to their labels.
+The mark uses its shipped SVG geometry. Supporting icons are inline strokes, subordinate to labels.
 
 ## Components
 
 ### Buttons
 
-Compact and deliberate. Standard controls have a minimum height (40px); primary actions use Signal Red and white text, secondary actions use a neutral control fill and visible border, and ghost actions use a transparent fill. Compact contextual actions can use the existing smaller variant (32px). Primary hover deepens red; secondary hover raises the neutral tone. Keyboard focus uses a readable red outline (2px) with an offset (3px). Disabled buttons reduce opacity and lose the pointer cursor.
+Standard buttons are 36px high with neutral fill; primary actions use Signal Red and white text, and ghost actions use a transparent fill. Small contextual actions use 28px and large actions 44px. Hover changes tone and border; pressing shifts a button by one pixel. Focus uses a two-pixel Readable Red outline with a two-pixel offset. Disabled buttons reduce opacity.
 
 ### Chips
 
-Small state labels with text that explains their meaning. Verified, adverse and risky states use semantic tint-and-text pairs. Unknown, queued and unverified states use a neutral outlined treatment. Do not make an unverified address look like an available contact.
+State labels are 22px high. Verified contacts use green text, tint and border. Published addresses retain a distinct textual badge; ordinary unverified or unknown states use a neutral outline, while recorded risky or adverse states keep their respective semantic colors. Contact provenance is not replaced by visual confidence.
 
 ### Cards / Containers
 
-Research disclosures and highlight panels use Surface, a thin Rule border and the panel radius. Interior padding generally follows the panel or section spacing steps. Identity and home containers use the identity radius. Avoid subdividing every sentence into another card; section rules can group evidence directly on the canvas.
+General panels use Surface, a fine Rule border, the panel radius and 20px padding. Home totals, product summaries and firm overview groups instead use open rows and thin separators. Detailed people cards keep their containment. Native disclosures expose secondary evidence under a specific summary label.
 
 ### Inputs / Fields
 
-Dark canvas fill, Control Rule border and the control radius. The input focus border turns red with a subtle two-pixel tint ring. Labels stay visible and left aligned. Advanced filters disclose below the essential search controls. Form rows wrap instead of compressing fields past usability.
+Fields use the raised Field fill, a Control Rule border and the control radius. Standard inputs are 36px high. Focus strengthens the border and adds a three-pixel red tint ring. Visible labels describe form controls; compact search and conversation inputs carry accessible labels. Advanced filters stay behind a named control.
 
 ### Navigation
 
-Primary workflow links have equal prominence. The active destination uses a quiet red-charcoal fill, stronger text and a readable red icon. Product lists form a separately collapsible group. Research and home tabs use a thin red underline, with ordinary sentence-case labels and horizontal overflow on small screens.
+Workflow links have comparable visual prominence. The active sidebar item has a neutral translucent fill, readable red icon and a short red edge marker. Product lists, exploration and data tools remain accessible in the sidebar.
 
-### Evidence Tables
+Home and firm tabs use a red underline and text emphasis. They expose one named panel at a time, support Left/Right and Home/End keys, maintain selection in the URL hash and respond to browser history. On narrow screens the selected tab is revealed within the horizontal strip.
 
-Rows foreground the firm or person, a small set of decision-relevant values, and a clearly named route to detail. Tables use a Surface background, fine horizontal dividers, rounded outer corners and generous row spacing. Outer cell edges retain an inset (20px). Supporting evidence expands inline; actions and additional fields disclose as needed. Preserve sources, exports, uncertainty and keyboard access.
+### Evidence and Fit
 
-### Fit and Coverage
-
-Fit summaries combine a prominent score, a known-coverage track and an explicit missing-factor label. Solid neutral fill represents known coverage; amber hatching makes the unknown remainder visually distinct. The score does not replace evidence or erase uncertainty.
+Tables retain compact data rows, fine dividers and local horizontal scrolling. Overview fit rows combine a prominent score with explicit known-data coverage or eligibility text. Detailed scoring keeps missing factors visible; coverage tracks use solid fill for known data and amber hatching for the unknown remainder. Preserve the distinction between zero, missing data and ineligible status.
 
 ### Conversation
 
-The global composer is a wide, softly rounded neutral field with a clear send action and small status indicator. Its surrounding panel centers before conversation begins. A firmer neutral outline indicates focus. Firm conversation opens in a right-hand dialog sheet (480px maximum, constrained to the viewport), keeping AI available on demand without occupying a permanent research column.
+The global neutral composer has a softly rounded outline and a circular send action. The firm composer lives in its contextual dialog, leaving research space available until opened. Opening, closing and focus behavior use native dialog semantics.
 
-State changes use short color/background transitions (typically 120ms). Transient feedback may use a brief entrance (200ms). Reduced-motion preferences disable animation and transitions and restore immediate scrolling.
+### Sign-in
+
+The centered solid panel leads with the shipped mark and a simple Sign in heading. Microsoft uses a high-contrast light button, 48px high; password sign-in is a secondary disclosure when Microsoft is available. Error text remains near the form.
+
+Control color and border transitions usually take 120ms; disclosure and composer state transitions use 150ms, and transient feedback enters over 200ms. Reduced-motion preferences disable animations and transitions and restore immediate scrolling.
 
 ## Do's and Don'ts
 
 ### Do:
 
-- **Do** keep major surfaces neutral charcoal and let red identify purposeful interaction.
-- **Do** retain the geometric B asset and self-hosted Instrument Sans.
-- **Do** disclose secondary detail while keeping every supported workflow reachable.
-- **Do** pair scores and contact states with visible evidence or uncertainty.
-- **Do** preserve visible keyboard focus and respect reduced-motion preferences.
-- **Do** reflow identity and action groups before reducing text or squeezing columns.
+- **Do** keep major surfaces solid charcoal and use red for purposeful emphasis.
+- **Do** retain the shipped mark asset and self-hosted Instrument Sans.
+- **Do** keep every GTM workflow accessible through visible navigation or a named view.
+- **Do** label verified and published email distinctly and keep missing score evidence explicit.
+- **Do** use concise headings and show supporting explanation where it helps a decision.
+- **Do** preserve keyboard focus, hash navigation, responsive reflow and reduced-motion support.
 
 ### Don't:
 
-- **Don't** introduce blue-tinted surfaces, theatrical login graphics, halos or oversized AI ornaments.
-- **Don't** use decorative eyebrow labels, gratuitous glyph icons or a separate system display face.
-- **Don't** replace unknown values with invented data or present inferred email addresses as usable contacts.
-- **Don't** spread shadows, accent fills or nested cards across routine workspace content.
-- **Don't** use residual legacy CSS or isolated view-specific defects as rules for new screens.
+- **Don't** add glass, backdrop blur, decorative glow, blue-tinted surfaces or theatrical login graphics.
+- **Don't** turn every fact into a card or add introductory copy that repeats a heading.
+- **Don't** introduce decorative eyebrows, glyph-based icon substitutes or a separate display font.
+- **Don't** hide uncertainty behind a score or style published email as verified.
+- **Don't** treat unused stylesheets, old screenshots or residual legacy declarations as the system for new work.

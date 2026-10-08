@@ -1,6 +1,6 @@
 """Home: what Bellwether knows, what moved, and where to start.
 
-Read top to bottom it answers, without a click:
+Four views keep the default page focused while retaining all intelligence:
 
   1. How big is what we see? The adviser universe, the assets it manages, the
      people working in it, and how many of them we can actually reach.
@@ -12,8 +12,7 @@ Read top to bottom it answers, without a click:
   5. How complete is the data, and what is working on it right now?
   6. What is mine? My pipeline, my firms, the firms I watch.
 
-Everything heavy is computed once every two minutes and shared, so the page
-renders in milliseconds however many people open it.
+Heavy aggregates are cached and refreshed in the background.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import ai, products, ui
-from .webapp import (FAMILY_COLOUR, ICONS, TYPE_LABEL, conn, current_account, current_owner,
+from .webapp import (ICONS, TYPE_LABEL, conn, current_owner,
                      esc, escn, money, page, qs_join, score_cell, signal_cutoff)
 
 router = APIRouter()
@@ -253,7 +252,6 @@ def home(type: str = "", product: str = "", state: str = ""):
                                 status_code=307)
     d = data()
     me = current_owner()
-    acct = current_account() or {}
 
     kpis = "".join([
         _kpi(_compact(d["firms"]), "Adviser firms",
@@ -271,18 +269,18 @@ def home(type: str = "", product: str = "", state: str = ""):
     cards = []
     for L in d["lists"]:
         p = L["p"]
-        colour = FAMILY_COLOUR.get(p["family"], "#888")
         top = "".join(
             f'<a href="/firm/{esc(t["crd"])}?p={L["key"]}"><span>{escn(t["legal_name"])}</span>'
             f'<span class="{"ok" if t["score"] >= 60 else "muted"}">{t["score"]:.0f}</span></a>' for t in L["top"])
         cards.append(
-            f'<div class="prodcard"><a class="ph" href="/lists/{L["key"]}"><span class="dotc" style="background:{colour}"></span>'
-            f'<b>{esc(p["name"])}</b><span class="n">{L["n"]:,}</span></a>'
-            f'<div class="aud">{esc(p["audience"])}</div>'
-            f'<div><div class="meter{" amber" if L["cov"] < 70 else " soft"}"><i style="width:{L["cov"]:.0f}%"></i></div>'
-            f'<div class="tiny muted" style="margin-top:6px">{L["cov"]:.0f}% known data . {L["hi"]:,} at 60+'
-            f'{" . " + str(L["fresh"]) + " new signals" if L["fresh"] else ""}</div></div>'
-            f'<div class="tops">{top or "<span class=muted>No scores yet</span>"}</div></div>')
+            f'<div class="product-entry"><div class="product-summary">'
+            f'<a class="product-name" href="/lists/{L["key"]}">{esc(p["name"])}</a>'
+            f'<span><b>{L["n"]:,}</b> firms</span><span><b>{L["hi"]:,}</b> scoring 60+</span>'
+            f'<span class="{"warnc" if L["cov"] < 70 else "soft"}">{L["cov"]:.0f}% known data</span>'
+            f'<a class="more" href="/lists/{L["key"]}">Open list</a></div>'
+            f'<details class="product-preview"><summary>Audience and leading firms</summary>'
+            f'<p>{esc(p["audience"])}</p><div class="tops">{top or "<span class=muted>No scores yet</span>"}</div>'
+            f'<p class="meta">{L["fresh"]:,} new signals</p></details></div>')
     lists_html = "".join(cards)
 
     # Feed: people moves and signals merged.
@@ -303,12 +301,12 @@ def home(type: str = "", product: str = "", state: str = ""):
                              f'<div class="meta">{esc(s["description"])}</div></div>'
                              f'<div class="when">{esc(ui.ago(s["d"]))}</div></div>'))
     feed.sort(key=lambda x: x[0] or "", reverse=True)
-    feed_html = ("".join(x[1] for x in feed[:14]) or
+    feed_html = ("".join(x[1] for x in feed[:6]) or
                  '<p class="empty">No new signals in the last 60 days.</p>')
 
     hire_rows = "".join(
         f'<div class="r"><a href="/firm/{esc(h["crd"])}#activity">{escn(h["legal_name"])}</a>'
-        f'<div class="b"><i style="width:{min(100, h["hires_12m"] / max(1, d["hire_firms"][0]["hires_12m"]) * 100):.0f}%;background:linear-gradient(90deg,#2f9c6c,var(--ok))"></i></div>'
+        f'<div class="b"><i style="width:{min(100, h["hires_12m"] / max(1, d["hire_firms"][0]["hires_12m"]) * 100):.0f}%;background:var(--ok)"></i></div>'
         f'<div class="num">+{h["hires_12m"]}</div></div>' for h in d["hire_firms"])
 
     cov_rows = "".join(
@@ -350,15 +348,14 @@ def home(type: str = "", product: str = "", state: str = ""):
         f'<div class="meta">{esc(r["status"] or "claimed").capitalize()} . {esc(ui.product_name(r["best_product"]))}</div></div></div></td>'
         f'<td class="num">{score_cell(r["best_score"], r["best_coverage"], show_cov=False)}</td></tr>' for r in mine)
     mine_html = (f'<table class="tight bare"><tbody>{mine_html}</tbody></table>' if mine_html else
-                 '<div class="empty"><b>Nothing assigned to you yet</b>Set a status on any firm page '
-                 'and it lands here.</div>')
+                 '<div class="empty">No firms assigned. <a href="/firms">Find a firm</a></div>')
     watch_html = "".join(
         f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="ent">{ui.mono(r["legal_name"], "sm")}<div>'
         f'<a class="t" href="/firm/{esc(r["crd"])}">{escn(r["legal_name"])}</a>'
         f'<div class="meta">{esc(r["last_desc"] or "No change since you started watching")}</div></div></div></td>'
         f'<td class="small muted nowrap num">{esc(ui.ago(r["last_date"]))}</td></tr>' for r in watched)
     watch_html = (f'<table class="tight bare"><tbody>{watch_html}</tbody></table>' if watch_html else
-                  '<div class="empty"><b>Not watching any firm</b>Star a firm on its page to follow it here.</div>')
+                  '<div class="empty">Watch a firm to follow its activity here.</div>')
 
     # The contact discovery engine: how far it has got, what it is doing now,
     # and what it found most recently.
@@ -369,7 +366,7 @@ def home(type: str = "", product: str = "", state: str = ""):
         f'<div class="e"><i class="{"run" if j["state"] == "running" else "wait"}"></i>'
         f'<span>{esc(j["label"])}</span><span class="m">'
         f'{format(j["backlog"], ",") + " to go" if j.get("backlog") else ("running" if j["state"] == "running" else "queued")}'
-        f'</span></div>' for j in live[:6]) or '<p class="muted small">Every job is up to date; the next runs start on schedule.</p>'
+        f'</span></div>' for j in live[:6]) or '<p class="muted small">No jobs running.</p>'
     finds = "".join(
         f'<div class="it"><div class="ic in">{ICONS["check"]}</div><div><b>{esc(f_["person_name"] or "A shared inbox")}</b>'
         f' <span class="muted">at</span> <a href="/firm/{esc(f_["crd"])}#people">{escn(f_["legal_name"])}</a>'
@@ -381,20 +378,16 @@ def home(type: str = "", product: str = "", state: str = ""):
 <a class="more" href="/people?on=any&amp;view=hunting">Still hunting</a></div>
 <div class="row" style="align-items:flex-end;gap:14px"><div class="big">{pct:.1f}%</div>
 <div class="small soft" style="padding-bottom:6px">{rc.get('listed_email', 0):,} of {listed:,} people</div></div>
-<div class="reachbar" style="margin:14px 0 6px"><i style="flex:{rc.get('email', 0)};background:var(--ok)"></i>
-<i style="flex:{max(0, rc.get('linkedin', 0))};background:#8ab4ff"></i>
-<i style="flex:{max(0, rc.get('direct', 0))};background:var(--soft)"></i>
-<i style="flex:{max(1, (rc.get('total') or 1) - rc.get('email', 0))};background:var(--raise3)"></i></div>
+<div class="meter" style="margin:18px 0"><i style="width:{pct:.1f}%"></i></div>
 <div class="legend" style="margin-bottom:14px"><span><i style="background:var(--ok)"></i>email {rc.get('email', 0):,}</span>
-<span><i style="background:#8ab4ff"></i>LinkedIn {rc.get('linkedin', 0):,}</span>
+<span>LinkedIn {rc.get('linkedin', 0):,}</span>
 <span><i style="background:var(--soft)"></i>direct line {rc.get('direct', 0):,}</span></div>
-<h3 style="margin-top:6px">Working now</h3><div class="engine">{engine}</div>
-{('<h3 style="margin-top:16px">Latest finds</h3><div class="feed">' + finds + '</div>') if finds else ''}</div>"""
+<details class="detail-section"><summary>Discovery jobs</summary><div class="engine">{engine}</div></details>
+{('<details class="detail-section"><summary>Latest finds</summary><div class="feed">' + finds + '</div></details>') if finds else ''}</div>"""
 
     ai_ready = ai.configured()
-    askbar = f"""<form class="askbar" method="get" action="/ask">
-<canvas data-orb="breathing" data-size="32" data-px="26" data-tint="#f06b72" aria-hidden="true"></canvas>
-<input name="q" aria-label="{'Ask Bellwether AI' if ai_ready else 'Search firms'}" placeholder="{'Ask Bellwether AI anything' if ai_ready else 'Search firms'}" autocomplete="off">
+    askbar = f"""<form class="askbar" method="get" action="{'/ask' if ai_ready else '/firms'}">
+<input name="q" aria-label="{'Ask Bellwether AI' if ai_ready else 'Search firms'}" placeholder="{'Ask Bellwether AI' if ai_ready else 'Search firms'}" autocomplete="off">
 <button class="primary" type="submit">{'Ask' if ai_ready else 'Search'}</button></form>"""
 
     fresh = []
@@ -404,30 +397,33 @@ def home(type: str = "", product: str = "", state: str = ""):
     fresh.append(f"{d['sites']:,} firm websites read")
     if d.get("scored_at"):
         fresh.append(f"scores computed {esc(ui.ago(d['scored_at']))}")
-    first = (acct.get("name") or "").split(" ")[0]
-    hour = datetime.now().hour
-    hello = ("Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening") + (f", {esc(first)}" if first else "")
-
-    body = f"""<div class="pg wide">
-<div class="dash-hero"><div><div class="eyebrow">Bellwether</div><h1 class="hello">{hello}</h1>
-<p class="lede">{d['signals_30']:,} signals and {d['hires_12m'] or 0:,} job moves across {d['firms']:,} advisory firms.
-Here is what matters today.</p></div>{askbar}</div>
-<div class="kpis">{kpis}</div>
-<section class="s"><div class="s-head"><h2>Product lists</h2><a class="more" href="/lists/{d['lists'][0]['key'] if d['lists'] else ''}">Open lists</a></div>
-<div class="prodgrid">{lists_html}</div></section>
-<section class="s"><div class="cols-21">
-<div class="card"><div class="card-head"><h2>Latest intelligence</h2><a href="/signals" class="more">All activity</a></div><div class="feed">{feed_html}</div></div>
-<div>{discovery}</div></div></section>
-<section class="s"><div class="cols-3">
-<div class="card"><div class="card-head"><h2>Hiring now</h2><a href="/firms?sort=hires&amp;on=any" class="more">View firms</a></div><div class="hbars">{hire_rows or '<p class="empty">No recorded hiring activity.</p>'}</div></div>
-<div class="card"><div class="card-head"><h2>Your firms</h2><a href="/firms?owner=me" class="more">View all</a></div>{mine_html}
-<h3 style="margin-top:18px">Team pipeline</h3><div class="funnel">{funnel}</div></div>
-<div class="card"><div class="card-head"><h2>Watching</h2><a href="/firms" class="more">Find firms</a></div>{watch_html}</div>
-</div></section>
-<section class="s"><div class="cols-2">
-<div class="card"><div class="card-head"><h2>Where the ranked firms are</h2><span class="sub">Darker means more firms</span></div>{_map(d['by_state'])}</div>
-<div class="card"><div class="card-head"><h2>Data coverage</h2><span class="sub">Across {d['scope']:,} ranked firms</span></div>{cov_rows}</div>
-</div></section>
-<p class="meta" style="margin-top:28px">{' . '.join(fresh)}</p>
+    body = f"""<div class="pg dashboard">
+<div class="dash-hero"><h1>Home</h1>{askbar}</div>
+<nav class="workspace-tabs" data-workspace-tabs aria-label="Dashboard views">
+<button type="button" data-panel="home-overview">Overview</button>
+<button type="button" data-panel="home-products">Product lists</button>
+<button type="button" data-panel="home-workspace">Your workspace</button>
+<button type="button" data-panel="home-coverage">Data coverage</button></nav>
+<section id="home-overview">
+<div class="overview-totals"><a href="/firms"><strong>{d['firms']:,}</strong> adviser firms</a>
+<a href="/people"><strong>{d['people']:,}</strong> people</a>
+<a href="/signals"><strong>{d['signals_30']:,}</strong> signals <span>in 30 days</span></a></div>
+<div class="overview-columns">
+<section class="overview-section"><div class="s-head"><h2>Latest intelligence</h2><a href="/signals" class="more">All activity</a></div><div class="feed">{feed_html}</div></section>
+<section class="overview-section"><div class="s-head"><h2>Hiring activity</h2><a href="/firms?sort=hires&amp;on=any" class="more">View firms</a></div><div class="hbars">{hire_rows or '<p class="empty">No recorded hiring activity.</p>'}</div><p class="meta">Joins in the past 12 months</p></section>
+</div>
+<div class="home-shortcuts"><a href="/people?view=email">{rc.get('email', d['named_email']):,} people with email</a>
+<a href="/people?view=direct">{rc.get('direct', 0):,} people with a direct line</a>
+<a href="#home-coverage">View data coverage</a></div>
+</section>
+<section id="home-products"><div class="product-index">{lists_html}</div></section>
+<section id="home-workspace"><div class="overview-columns">
+<div><section class="overview-section"><div class="s-head"><h2>Your firms</h2><a href="/firms?owner=me" class="more">View all</a></div>{mine_html}</section>
+<section class="overview-section"><div class="s-head"><h2>Watching</h2><a href="/firms" class="more">Find firms</a></div>{watch_html}</section></div>
+<section class="overview-section"><h2>Team pipeline</h2><div class="funnel">{funnel}</div></section></div></section>
+<section id="home-coverage"><div class="kpis">{kpis}</div><div class="coverage-columns">
+<div>{discovery}</div><section class="overview-section"><div class="s-head"><h2>Data coverage</h2><span class="meta">{d['scope']:,} ranked firms</span></div>{cov_rows}
+<details class="detail-section"><summary>Firms by state</summary>{_map(d['by_state'])}</details></section></div>
+<p class="meta freshness">{' · '.join(fresh)}</p></section>
 </div>"""
-    return page("Home", "home", body, orbs=True)
+    return page("Home", "home", body)
