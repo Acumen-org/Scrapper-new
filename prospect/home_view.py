@@ -365,7 +365,7 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
     listed = rc.get("listed") or 0
     pct = (rc.get("listed_email", 0) / listed * 100) if listed else 0
     engine = "".join(
-        f'<div class="e"><i class="{"run" if j["state"] == "running" else "wait"}"></i>'
+        f'<div class="e{" run" if j["state"] == "running" else ""}">'
         f'<span>{esc(j["label"])}</span><span class="m">'
         f'{format(j["backlog"], ",") + " to go" if j.get("backlog") else ("running" if j["state"] == "running" else "queued")}'
         f'</span></div>' for j in live[:6]) or '<p class="muted small">No jobs running.</p>'

@@ -216,9 +216,13 @@ def _anthropic_options(mdl: str, effort: str, schema: dict | None) -> dict:
 
 
 def _call_anthropic(system: str, messages: list[dict], mdl: str, max_tokens: int,
-                    schema: dict | None, effort: str) -> tuple[str, int, int]:
+                    schema: dict | None, effort: str,
+                    timeout: float = 120.0) -> tuple[str, int, int]:
     extra = _anthropic_options(mdl, effort, schema)
-    resp = _anthropic_create(_anthropic_client(), mdl, model=mdl, max_tokens=max_tokens,
+    client = _anthropic_client()
+    if timeout != 120.0:
+        client = client.with_options(timeout=timeout)
+    resp = _anthropic_create(client, mdl, model=mdl, max_tokens=max_tokens,
                              system=system, messages=messages, **extra)
     text = "".join(b.text for b in resp.content if b.type == "text")
     _check_anthropic_reply(resp, text, mdl, max_tokens)
@@ -246,32 +250,35 @@ def _anthropic_create(client, mdl: str, **kw):
     import anthropic
     try:
         return client.beta.messages.create(**kw)
-    except anthropic.AuthenticationError as e:
-        raise AIError("The Anthropic API key was rejected. Check it in Settings, AI.",
-                      _anthropic_detail(e, mdl)) from None
-    except anthropic.PermissionDeniedError as e:
-        raise AIError("That Anthropic key cannot use this model.",
-                      _anthropic_detail(e, mdl)) from None
-    except anthropic.NotFoundError as e:
-        raise AIError(f"Anthropic does not recognise the model {mdl}.",
-                      _anthropic_detail(e, mdl)) from None
-    except anthropic.RateLimitError as e:
-        raise AIError("Anthropic is rate limiting this key. Try again in a minute.",
-                      _anthropic_detail(e, mdl)) from None
-    except anthropic.BadRequestError as e:
-        raise AIError(f"Anthropic refused the request: {e.message[:200]}",
-                      _anthropic_detail(e, mdl)) from None
-    except anthropic.APIStatusError as e:
-        raise AIError(f"Anthropic returned an error ({e.status_code}).",
-                      _anthropic_detail(e, mdl)) from None
-    except anthropic.APITimeoutError:
-        raise AIError("Anthropic took too long to answer.",
-                      f"anthropic timeout (model {mdl})") from None
-    except anthropic.APIConnectionError as e:
-        cause = e.__cause__ or e
-        raise AIError("Could not reach Anthropic.",
-                      f"anthropic connection error: {type(cause).__name__}: "
-                      f"{str(cause)[:160]} (model {mdl})") from None
+    except anthropic.APIError as e:
+        raise _anthropic_error(e, mdl) from None
+
+
+def _anthropic_error(e, mdl: str) -> AIError:
+    """The AIError for an Anthropic SDK exception, plain words on the screen
+    and the status, type and request id in the detail."""
+    import anthropic
+    if isinstance(e, anthropic.AuthenticationError):
+        return AIError("The Anthropic API key was rejected. Check it in Settings, AI.",
+                       _anthropic_detail(e, mdl))
+    if isinstance(e, anthropic.PermissionDeniedError):
+        return AIError("That Anthropic key cannot use this model.", _anthropic_detail(e, mdl))
+    if isinstance(e, anthropic.NotFoundError):
+        return AIError(f"Anthropic does not recognise the model {mdl}.", _anthropic_detail(e, mdl))
+    if isinstance(e, anthropic.RateLimitError):
+        return AIError("Anthropic is rate limiting this key. Try again in a minute.",
+                       _anthropic_detail(e, mdl))
+    if isinstance(e, anthropic.BadRequestError):
+        return AIError(f"Anthropic refused the request: {e.message[:200]}",
+                       _anthropic_detail(e, mdl))
+    if isinstance(e, anthropic.APIStatusError):
+        return AIError(f"Anthropic returned an error ({e.status_code}).", _anthropic_detail(e, mdl))
+    if isinstance(e, anthropic.APITimeoutError):
+        return AIError("Anthropic took too long to answer.", f"anthropic timeout (model {mdl})")
+    cause = e.__cause__ or e
+    return AIError("Could not reach Anthropic.",
+                   f"anthropic connection error: {type(cause).__name__}: "
+                   f"{str(cause)[:160]} (model {mdl})")
 
 
 def _check_anthropic_reply(resp, text: str, mdl: str, max_tokens: int) -> None:
@@ -293,39 +300,73 @@ def _check_anthropic_reply(resp, text: str, mdl: str, max_tokens: int) -> None:
                   "model in Settings, AI.", detail)
 
 
-def _call_openai_compatible(system: str, messages: list[dict], mdl: str, max_tokens: int,
-                            schema: dict | None, base: str) -> tuple[str, int, int]:
-    import requests
+def _strict_json_ok(base: str) -> bool:
+    """Whether to ask for strict JSON schema output. Only OpenAI's own API
+    keeps it dependable. Through a gateway such as Eden AI, on an open model,
+    constrained decoding of a large schema can stall: the model starts the
+    object, then writes blank space until max_tokens runs out (Gemma did this
+    on every planning call). Everywhere else the schema goes in the prompt and
+    the answer is parsed leniently, which is also faster."""
+    return provider() == "openai" and "api.openai.com" in (base or "")
+
+
+def _openai_request(system: str, messages: list[dict], mdl: str, max_tokens: int,
+                    schema: dict | None, base: str, schema_hint: bool) -> tuple[dict, dict]:
+    """Headers and body for an OpenAI-compatible chat completion."""
     key = settings.get("ai.api_key")
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
+    if schema is not None and not _strict_json_ok(base):
+        system += "\n\nReply with one JSON object only: no prose, no code fences, nothing after it."
+        if schema_hint:
+            system += " It must match this JSON schema: " + json.dumps(schema)
     msgs = [{"role": "system", "content": system}] + messages
     body: dict = {"model": mdl, "messages": msgs, "max_tokens": max_tokens}
-    if schema is not None:
+    if schema is not None and _strict_json_ok(base):
         body["response_format"] = {"type": "json_schema", "json_schema": {
             "name": "result", "schema": schema, "strict": True}}
+    return headers, body
+
+
+def _http_error(r, mdl: str, base: str) -> AIError:
+    where = f"(model {mdl}, base {base})"
+    if r.status_code in (401, 403):
+        return AIError("The AI provider rejected the key. Check it in Settings, AI.",
+                       f"{provider()} HTTP {r.status_code}: {_provider_message(r)} {where}")
+    if r.status_code == 402:
+        return AIError("The AI provider account is out of credit. An admin can top it up.",
+                       f"{provider()} HTTP 402: {_provider_message(r)} {where}")
+    if r.status_code == 429:
+        return AIError("The AI provider is rate limiting this account. Try again in a minute.",
+                       f"{provider()} HTTP 429: {_provider_message(r)} {where}")
+    return AIError(f"The AI provider returned an error ({r.status_code}).",
+                   f"{provider()} HTTP {r.status_code}: {_provider_message(r)} {where}")
+
+
+def _call_openai_compatible(system: str, messages: list[dict], mdl: str, max_tokens: int,
+                            schema: dict | None, base: str, timeout: float = 120.0,
+                            schema_hint: bool = True) -> tuple[str, int, int]:
+    import requests
+    headers, body = _openai_request(system, messages, mdl, max_tokens, schema, base, schema_hint)
     try:
         r = requests.post(base.rstrip("/") + "/chat/completions", json=body,
-                          headers=headers, timeout=120)
-        if r.status_code == 400 and schema is not None:
-            # Not every gateway honours json_schema; ask in words instead.
-            body.pop("response_format", None)
-            body["messages"][0]["content"] += ("\n\nReply with one JSON object only, no prose, "
-                                               "matching this JSON schema: " + json.dumps(schema))
+                          headers=headers, timeout=timeout)
+        if r.status_code == 400 and "response_format" in body:
+            # Not every endpoint honours json_schema; ask in words instead.
+            headers, body = _openai_request(system, messages, mdl, max_tokens, schema, "", True)
             r = requests.post(base.rstrip("/") + "/chat/completions", json=body,
-                              headers=headers, timeout=120)
+                              headers=headers, timeout=timeout)
+    except requests.Timeout:
+        raise AIError("The AI provider took too long to answer.",
+                      f"{provider()} timeout after {timeout:.0f}s (model {mdl}, base {base})") from None
     except requests.RequestException as e:
         raise AIError("Could not reach the AI provider.",
                       f"{provider()} connection error: {type(e).__name__}: {str(e)[:160]}"
                       f" (model {mdl}, base {base})") from None
     where = f"(model {mdl}, base {base})"
-    if r.status_code in (401, 403):
-        raise AIError("The AI provider rejected the key. Check it in Settings, AI.",
-                      f"{provider()} HTTP {r.status_code}: {_provider_message(r)} {where}")
     if r.status_code >= 400:
-        raise AIError(f"The AI provider returned an error ({r.status_code}): {r.text[:160]}",
-                      f"{provider()} HTTP {r.status_code}: {_provider_message(r)} {where}")
+        raise _http_error(r, mdl, base)
     try:
         d = r.json()
         choice = d["choices"][0]
@@ -369,6 +410,11 @@ def _provider_message(r) -> str:
 _THINK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.S | re.I)
 _FENCE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.S)
 _TRAILING_COMMA = re.compile(r",\s*([}\]])")
+
+
+def strip_thinking(text: str) -> str:
+    """A reply without the <think> blocks some open models write first."""
+    return _THINK.sub("", text or "")
 
 
 def _json_spans(t: str) -> list[str]:
@@ -474,15 +520,20 @@ def _coerce(v, schema: dict | None):
 
 def complete(system: str, messages: list[dict], *, feature: str, tier: str = "smart",
              schema: dict | None = None, max_tokens: int = 4000,
-             who: str | None = None) -> str | dict:
-    """One model call. Returns text, or a dict when a JSON schema is given."""
+             who: str | None = None, timeout: float = 120.0,
+             schema_hint: bool = True, effort: str | None = None) -> str | dict:
+    """One model call. Returns text, or a dict when a JSON schema is given.
+    schema_hint=False when the prompt already spells out the JSON wanted, so
+    a provider without strict output is not also sent the whole schema.
+    effort overrides how hard Claude thinks (low for quick structured steps)."""
     if not configured():
         raise AIError("No AI provider is connected. An admin can add one in Settings, AI.")
     if budget_left() <= 0:
         raise AIError("Today's AI allowance is used up. It resets at midnight UTC.")
     mdl = model(tier)
+    opts = {"timeout": timeout, "schema_hint": schema_hint, "effort": effort}
     try:
-        return _complete_once(system, messages, mdl, feature, tier, schema, max_tokens, who)
+        return _complete_once(system, messages, mdl, feature, tier, schema, max_tokens, who, **opts)
     except AIError as e:
         # Weaker models wrap JSON in prose or slip on its syntax now and then.
         # One more try, shown its own answer and told plainly what is wanted,
@@ -494,25 +545,30 @@ def complete(system: str, messages: list[dict], *, feature: str, tier: str = "sm
             {"role": "user", "content": "That was not one valid JSON object. Reply again "
              "with only the JSON object, starting with { and ending with }, no other text "
              "and no code fences, matching this JSON schema: " + json.dumps(schema)}]
-        return _complete_once(system, again, mdl, feature, tier, schema, max_tokens, who)
+        return _complete_once(system, again, mdl, feature, tier, schema, max_tokens, who, **opts)
+
+
+def _base() -> str:
+    """The chat completions base URL for the OpenAI-compatible providers."""
+    if provider() == "edenai":
+        return EDEN_BASE
+    return settings.get("ai.base_url") or "https://api.openai.com/v1"
 
 
 def _complete_once(system: str, messages: list[dict], mdl: str, feature: str, tier: str,
-                   schema: dict | None, max_tokens: int, who: str | None):
+                   schema: dict | None, max_tokens: int, who: str | None,
+                   timeout: float = 120.0, schema_hint: bool = True, effort: str | None = None):
     p = provider()
     t0 = time.monotonic()
     text = ""
     try:
         if p == "anthropic":
             text, tin, tout = _call_anthropic(system, messages, mdl, max_tokens, schema,
-                                              "low" if tier == "fast" else "medium")
-        elif p == "edenai":
-            text, tin, tout = _call_openai_compatible(system, messages, mdl, max_tokens,
-                                                      schema, EDEN_BASE)
-        elif p == "openai":
-            text, tin, tout = _call_openai_compatible(
-                system, messages, mdl, max_tokens, schema,
-                settings.get("ai.base_url") or "https://api.openai.com/v1")
+                                              effort or ("low" if tier == "fast" else "medium"),
+                                              timeout)
+        elif p in ("edenai", "openai"):
+            text, tin, tout = _call_openai_compatible(system, messages, mdl, max_tokens, schema,
+                                                      _base(), timeout, schema_hint)
         else:
             raise AIError("Unknown AI provider.", f"unknown provider {p!r}")
         if not str(text or "").strip():
@@ -529,6 +585,132 @@ def _complete_once(system: str, messages: list[dict], mdl: str, feature: str, ti
         raise
     _log(feature, mdl, True, tin, tout, int((time.monotonic() - t0) * 1000), who, None)
     return out
+
+
+# ------------------------------------------------------------------ streaming
+
+def stream(system: str, messages: list[dict], *, feature: str, tier: str = "smart",
+           max_tokens: int = 2000, who: str | None = None, timeout: float = 90.0):
+    """One model call that yields the answer as it is written, so the screen
+    shows words within a second or two instead of after the whole reply. The
+    call is logged once when it ends. A provider that cannot stream gets one
+    ordinary call, yielded whole."""
+    if not configured():
+        raise AIError("No AI provider is connected. An admin can add one in Settings, AI.")
+    if budget_left() <= 0:
+        raise AIError("Today's AI allowance is used up. It resets at midnight UTC.")
+    mdl = model(tier)
+    p = provider()
+    t0 = time.monotonic()
+    usage = {"in": None, "out": None}
+    try:
+        if p == "anthropic":
+            gen = _stream_anthropic(system, messages, mdl, max_tokens,
+                                    "low" if tier == "fast" else "medium", timeout, usage)
+        elif p in ("edenai", "openai"):
+            gen = _stream_openai_compatible(system, messages, mdl, max_tokens, _base(), timeout, usage)
+        else:
+            raise AIError("Unknown AI provider.", f"unknown provider {p!r}")
+        said = False
+        for piece in gen:
+            if piece:
+                said = True
+                yield piece
+        if not said:
+            raise AIError("The AI provider returned an empty answer. An admin can review "
+                          "the model in Settings, AI.", f"{p} empty answer (model {mdl})")
+    except AIError as e:
+        _log(feature, mdl, False, None, None, int((time.monotonic() - t0) * 1000), who, e.detail)
+        raise
+    _log(feature, mdl, True, usage["in"], usage["out"], int((time.monotonic() - t0) * 1000),
+         who, None)
+
+
+def _stream_anthropic(system, messages, mdl, max_tokens, effort, timeout, usage):
+    import anthropic
+    extra = _anthropic_options(mdl, effort, None)
+    client = _anthropic_client().with_options(timeout=timeout)
+    text = []
+    try:
+        with client.beta.messages.stream(model=mdl, max_tokens=max_tokens, system=system,
+                                         messages=messages, **extra) as s:
+            for piece in s.text_stream:
+                text.append(piece)
+                yield piece
+            resp = s.get_final_message()
+    except anthropic.APIError as e:
+        raise _anthropic_error(e, mdl) from None
+    _check_anthropic_reply(resp, "".join(text), mdl, max_tokens)
+    usage["in"] = int(resp.usage.input_tokens or 0)
+    usage["out"] = int(resp.usage.output_tokens or 0)
+
+
+def _stream_openai_compatible(system, messages, mdl, max_tokens, base, timeout, usage):
+    """Server-sent events from /chat/completions with stream on. A gateway
+    that refuses to stream (HTTP 400) gets an ordinary request instead."""
+    import requests
+    headers, body = _openai_request(system, messages, mdl, max_tokens, None, base, False)
+    body["stream"] = True
+    try:
+        r = requests.post(base.rstrip("/") + "/chat/completions", json=body, headers=headers,
+                          timeout=timeout, stream=True)
+    except requests.Timeout:
+        raise AIError("The AI provider took too long to answer.",
+                      f"{provider()} timeout after {timeout:.0f}s (model {mdl}, base {base})") from None
+    except requests.RequestException as e:
+        raise AIError("Could not reach the AI provider.",
+                      f"{provider()} connection error: {type(e).__name__}: {str(e)[:160]}"
+                      f" (model {mdl}, base {base})") from None
+    if r.status_code == 400:
+        r.close()
+        text, tin, tout = _call_openai_compatible(system, messages, mdl, max_tokens, None, base,
+                                                  timeout)
+        usage["in"], usage["out"] = tin, tout
+        yield text
+        return
+    if r.status_code >= 400:
+        raise _http_error(r, mdl, base)
+    finish, said = None, False
+    try:
+        # chunk_size=None hands over each piece as it arrives; the default
+        # waits for 512 bytes, which held a short answer back until it ended.
+        for line in r.iter_lines(chunk_size=None, decode_unicode=True):
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                d = json.loads(data)
+            except ValueError:
+                continue
+            if d.get("error"):
+                err = d["error"]
+                msg = err.get("message") if isinstance(err, dict) else err
+                raise AIError("The AI provider stopped with an error.",
+                              f"{provider()} stream error: {str(msg)[:200]} (model {mdl}, base {base})")
+            if d.get("usage"):
+                usage["in"] = d["usage"].get("prompt_tokens")
+                usage["out"] = d["usage"].get("completion_tokens")
+            for ch in d.get("choices") or []:
+                piece = (ch.get("delta") or {}).get("content")
+                if isinstance(piece, list):
+                    piece = "".join(x.get("text", "") for x in piece if isinstance(x, dict))
+                if piece:
+                    said = True
+                    yield piece
+                finish = ch.get("finish_reason") or finish
+    except requests.RequestException as e:
+        raise AIError("The connection to the AI provider dropped mid-answer.",
+                      f"{provider()} stream broke: {type(e).__name__}: {str(e)[:160]}"
+                      f" (model {mdl}, base {base})") from None
+    finally:
+        r.close()
+    if not said:
+        raise AIError("The AI provider returned an empty answer. An admin can review the "
+                      "model in Settings, AI.",
+                      f"{provider()} empty answer: finish_reason {finish}, streamed nothing,"
+                      f" max_tokens {max_tokens} (model {mdl}, base {base})")
 
 
 # ------------------------------------------------------------------ web research

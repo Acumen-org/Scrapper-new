@@ -16,7 +16,7 @@ import sys
 import threading
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import ai, assistant, config, contacts, procs, products
 from .webapp import conn, current_owner, current_user, esc, money, nice_name
@@ -80,6 +80,13 @@ async def api_ask(request: Request):
     history = body.get("history") if isinstance(body.get("history"), list) else []
     if scope.startswith("firm:") and not CRD_RE.match(scope[5:]):
         return _j(False, error="Invalid firm context. Reload the firm page.")
+    who, me = current_user() or "", current_owner()
+    if "application/x-ndjson" in (request.headers.get("accept") or ""):
+        # The chat panel reads events as they happen: what Bellwether is doing,
+        # the matching firms, then the answer as it is written.
+        return StreamingResponse(_ask_events(q, scope, history, who, me),
+                                 media_type="application/x-ndjson",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
     def run():
         c = conn()
@@ -98,6 +105,26 @@ async def api_ask(request: Request):
         return _j(False, html='<p class="bad">Something went wrong answering that.</p>',
                   error=type(e).__name__)
     return _j(True, html=res["html"], text=res.get("text", ""))
+
+
+def _ask_events(q: str, scope: str, history: list, who: str, me: str):
+    """One JSON object per line from assistant.ask_stream. Starlette runs this
+    generator in a worker thread, so the model and database calls block
+    nobody. A failure ends the stream with an error event, never a trace."""
+    c = conn()
+    try:
+        for ev in assistant.ask_stream(c, q, scope, history, who=who, me=me):
+            if ev["t"] == "done":
+                ev = dict(ev, ok=True)
+            yield json.dumps(ev) + "\n"
+    except ai.AIError as e:
+        yield json.dumps({"t": "error", "ok": False, "error": str(e)}) + "\n"
+    except Exception as e:  # never show a stack trace in a chat bubble
+        yield json.dumps({"t": "error", "ok": False,
+                          "error": "Something went wrong answering that.",
+                          "kind": type(e).__name__}) + "\n"
+    finally:
+        c.close()
 
 
 @router.post("/api/firm/{crd}/brief")

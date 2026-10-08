@@ -257,6 +257,40 @@ class AITransportChecks(unittest.TestCase):
         self.assertEqual(post.call_args.args[0],'https://api.edenai.run/v3/chat/completions')
         self.assertEqual((text,tin,tout),('Grounded answer',12,3))
 
+    def test_gateway_gets_json_in_words_not_a_strict_schema(self):
+        # Gemma through Eden AI stalled into blank space under strict schema output.
+        response=Mock(status_code=200)
+        response.json.return_value={'choices':[{'message':{'content':'{"mode":"search"}'}}],'usage':{}}
+        schema={'type':'object','properties':{'mode':{'type':'string'}},'required':['mode']}
+        with patch('requests.post',return_value=response) as post, \
+             patch.object(ai,'provider',return_value='edenai'), \
+             patch.object(ai.settings,'get',return_value='test-key'):
+            ai._call_openai_compatible('System',[],'google/gemma',50,schema,ai.EDEN_BASE,schema_hint=False)
+        body=post.call_args.kwargs['json']
+        self.assertNotIn('response_format',body)
+        self.assertIn('Reply with one JSON object only',body['messages'][0]['content'])
+        self.assertNotIn('JSON schema',body['messages'][0]['content'])
+
+    def test_plan_keeps_known_filters_wherever_a_model_puts_them(self):
+        plan=assistant._clean_plan({'mode':'answer','product':'glynac',
+                                    'filters':{'states':['TX'],'min_aum':None,'bogus':1},
+                                    'limit':500,'sort':'nonsense'})
+        self.assertEqual(plan['filters'],{'states':['TX'],'product':'glynac'})
+        self.assertEqual((plan['mode'],plan['limit'],plan['sort']),('answer',50,'score'))
+        self.assertEqual(assistant._clean_plan('not a dict')['mode'],'search')
+
+    def test_streamed_answer_arrives_in_pieces(self):
+        lines=['data: {"choices":[{"delta":{"content":"Hello "}}]}','',
+               'data: {"choices":[{"delta":{"content":"there"},"finish_reason":"stop"}]}',
+               'data: [DONE]']
+        response=Mock(status_code=200)
+        response.iter_lines.return_value=iter(lines)
+        usage={'in':None,'out':None}
+        with patch('requests.post',return_value=response), \
+             patch.object(ai.settings,'get',return_value='test-key'):
+            pieces=list(ai._stream_openai_compatible('System',[],'m',50,ai.EDEN_BASE,30,usage))
+        self.assertEqual(pieces,['Hello ','there'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

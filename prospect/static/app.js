@@ -248,26 +248,63 @@
       var welcome = panel.querySelector(".ai-welcome");
       if (welcome) welcome.hidden = true;
       add("me", esc(q));
-      var wait = add("bot", '<span class="muted">Looking through the data</span>');
+      var wait = add("bot", '<div class="ai-live"><p class="ai-step muted">Looking through the data</p>' +
+                            '<div class="ai-draft"></div><div class="ai-rows"></div></div>');
+      var step = wait.querySelector(".ai-step"), draft = wait.querySelector(".ai-draft"),
+          rows = wait.querySelector(".ai-rows");
       setOrb("searching");
       var controller = new AbortController();
-      var timeout = setTimeout(function () { controller.abort(); }, 90000);
+      // The clock restarts with every event, so a long answer that keeps
+      // arriving is never cut off; only silence is.
+      var timeout = 0;
+      function arm() { clearTimeout(timeout); timeout = setTimeout(function () { controller.abort(); }, 60000); }
+      arm();
+      var written = "", finished = null;
+      function onEvent(ev) {
+        arm();
+        if (ev.t === "status") { step.textContent = ev.text; }
+        else if (ev.t === "table") { rows.innerHTML = ev.html; scrollEnd(); }
+        else if (ev.t === "delta") {
+          if (!written) { setOrb("composing"); step.hidden = true; }
+          written += ev.text;
+          draft.textContent = written;
+          scrollEnd();
+        }
+        else if (ev.t === "done") { finished = ev; }
+        else if (ev.t === "error") { throw new Error(ev.error || "No answer was returned. Try again."); }
+      }
       fetch("/api/ai/ask", {
         method: "POST",
         signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson" },
         body: JSON.stringify({ q: q, scope: panel.dataset.scope || "global", history: history.slice(-6) })
       }).then(function (r) {
         if (r.status === 401 || (r.redirected && new URL(r.url).pathname === "/login"))
           throw new Error("Your session expired. Sign in again to continue.");
         if (!r.ok) throw new Error("The request failed. Try again.");
-        return r.json();
-      }).then(function (d) {
-        if (!d.ok) throw new Error(d.error || "No answer was returned. Try again.");
+        if (!r.body || !r.body.getReader || (r.headers.get("content-type") || "").indexOf("ndjson") < 0) {
+          return r.json().then(function (d) {
+            if (!d.ok) throw new Error(d.error || "No answer was returned. Try again.");
+            finished = d;
+          });
+        }
+        var reader = r.body.getReader(), dec = new TextDecoder(), buf = "";
+        function pump() {
+          return reader.read().then(function (res) {
+            buf += dec.decode(res.value || new Uint8Array(), { stream: !res.done });
+            var lines = buf.split("\n");
+            buf = res.done ? "" : lines.pop();
+            lines.forEach(function (line) { if (line.trim()) onEvent(JSON.parse(line)); });
+            if (!res.done) return pump();
+          });
+        }
+        return pump();
+      }).then(function () {
+        if (!finished) throw new Error("No answer was returned. Try again.");
         setOrb("composing");
-        wait.innerHTML = d.html || esc(d.error || "No answer");
+        wait.innerHTML = finished.html || esc(finished.error || "No answer");
         history.push({ role: "user", content: q });
-        history.push({ role: "assistant", content: d.text || "" });
+        history.push({ role: "assistant", content: finished.text || "" });
         setTimeout(function () { setOrb("breathing"); }, 900);
         scrollEnd();
       }).catch(function (error) {

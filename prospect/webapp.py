@@ -730,11 +730,9 @@ def nav(active: str) -> str:
     n = _nav_counts()
     acct = current_account()
 
-    def item(key, href, label, cnt=None, hot=False, icon=None, dot=None):
+    def item(key, href, label, cnt=None, hot=False, icon=None):
         ic = ICONS.get(icon or key, "")
-        if dot:
-            ic = f'<span class="dot" style="background:{dot}"></span>'
-        c = (f'<span class="cnt{" hot" if hot else ""}">{cnt:,}</span>' if cnt else "")
+        c =(f'<span class="cnt{" hot" if hot else ""}">{cnt:,}</span>' if cnt else "")
         return (f'<a class="i{" on" if key == active else ""}" href="{href}">'
                 f'{ic}{esc(label)}{c}</a>')
 
@@ -742,7 +740,7 @@ def nav(active: str) -> str:
     # where the work starts, so they must never be one click away or below the fold.
     plist = "".join(
         item(f"list:{k}", f"/lists/{k}", products.product(k)["name"], n["lists"].get(k),
-             dot=FAMILY_COLOUR.get(products.product(k)["family"], "#888"))
+             icon="lists")
         for k in products.product_keys())
     data = ""
     if users.can_manage_enrichment(acct):
@@ -781,7 +779,7 @@ def nav(active: str) -> str:
             + item("signals", "/signals", "Signals", n.get("signals"), hot=True)
             + item("saved", "/saved", "Saved lists")
             + data
-            + f'<div class="foot">{who}<div class="fresh"><i></i>SEC data of {feed}{quit_link}</div></div>'
+            + f'<div class="foot">{who}<div class="fresh">SEC data of {feed}{quit_link}</div></div>'
             + '</nav>')
 
 

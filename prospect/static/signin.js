@@ -1,8 +1,8 @@
-/* The sign-in backdrop: the United States drawn as a field of dots, with the
- * cities where advisory firms cluster pulsing softly and, now and then, a
- * faint signal travelling between two of them. It says what Bellwether
- * watches without a word, sits behind the card, and stays still for anyone
- * who prefers reduced motion. Drawn once to an offscreen canvas; each frame
+/* The sign-in backdrop: the United States drawn as a still field of grey
+ * dots, the cities where advisory firms cluster marked a little brighter, and
+ * now and then a faint line travelling between two of them. Nothing blinks.
+ * It says what Bellwether watches without a word, sits behind the card, and
+ * stays still for anyone who prefers reduced motion. Drawn once to an offscreen canvas; each frame
  * only adds the few moving pieces, and nothing runs while the tab is hidden.
  */
 (function () {
@@ -30,7 +30,7 @@
     [-122.0, 36.9], [-122.5, 37.8], [-123.8, 39.8], [-124.4, 40.4], [-124.2, 42.0], [-124.0, 44.6],
     [-123.9, 46.2], [-124.1, 47.0]
   ];
-  // Where advisory firms cluster; the larger the weight, the more often it pulses.
+  // Where advisory firms cluster; the larger the weight, the more often a line starts there.
   var HUBS = [
     [-74.0, 40.7, 5], [-71.1, 42.4, 3], [-87.6, 41.9, 4], [-122.4, 37.8, 3], [-118.2, 34.1, 3],
     [-96.8, 32.8, 3], [-95.4, 29.8, 2], [-84.4, 33.7, 2], [-80.2, 25.8, 2], [-104.9, 39.7, 2],
@@ -67,7 +67,7 @@
   }
 
   var ctx = canvas.getContext("2d"), base = document.createElement("canvas"), bctx = base.getContext("2d");
-  var W = 0, H = 0, dpr = 1, hubs = [], pulses = [], arcs = [], raf = 0, last = 0;
+  var W = 0, H = 0, dpr = 1, hubs = [], arcs = [], raf = 0, last = 0;
 
   function layout() {
     dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -115,16 +115,6 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(base, 0, 0);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    pulses = pulses.filter(function (p) { return t - p.t0 < 2600; });
-    pulses.forEach(function (p) {
-      if (t < p.t0) return;
-      var k = (t - p.t0) / 2600, r = 2 + k * 22;
-      ctx.strokeStyle = "rgba(240,107,114," + (0.55 * (1 - k)).toFixed(3) + ")";
-      ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.arc(p.h.x, p.h.y, r, 0, 6.2832); ctx.stroke();
-      ctx.fillStyle = "rgba(240,107,114," + (0.9 * (1 - k)).toFixed(3) + ")";
-      ctx.beginPath(); ctx.arc(p.h.x, p.h.y, 2.4, 0, 6.2832); ctx.fill();
-    });
     arcs = arcs.filter(function (a) { return t - a.t0 < 3200; });
     arcs.forEach(function (a) {
       var k = Math.min(1, (t - a.t0) / 1800), fade = t - a.t0 > 1800 ? 1 - (t - a.t0 - 1800) / 1400 : 1;
@@ -146,10 +136,9 @@
     raf = requestAnimationFrame(frame);
     if (t - last > 520 && hubs.length) {
       last = t;
-      if (Math.random() < 0.8) pulses.push({ h: pick(), t0: t });
-      if (Math.random() < 0.12 && arcs.length < 1) {
+      if (Math.random() < 0.3 && arcs.length < 2) {
         var a = pick(), b = pick();
-        if (a !== b && Math.abs(a.x - b.x) > 160) { arcs.push({ a: a, b: b, t0: t }); pulses.push({ h: b, t0: t + 1700 }); }
+        if (a !== b && Math.abs(a.x - b.x) > 160) arcs.push({ a: a, b: b, t0: t });
       }
     }
     paint(t);

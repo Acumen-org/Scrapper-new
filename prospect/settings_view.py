@@ -132,9 +132,11 @@ async def settings_save(request: Request):
 # ------------------------------------------------------------------ overview
 
 def _status_row(name: str, ok: bool | None, text: str, href: str) -> str:
-    dot = "var(--ok)" if ok else ("var(--amber)" if ok is None else "var(--red-hi)")
+    chip = ('<span class="chip good">Working</span>' if ok else
+            '<span class="chip warn">Needs a look</span>' if ok is None else
+            '<span class="chip bad">Not working</span>')
     return (f'<tr class="go" data-href="{href}"><td style="width:200px"><b>{esc(name)}</b></td>'
-            f'<td><span class="dotc" style="background:{dot}"></span>{text}</td>'
+            f'<td><div class="status-cell">{chip}<span>{text}</span></div></td>'
             f'<td class="num"><a href="{href}">Open</a></td></tr>')
 
 

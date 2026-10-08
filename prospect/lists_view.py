@@ -210,11 +210,9 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
         exp = (f'<a class="btn" href="/lists/{key}/export.csv?{qs}" data-noprefetch>Export list</a>'
                f'<a class="btn primary" href="/lists/{key}/export.xlsx?{qs}" data-noprefetch>Export contacts</a>')
     scoring_tab = "Scoring" + (" and weights" if can_edit(key) else "")
-    from .webapp import FAMILY_COLOUR
-    dot = FAMILY_COLOUR.get(p["family"], "#888")
     body = f"""<div class="pg wide">
 <div class="crumb"><a href="/">Home</a><span class="sep">/</span>Product lists</div>
-<div class="head"><div><h1><span class="dotc" style="background:{dot};width:12px;height:12px;border-radius:4px"></span>{esc(p["name"])}</h1>
+<div class="head"><div><h1>{esc(p["name"])}</h1>
 <div class="lede">{esc(p["audience"])}</div></div>
 <div class="acts">{exp}</div></div>
 {kpis}
@@ -270,7 +268,7 @@ def _reach_cell(f: dict) -> str:
         bits.append('<span class="pill" title="The main line the firm filed">Main line</span>')
     if not f["verified"] and not f["personal"]:
         bits.append('<span class="hunt" title="Website, web search, verified patterns and AI research '
-                    'are working on this firm"><i></i>Hunting</span>')
+                    'are working on this firm">Hunting</span>')
     return f'<div class="pills">{"".join(bits)}</div>'
 
 

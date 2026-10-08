@@ -272,23 +272,28 @@ def _contact_line(cp, show_verify=True) -> str:
 PEOPLE_CARDS_MAX = 60
 
 
-def _icp_tags(hits: list[dict]) -> tuple[str, str]:
-    """The ICP label for a card and the product colour it is tinted with.
-    Products sharing a role are named together: "AcuBooth and PHH Fund I ICP"."""
+def _icp_tags(hits: list[dict]) -> tuple[str, str, bool]:
+    """The ICP line over a person's name, the product colour it is set in, and
+    whether the person is a primary buyer. Products sharing a role are named
+    together ("AcuBooth and PHH Fund I ICP"); the role itself is in the tooltip,
+    since the title under the name already says it."""
     if not hits:
-        return "", ""
+        return "", "", False
     from .webapp import FAMILY_COLOUR
     by_label: dict[str, list[str]] = {}
     for h in hits:
         by_label.setdefault(h["label"], []).append(h["product"])
     first = products.product(hits[0]["product"])
     colour = FAMILY_COLOUR.get(first["family"], "#888")
-    tags = []
+    parts, roles_said = [], []
     for label, keys in list(by_label.items())[:2]:
         names = [products.product(k)["name"] for k in keys]
         who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-        tags.append(f'<div class="icp-tag"><i></i><b>{esc(who)} ICP</b><span>{esc(label)}</span></div>')
-    return "".join(tags), colour
+        parts.append(f"{who} ICP")
+        roles_said.append(f"{who}: {label}")
+    tip = "Ideal customer profile. " + "; ".join(roles_said)
+    return (f'<div class="icp-tag" title="{esc(tip)}">{esc(" · ".join(parts))}</div>',
+            colour, bool(hits[0]["primary"]))
 
 
 def _person_card(person: dict, key: str, points: list, hunt: dict | None = None,
@@ -326,16 +331,18 @@ def _person_card(person: dict, key: str, points: list, hunt: dict | None = None,
     iapd = (f'<a class="more" href="{esc(person["iapd_link"])}" target="_blank" rel="noopener" '
             f'data-noprefetch>SEC record</a>' if person.get("iapd_link") else "")
     anchor = "p-" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
-    tags, colour = _icp_tags(icp_hits or [])
-    cls, style = ("pcard icp", f' style="--c:{colour}"') if tags else ("pcard", "")
-    return (f'<article class="{cls}" id="{anchor}"{style}>{tags}<div class="top">{ui.mono(name, "p")}<div>'
-            f'<span class="nm">{esc(name)}</span><div class="ttl">{esc(title)}'
+    tag, colour, primary = _icp_tags(icp_hits or [])
+    cls, style = "pcard", ""
+    if tag:
+        cls, style = f'pcard icp{" primary" if primary else ""}', f' style="--c:{colour}"'
+    return (f'<article class="{cls}" id="{anchor}"{style}><div class="top">{ui.mono(name, "p")}<div>'
+            f'{tag}<span class="nm">{esc(name)}</span><div class="ttl">{esc(title)}'
             f'</div><div class="meta">{" · ".join(meta)}</div></div>{iapd}</div>'
             f'{("<div class=pills>" + "".join(chips) + "</div>") if chips else ""}'
             f'<div class="reach">{lines}</div></article>')
 
 
-# Hunt states that are settled for now: shown without the pulsing dot.
+# Hunt states that are settled for now: shown in a quieter colour.
 HUNT_SETTLED = {"exhausted", "accept_all_domain", "no_mail_server", "no_domain", "free_mail",
                 "blocked", "unnamed", "unverifiable"}
 
@@ -344,7 +351,7 @@ def _hunt_line(hunt: dict | None) -> str:
     """Where the email hunt stands for one person, in words."""
     if not hunt:
         return ('<div class="hunt" title="Website, web search, every common pattern checked '
-                'with the mail server, and AI research"><i></i>Finding a verified email</div>')
+                'with the mail server, and AI research">Finding a verified email</div>')
     tried = hunt.get("tried") or 0
     extra = f" &middot; {tried} address{'es' if tried != 1 else ''} checked" if tried else ""
     when = ""
@@ -352,7 +359,7 @@ def _hunt_line(hunt: dict | None) -> str:
         when = f" &middot; trying again {esc(ui.ago(hunt['next_try_at']))}"
     settled = hunt["state"] in HUNT_SETTLED
     return (f'<div class="hunt{" done" if settled else ""}" title="{esc(hunt.get("detail") or hunt["label"])}">'
-            f'<i></i>{esc(hunt["label"])}{extra}{when}</div>')
+            f'{esc(hunt["label"])}{extra}{when}</div>')
 
 
 def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: list,
@@ -815,7 +822,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     if ftype and ftype.get("category"):
         core = bool(ftype.get("core"))
         ev = "; ".join(str(e) for e in (ftype.get("evidence") or [])[:3])
-        tags.append(f'<span class="ftype {"core" if core else "out" if ftype["category"] in OUT_TYPES else ""}" title="{esc(ev)}"><i></i>'
+        tags.append(f'<span class="ftype {"core" if core else "out" if ftype["category"] in OUT_TYPES else ""}" title="{esc(ev)}">'
                     f'{esc(ftype.get("label") or ftype["category"])}</span>')
     if f["is_era"]:
         tags.append('<span class="chip warn">Exempt reporting adviser</span>')

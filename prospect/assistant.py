@@ -13,12 +13,24 @@ Two scopes:
               never from the model, so a firm on screen is a firm that matched.
 
 Without an AI provider the same box still works as a firm finder.
+
+Speed. A question costs at most two model calls, and the screen does not wait
+for either to finish: the plan is a few dozen tokens (only the filters the
+question sets, not every field), the firms that matched are shown the moment
+the search returns, and the written answer streams in as it is produced
+(ask_stream). Plans, answers and firm replies are remembered for a while, so
+asking the same thing again, or clicking a starting card someone else already
+clicked, comes back at once.
 """
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
+import re
+import threading
+import time
 
 from . import ai, dossier, products, search
 from .names import nice_name
@@ -58,23 +70,140 @@ def system_prompt() -> str:
     return (f"{SYSTEM}\n\nINDUSTRY KNOWLEDGE (background kept by Acumen's admins; facts about "
             f"a particular firm come only from the data you are given)\n{kb}")
 
-PLAN_SCHEMA_KEYS = ("mode", "firm_name", "filters", "sort", "limit", "title")
+PLAN_SYSTEM = (
+    "You turn questions about US registered investment advisers into a search in "
+    "Bellwether, Acumen Strategy's sales intelligence platform. Reply with one JSON "
+    "object and nothing else.")
+MODES = ("search", "answer", "firm")
 
 
 def _plan_schema() -> dict:
+    """The planner's JSON. Only mode is required: a plan names just the filters
+    the question sets, which keeps the answer to a few dozen tokens instead of
+    every field spelled out as null."""
+    filters = dict(search.filter_schema(), required=[])
     return {
         "type": "object",
         "properties": {
-            "mode": {"type": "string", "enum": ["search", "answer", "firm"]},
+            "mode": {"type": "string", "enum": list(MODES)},
             "firm_name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "filters": search.filter_schema(),
+            "filters": filters,
             "sort": {"type": "string", "enum": list(search.SORTS)},
             "limit": {"type": "integer"},
             "title": {"type": "string"},
         },
-        "required": list(PLAN_SCHEMA_KEYS),
+        "required": ["mode"],
         "additionalProperties": False,
     }
+
+
+def _fields_doc() -> str:
+    """Every filter the search takes, one short line, for the planning prompt."""
+    out = []
+    for k, v in search.filter_schema()["properties"].items():
+        t = next((x for x in v.get("anyOf", [v]) if x.get("type") != "null"), v)
+        if t.get("enum"):
+            kind = "one of " + "|".join(str(e) for e in t["enum"])
+        elif t.get("type") == "array":
+            kind = f"list of {t.get('items', {}).get('type', 'string')}s"
+        else:
+            kind = t.get("type", "string")
+        out.append(f"{k} ({kind})")
+    return "; ".join(out)
+
+
+class _Recent:
+    """A small time-limited memory, shared by every request in this process."""
+
+    def __init__(self, seconds: int, size: int = 400):
+        self.seconds, self.size, self.d, self.lock = seconds, size, {}, threading.Lock()
+
+    def get(self, key):
+        with self.lock:
+            hit = self.d.get(key)
+            if hit and time.monotonic() - hit[0] < self.seconds:
+                return hit[1]
+            self.d.pop(key, None)
+            return None
+
+    def put(self, key, value) -> None:
+        with self.lock:
+            if len(self.d) >= self.size:
+                for k in sorted(self.d, key=lambda k: self.d[k][0])[: self.size // 4]:
+                    self.d.pop(k, None)
+            self.d[key] = (time.monotonic(), value)
+
+
+# A plan depends only on the words asked, so it keeps for hours; the search
+# itself always runs fresh. Answers depend on the data they were given and are
+# keyed on a digest of it.
+_PLANS = _Recent(6 * 3600)
+_ANSWERS = _Recent(30 * 60)
+
+
+def _norm(q: str) -> str:
+    return re.sub(r"\s+", " ", (q or "").strip().lower())
+
+
+def _digest(*parts) -> str:
+    return hashlib.sha1("\x1f".join(str(x) for x in parts).encode("utf-8")).hexdigest()
+
+
+def _model_key() -> str:
+    return f"{ai.provider()}:{ai.model('smart')}"
+
+
+def _history(history: list, limit: int) -> list[dict]:
+    return [{"role": h["role"], "content": str(h["content"])[:limit]}
+            for h in (history or [])[-6:]
+            if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")]
+
+
+def _plan(q: str, history: list, who: str) -> dict:
+    """The search a question asks for: mode, filters, sort, limit, title."""
+    key = (_norm(q), _model_key()) if not history else None
+    if key and (hit := _PLANS.get(key)) is not None:
+        return dict(hit)
+    msgs = _history(history, 2000)
+    msgs.append({"role": "user", "content": (
+        f"{_vocab()}\n\nFILTERS: {_fields_doc()}.\nSORTS: {'|'.join(search.SORTS)}.\n\n"
+        "Turn the QUESTION into a Bellwether search. Reply with one JSON object with these "
+        "keys: mode, firm_name, filters, sort, limit, title. mode is 'firm' when the "
+        "question is about one named firm (put its name in firm_name), 'answer' when it "
+        "needs a written conclusion drawn from matching firms (comparisons, counts, why, "
+        "which is best), and 'search' when a list of firms answers it. In filters put only "
+        "the filters the question implies and leave every other one out. limit is 1 to 50. "
+        "title is a few words describing the result. Example: "
+        '{"mode":"search","firm_name":null,"filters":{"product":"glynac","states":["TX"]},'
+        '"sort":"score","limit":15,"title":"Glynac firms in Texas"}\n\n'
+        f"QUESTION: {q}")})
+    long_think = ai.provider() == "anthropic"     # Claude may think before it answers
+    raw = ai.complete(PLAN_SYSTEM, msgs, feature="ask", tier="smart", schema=_plan_schema(),
+                      max_tokens=1500 if long_think else 500, who=who, timeout=45,
+                      schema_hint=False, effort="low")
+    plan = _clean_plan(raw)
+    if key:
+        _PLANS.put(key, plan)
+    return dict(plan)
+
+
+def _clean_plan(raw) -> dict:
+    """A plan with only known filters and sane values. A weaker model that
+    puts filters at the top level, or says null for everything, still works."""
+    raw = raw if isinstance(raw, dict) else {}
+    props = search.filter_schema()["properties"]
+    filters = raw.get("filters") if isinstance(raw.get("filters"), dict) else {}
+    filters = dict(filters, **{k: v for k, v in raw.items() if k in props and k not in filters})
+    filters = {k: v for k, v in filters.items() if k in props and v not in (None, "", [], {})}
+    try:
+        limit = max(1, min(int(raw.get("limit") or 15), 50))
+    except (TypeError, ValueError):
+        limit = 15
+    return {"mode": raw.get("mode") if raw.get("mode") in MODES else "search",
+            "firm_name": raw.get("firm_name") if isinstance(raw.get("firm_name"), str) else "",
+            "filters": filters,
+            "sort": raw.get("sort") if raw.get("sort") in search.SORTS else "score",
+            "limit": limit, "title": str(raw.get("title") or "")}
 
 
 def _vocab() -> str:
@@ -162,25 +291,69 @@ def _find_firm(c, name: str) -> dict | None:
     return dict(r) if r else None
 
 
-def ask_firm(c, crd: str, q: str, history: list[dict], who: str) -> dict:
+def _write(msgs: list[dict], *, live: bool, who: str, max_tokens: int):
+    """The model's written answer: piece by piece when live, else in one call."""
+    if live:
+        yield from ai.stream(system_prompt(), msgs, feature="ask", max_tokens=max_tokens,
+                             who=who, timeout=90)
+    else:
+        yield ai.complete(system_prompt(), msgs, feature="ask", tier="smart",
+                          max_tokens=max_tokens, who=who)
+
+
+def _firm_events(c, crd: str, q: str, history: list, who: str, live: bool, lead: str = ""):
     text = dossier.build(c, crd)
     if not text:
-        return {"html": "<p>That firm is not in Bellwether.</p>", "text": ""}
-    msgs = [{"role": h["role"], "content": str(h["content"])[:4000]}
-            for h in history[-6:] if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")]
+        yield {"t": "done", "html": "<p>That firm is not in Bellwether.</p>", "text": ""}
+        return
+    key = (crd, _norm(q), _digest(text), _model_key()) if not history else None
+    if key and (hit := _ANSWERS.get(key)) is not None:
+        yield {"t": "done", "html": lead + ai.md_to_html(hit), "text": hit}
+        return
+    msgs = _history(history, 4000)
     msgs.append({"role": "user", "content": f"DATA ON THIS FIRM\n{text}\n\nQUESTION\n{q}"})
-    out = ai.complete(system_prompt(), msgs, feature="ask", tier="smart", max_tokens=2500,
-                      who=who)
-    return {"html": ai.md_to_html(out), "text": out}
+    yield {"t": "status", "text": "Writing the answer"}
+    parts = []
+    for piece in _write(msgs, live=live, who=who, max_tokens=2500):
+        parts.append(piece)
+        yield {"t": "delta", "text": piece}
+    out = ai.strip_thinking("".join(parts)).strip()
+    if key:
+        _ANSWERS.put(key, out)
+    yield {"t": "done", "html": lead + ai.md_to_html(out), "text": out}
+
+
+def ask_firm(c, crd: str, q: str, history: list[dict], who: str) -> dict:
+    return _final(_firm_events(c, crd, q, history, who, live=False))
+
+
+def _final(events) -> dict:
+    out = {"html": "", "text": ""}
+    for ev in events:
+        if ev["t"] == "done":
+            out = {"html": ev["html"], "text": ev.get("text", "")}
+    return out
 
 
 def ask(c, q: str, scope: str = "global", history: list[dict] | None = None,
         who: str = "", me: str = "") -> dict:
     """Answer one question. Returns {'html': ..., 'text': ...}."""
+    return _final(ask_stream(c, q, scope, history, who, me, live=False))
+
+
+def ask_stream(c, q: str, scope: str = "global", history: list[dict] | None = None,
+               who: str = "", me: str = "", live: bool = True):
+    """Answer one question as a series of events for the chat panel:
+      {"t": "status", "text"}    what Bellwether is doing now
+      {"t": "table", "html"}     the firms that matched, before any writing
+      {"t": "delta", "text"}     the next piece of the written answer
+      {"t": "done", "html", "text"}  the finished answer
+    An AIError is raised for a failure the person should read."""
     history = history or []
     q = (q or "").strip()[:1500]
     if not q:
-        return {"html": "<p>Ask anything about the firms in Bellwether.</p>", "text": ""}
+        yield {"t": "done", "html": "<p>Ask anything about the firms in Bellwether.</p>", "text": ""}
+        return
     if scope.startswith("firm:"):
         crd = scope[5:]
         if not ai.enabled("ask"):
@@ -189,53 +362,64 @@ def ask(c, q: str, scope: str = "global", history: list[dict] | None = None,
             if ai.budget_left() <= 0:
                 raise ai.AIError("Today's AI allowance is used up. It resets at midnight UTC.")
             raise ai.AIError("Firm chat is disabled. Ask an admin to enable AI questions in Settings.")
-        return ask_firm(c, crd, q, history, who)
+        yield {"t": "status", "text": "Reading the firm's record"}
+        yield from _firm_events(c, crd, q, history, who, live)
+        return
     if not ai.enabled("ask"):
-        return _offline(c, q)
+        yield dict(_offline(c, q), t="done")
+        return
 
-    msgs = [{"role": h["role"], "content": str(h["content"])[:2000]}
-            for h in history[-6:] if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")]
-    msgs.append({"role": "user", "content": (
-        f"{_vocab()}\n\nTurn this question into a Bellwether search. mode 'firm' when it is "
-        f"about one named firm (put its name in firm_name); 'answer' when it needs a "
-        f"written conclusion drawn from matching firms (comparisons, counts, why, which is "
-        f"best); 'search' when a list of firms answers it. Set every filter the question "
-        f"implies and null the rest. title is a short description of the result.\n\n"
-        f"QUESTION: {q}")})
-    plan = ai.complete(system_prompt(), msgs, feature="ask", tier="smart", schema=_plan_schema(),
-                       max_tokens=1500, who=who)
-    mode = plan.get("mode") or "search"
+    yield {"t": "status", "text": "Reading your question"}
+    plan = _plan(q, history, who)
+    mode = plan["mode"]
     if mode == "firm":
-        f = _find_firm(c, plan.get("firm_name") or "")
+        f = _find_firm(c, plan["firm_name"])
         if f:
-            res = ask_firm(c, f["crd"], q, history, who)
-            res["html"] = (f"<p class='meta'>About <a href='/firm/{_esc(f['crd'])}'>"
-                           f"{_esc(nice_name(f['legal_name']))}</a></p>" + res["html"])
-            return res
+            name = nice_name(f["legal_name"])
+            yield {"t": "status", "text": f"Reading {name}'s record"}
+            lead = (f"<p class='meta'>About <a href='/firm/{_esc(f['crd'])}'>"
+                    f"{_esc(name)}</a></p>")
+            yield from _firm_events(c, f["crd"], q, history, who, live, lead)
+            return
         mode = "search"
-    spec = plan.get("filters") or {}
-    rows, total, said = search.run(c, spec, plan.get("sort") or "score",
-                                   min(int(plan.get("limit") or 15), 50), me=me)
+    yield {"t": "status", "text": "Searching the firms"}
+    spec = plan["filters"]
+    rows, total, said = search.run(c, spec, plan["sort"], plan["limit"], me=me)
     product = spec.get("product")
     desc = ", ".join(said) if said else "all firms"
     head = (f"<p><b>{total:,}</b> firm{'s' if total != 1 else ''} {_esc(desc)}"
             f"{'. The top ' + str(len(rows)) + ' are below.' if total > len(rows) else '.'}</p>")
-    if mode == "answer" and rows:
-        msgs2 = [{"role": "user", "content": (
-            f"QUESTION: {q}\n\nBellwether searched for firms {desc} and found {total} in "
-            f"total. The top {len(rows)}, one JSON object per line:\n{_rows_brief(rows)}\n\n"
-            f"Answer the question from these rows.")}]
-        _attach_types(c, rows)
-        out = ai.complete(system_prompt(), msgs2, feature="ask", tier="smart", max_tokens=2000,
-                          who=who)
-        return {"html": ai.md_to_html(out) + head + _table(rows, product),
-                "text": out}
     if not rows:
-        return {"html": f"<p>No firm matches: {_esc(desc)}. Try loosening a condition.</p>",
-                "text": f"No firm matches {desc}."}
-    return {"html": head + _table(rows, product),
-            "text": f"{total} firms {desc}; top: " + ", ".join(
-                nice_name(r["legal_name"]) for r in rows[:5])}
+        yield {"t": "done", "html": f"<p>No firm matches: {_esc(desc)}. Try loosening a condition.</p>",
+               "text": f"No firm matches {desc}."}
+        return
+    table = head + _table(rows, product)
+    if mode != "answer":
+        yield {"t": "done", "html": table,
+               "text": f"{total} firms {desc}; top: " + ", ".join(
+                   nice_name(r["legal_name"]) for r in rows[:5])}
+        return
+    # The rows are on screen while the model reads them and writes.
+    yield {"t": "table", "html": table}
+    _attach_types(c, rows)
+    brief_rows = _rows_brief(rows)
+    key = (_norm(q), _digest(total, brief_rows), _model_key()) if not history else None
+    if key and (hit := _ANSWERS.get(key)) is not None:
+        yield {"t": "done", "html": ai.md_to_html(hit) + table, "text": hit}
+        return
+    yield {"t": "status", "text": "Writing the answer"}
+    msgs = [{"role": "user", "content": (
+        f"QUESTION: {q}\n\nBellwether searched for firms {desc} and found {total} in "
+        f"total. The top {len(rows)}, one JSON object per line:\n{brief_rows}\n\n"
+        f"Answer the question from these rows.")}]
+    parts = []
+    for piece in _write(msgs, live=live, who=who, max_tokens=2000):
+        parts.append(piece)
+        yield {"t": "delta", "text": piece}
+    out = ai.strip_thinking("".join(parts)).strip()
+    if key:
+        _ANSWERS.put(key, out)
+    yield {"t": "done", "html": ai.md_to_html(out) + table, "text": out}
 
 
 def _offline(c, q: str) -> dict:

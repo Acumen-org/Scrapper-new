@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from . import people_index, products, roles, ui
 from .names import first_name
-from .webapp import FAMILY_COLOUR, conn, esc, escn, money, nice_name, page, qs_join
+from .webapp import conn, esc, escn, money, nice_name, page, qs_join
 
 router = APIRouter()
 
@@ -129,20 +129,18 @@ def _person_row(r) -> str:
                              linkedin=r["linkedin"], email_ok=r["email_status"] == "valid")
     if not r["email"]:
         reach = (reach or "") + '<div class="hunt" title="Bellwether keeps looking: website, search, ' \
-                                'patterns checked against the mail server, and AI research"><i></i>Finding email</div>'
+                                'patterns checked against the mail server, and AI research">Finding email</div>'
     lists = ""
     if r["products"]:
-        dots = []
+        names = []
         for k in (r["products"] or "").split(","):
             if not k:
                 continue
             try:
-                p = products.product(k)
+                names.append(products.product(k)["name"])
             except KeyError:
                 continue
-            dots.append(f'<span class="dotc" style="background:{FAMILY_COLOUR.get(p["family"], "#888")}"'
-                        f' title="{esc(p["name"])}"></span>')
-        lists = "".join(dots)
+        lists = f'&middot; {esc(", ".join(names))}' if names else ""
     since = (r["start_date"] or "")[:7]
     return (f'<tr class="go" data-href="/firm/{esc(r["crd"])}#people">'
             f'<td><div class="ent">{ui.mono(r["name"], "p")}<div><div class="t">{esc(r["name"])}</div>'
