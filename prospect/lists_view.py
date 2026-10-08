@@ -828,13 +828,15 @@ def export_contacts(key: str, q: str = "", st: str = "", owner: str = "", stat: 
         " AND status='scored'", (key,))}
     rows = contacts_rows(c, crds)
     c.close()
-    headers = ["Rank", "Score", "Coverage %", "Firm", "CRD", "State", "Person", "Title",
+    from .names import first_name
+    headers = ["Rank", "Score", "Coverage %", "Firm", "CRD", "State", "Person", "first_name", "Title",
                "Email", "Email status", "Source", "Confidence", "Phone"]
     out = []
     for r in rows:
         rk, sc, cv = ranks.get(r["crd"], (None, None, None))
         out.append([rk or "", sc if sc is not None else "", cv if cv is not None else "",
                     r["firm"], r["crd"], r["state"] or "", r["person"] or "",
+                    first_name(r["person"]) if r["person"] != "Shared inbox" else "",
                     r["title"] or "", r["email"] or "", r["status"] or "", r["source"] or "",
                     r["confidence"] or "", r["phone"] or ""])
     out.sort(key=lambda x: (x[0] == "", x[0] if x[0] != "" else 0))

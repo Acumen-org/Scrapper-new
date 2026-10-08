@@ -99,8 +99,14 @@ def build(c, crd: str, max_people: int = 40) -> str:
         if plats:
             L.append("Reporting platform: " + "; ".join(f"{k} ({v})" for k, v in plats.items()))
         cust = feats.get("cust") or {}
+        refreshed = feats.get('cust_refresh') or {}
+        if refreshed.get('custodians'):
+            L.append(f"Custodian names extracted from current ADV: {refreshed['custodians']}; "
+                     f"last read successfully {refreshed.get('last_success_at') or 'unknown'}; "
+                     f"latest refresh status {refreshed.get('status')}. "
+                     "Names alone do not establish asset shares or a primary custodian.")
         if cust:
-            L.append(f"Primary custodian: {cust.get('primary_canonical')}; Schwab share of "
+            L.append(f"Archived primary custodian: {cust.get('primary_canonical')}; Schwab share of "
                      f"reported custody {cust.get('schwab_share_reported')}; as of "
                      f"{cust.get('as_of_filing_date')}")
         if feats.get("funds"):

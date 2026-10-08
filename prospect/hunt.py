@@ -110,7 +110,7 @@ STATE_LABEL = {
     "blocked": "The firm's mail server refuses verification checks",
     "unnamed": "The name on file is too short to build an address",
 }
-FINAL = ("valid", "invalid", "unknown", "catch_all")   # attempt verdicts never re-asked
+FINAL = ("valid", "invalid", "unknown", "catch_all")   # settled until their reuse window expires
 
 EXHAUSTED_DAYS = 60
 ACCEPT_ALL_DAYS = verify.CATCH_ALL_DAYS
@@ -805,7 +805,7 @@ def build_task(conn, crd: str, *, firm_pat: dict, order: list, engine: str, auto
     everyone = firm_people(conn, crd, only_seeded=only_seeded)
     usable = {r["person_key"] for r in conn.execute(
         "SELECT DISTINCT person_key FROM usable_contact_point WHERE crd=? AND kind='email'"
-        " AND person_key != ''", (crd,)).fetchall()}
+        " AND person_key != '' AND is_role=0 AND verify_status='valid'", (crd,)).fetchall()}
     states = {r["person_key"]: dict(r) for r in conn.execute(
         "SELECT person_key, state, next_try_at FROM email_hunt WHERE crd=?", (crd,)).fetchall()}
 
@@ -999,30 +999,24 @@ def apply_outcome(conn, task: Task, out: Outcome, stats: Counter) -> None:
 
 
 def due_firms(conn, limit: int, crd: str | None = None) -> list[tuple[str, bool]]:
-    """(crd, only_seeded) in the order to hunt: in-scope firms by priority, then
-    firms outside the scope that still hold unchecked guesses from the old job
-    (only those people are hunted there)."""
+    """All firms are eligible, with requested refreshes and unvisited firms first.
+
+    Product priority orders the first pass; a large high-priority firm cannot
+    monopolise every slice while unvisited firms wait indefinitely.
+    """
     if crd:
         return [(crd, False)]
     now = _now()
     out = [(r["crd"], False) for r in conn.execute(
-        "SELECT s.crd FROM firm_scope s"
-        " LEFT JOIN email_hunt_firm h ON h.crd = s.crd"
-        " LEFT JOIN firm_refresh_request r ON r.crd = s.crd"
+        "SELECT f.crd FROM firm_current f"
+        " LEFT JOIN firm_scope s ON s.crd=f.crd"
+        " LEFT JOIN email_hunt_firm h ON h.crd = f.crd"
+        " LEFT JOIN firm_refresh_request r ON r.crd = f.crd"
         " WHERE h.crd IS NULL OR h.next_try_at IS NULL OR h.next_try_at <= ?"
         "    OR r.requested_at > h.checked_at"
-        " ORDER BY s.priority DESC NULLS LAST, s.crd LIMIT ?", (now, limit)).fetchall()]
-    if len(out) < limit:
-        try:
-            out += [(r["crd"], True) for r in conn.execute(
-                "SELECT DISTINCT cp.crd FROM contact_point cp"
-                " LEFT JOIN email_hunt_firm h ON h.crd = cp.crd"
-                " WHERE cp.kind='email' AND cp.source='pattern' AND cp.verify_status != 'valid'"
-                " AND (h.crd IS NULL OR h.next_try_at IS NULL OR h.next_try_at <= ?)"
-                " AND NOT EXISTS (SELECT 1 FROM firm_scope s WHERE s.crd = cp.crd)"
-                " LIMIT ?", (now, limit - len(out))).fetchall()]
-        except Exception:
-            conn.rollback()
+        " ORDER BY (r.requested_at > COALESCE(h.checked_at,'')) DESC NULLS LAST,"
+        " (h.crd IS NOT NULL), h.checked_at NULLS FIRST, s.priority DESC NULLS LAST, f.crd LIMIT ?",
+        (now, limit)).fetchall()]
     return out
 
 

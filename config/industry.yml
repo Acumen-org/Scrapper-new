@@ -471,10 +471,10 @@ glossary:
     body: Microsoft's email (Exchange Online), Teams and SharePoint suite. Glynac connects to it, and to Dynamics-based CRMs. Bellwether reads it from the firm's public mail records.
   - key: salesforce
     title: Salesforce
-    body: CRM platform. RIA CRMs built on it (Practifi, XLR8, Salentica) count as Salesforce for Glynac.
+    body: CRM platform. Practifi, XLR8 and Salentica are built on Salesforce. Salesforce is not a supported Glynac integration.
   - key: redtail
     title: Redtail
-    body: The most common CRM at small and mid-sized RIAs (Orion owns it). Glynac integrates with it.
+    body: CRM used by advisory firms. Redtail is not a supported Glynac integration.
   - key: black_diamond
     title: Black Diamond
     body: SS&C's portfolio reporting platform for RIAs. Glynac integrates with it. Orion, Tamarac, Addepar and Advyzon are competing platforms.
@@ -492,7 +492,7 @@ products:
     body: A covered call overlay on concentrated equity positions, for advisers with HNW books custodied at Schwab, $100M+ in assets and no private funds. Each position needs at least 100 shares.
   - key: glynac
     title: Glynac
-    body: Continuous cross-system compliance, portfolio and vendor intelligence for independent RIAs (SEC-registered, $100M+, not owned by a bank, insurer or wirehouse). Works with Microsoft 365 (mail, Teams, Dynamics CRMs), Salesforce (including Practifi and XLR8), Redtail and Black Diamond. Competes with Hadrius and COMPLY.
+    body: Continuous cross-system compliance, portfolio and vendor intelligence for independent RIAs (SEC-registered, $100M+, not owned by a bank, insurer or wirehouse). Supports Microsoft and Black Diamond only. Salesforce and Redtail are not supported. Competes with Hadrius and COMPLY.
 
 # ------------------------------------------------- how Bellwether works
 facts:

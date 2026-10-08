@@ -116,30 +116,28 @@ JOBS: list[Job] = [
         backlog_sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM office_phone_state WHERE k='attach' AND stamp = (SELECT '1/' || (SELECT COALESCE(MAX(id), 0) FROM snapshot WHERE source_key IN ('adv_feed','adv_state_feed','ia_indvl_feed'))::text || '/' || (SELECT COUNT(*) FROM firm_office)::text || '/' || (SELECT COUNT(*) FROM firm_social)::text)) THEN 0 ELSE 1 END n",
         group="contacts"),
     Job("contact_search", "Web search",
-        "Looks up each person's public LinkedIn profile through free search engines, never "
-        "by signing in to LinkedIn, and keeps one only when the result names both the "
-        "person and the firm. Also finds addresses the firm's people published on the open "
-        "web, for verification. Best firms and their officers first; nobody is searched "
-        "twice in 60 days; the engines are asked at most once every 3 seconds.",
+        "Finds published personal emails, phones and LinkedIn profiles. Keeps searching "
+        "while any channel is missing, including people with a LinkedIn profile already. "
+        "Repeat interval is set in Crawling. Search engines are rate limited and source pages checked.",
         "scripts.search_contacts", ("--limit", "40", "--seconds", "420"), every_hours=0.5,
-        timeout_s=600,
-        backlog_sql="SELECT COUNT(*) n FROM person_employment e JOIN firm_scope s ON s.crd=e.org_pk WHERE e.kind='current' AND NOT EXISTS (SELECT 1 FROM contact_search_state x WHERE x.crd=e.org_pk AND x.person_key='i:'||e.indvl_pk) AND NOT EXISTS (SELECT 1 FROM contact_point c WHERE c.crd=e.org_pk AND c.person_key='i:'||e.indvl_pk AND c.kind='linkedin' AND c.verify_status='matched')",
-        done_sql="SELECT COUNT(*) n FROM contact_search_state x JOIN firm_scope s ON s.crd=x.crd WHERE x.person_key LIKE 'i:%'",
-        total_sql="SELECT COUNT(*) n FROM person_employment e JOIN firm_scope s ON s.crd=e.org_pk WHERE e.kind='current'",
+        timeout_s=900,
+        backlog_sql=None,
+        done_sql="SELECT COUNT(*) n FROM contact_search_state x JOIN person_employment e ON e.org_pk=x.crd AND x.person_key='i:'||e.indvl_pk WHERE e.kind='current'",
+        total_sql="SELECT COUNT(*) n FROM person_employment WHERE kind='current'",
         group="contacts"),
     # The email hunt replaced "infer_emails", which wrote unconfirmed guesses
     # into contact_point. Its firm-page button now queues a firm here instead.
     Job("email_hunt", "Email hunt",
-        "Finds a confirmed email for everyone at the best firms. Asks each firm's mail "
+        "Looks for confirmed personal emails across all firms, prioritising product fit. Asks each firm's mail "
         "server about a person's likely addresses one after another, without sending "
         "anything, and keeps only an address the server confirms. A bounced guess moves on "
         "to the next pattern, a 'try later' is retried, and when every pattern bounces the "
         "person is looked at again after 60 days.",
         "scripts.hunt_emails", ("--limit", "300", "--seconds", "540"), every_hours=0.25,
         timeout_s=900,
-        backlog_sql="SELECT COUNT(*) n FROM firm_scope s LEFT JOIN email_hunt_firm h ON h.crd=s.crd LEFT JOIN firm_refresh_request r ON r.crd=s.crd WHERE h.crd IS NULL OR h.next_try_at IS NULL OR h.next_try_at <= '{now}' OR r.requested_at > h.checked_at",
-        done_sql="SELECT COUNT(*) n FROM email_hunt_firm h JOIN firm_scope s ON s.crd=h.crd",
-        total_sql="SELECT COUNT(*) n FROM firm_scope", group="contacts"),
+        backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN email_hunt_firm h ON h.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE h.crd IS NULL OR h.next_try_at IS NULL OR h.next_try_at <= '{now}' OR r.requested_at > h.checked_at",
+        done_sql="SELECT COUNT(*) n FROM email_hunt_firm h JOIN firm_current f ON f.crd=h.crd",
+        total_sql="SELECT COUNT(*) n FROM firm_current", group="contacts"),
     Job("email_verify", "Email verification",
         "Checks every published address with the mail server that would receive it, "
         "without sending anything, and re-checks after 90 days. Personal addresses first. "
@@ -157,9 +155,9 @@ JOBS: list[Job] = [
     Job("firm_refresh", "Custodian refresh",
         "Reads today's custodian names from the current ADV for firms that report "
         "custody, since the bulk custodian archive ends December 2024.",
-        "scripts.autopilot_slice", ("firm_refresh",), every_hours=168,
-        backlog_sql="SELECT COUNT(*) n FROM firm_current f JOIN firm_scope s ON s.crd=f.crd WHERE (f.q5k3='Y' OR f.q7b='Y') AND f.crd NOT IN (SELECT crd FROM firm_refresh)",
-        done_sql="SELECT COUNT(*) n FROM firm_refresh",
+        "scripts.autopilot_slice", ("firm_refresh",), every_hours=24, timeout_s=600,
+        backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN firm_refresh r ON r.crd=f.crd WHERE (f.q5k3='Y' OR f.q7b='Y') AND (r.crd IS NULL OR (r.status!='ok' AND r.fetched_at < to_char(NOW()-INTERVAL '1 day', 'YYYY-MM-DD\"T\"HH24:MI:SS')) OR r.fetched_at < to_char(NOW()-INTERVAL '30 days', 'YYYY-MM-DD\"T\"HH24:MI:SS'))",
+        done_sql="SELECT COUNT(*) n FROM firm_refresh WHERE status='ok'",
         group="filings"),
     Job("classify", "Firm types",
         "Sorts every firm into a type (independent RIA, custodian, wirehouse, asset "
@@ -189,8 +187,8 @@ JOBS: list[Job] = [
         "For the best-placed people still missing a confirmed email, a direct phone or a "
         "LinkedIn profile after every free source, asks the AI provider to find what they "
         "or their firm published, then re-reads each cited page itself and keeps only what "
-        "is really there. Emails it finds still need the mail server's confirmation. A "
-        "person is researched at most once in 60 days, within the AI daily limit.",
+        "is really there. Emails it finds still need the mail server's confirmation. "
+        "Repeat interval is set in Crawling; the AI daily limit still applies.",
         "scripts.ai_research", ("--limit", "8"), every_hours=1, timeout_s=1500,
         needs="ai:research", group="ai"),
 ]

@@ -135,22 +135,27 @@ def norm_email(v: str) -> str:
 
 
 def norm_phone(v: str) -> str | None:
-    """US numbers to (555) 555-5555, keeping an extension. Anything that is not a
-    plausible North American number comes back None rather than half-formatted."""
-    raw = (v or "").strip()
-    ext = ""
-    m = re.search(r"(?:ext\.?|x|extension)\s*(\d{1,6})\s*$", raw, re.I)
-    if m:
-        ext = f" x{m.group(1)}"
-        raw = raw[:m.start()]
-    d = re.sub(r"\D", "", raw)
-    if len(d) == 11 and d.startswith("1"):
-        d = d[1:]
-    if len(d) != 10 or d[0] in "01" or d[3] in "01":
+    """Validate numbering-plan syntax, not ownership or whether a call connects.
+
+    Preserve the established US format and extensions; retain explicit
+    international country codes so overseas offices are no longer discarded.
+    """
+    import phonenumbers as pn
+    raw = (v or "").strip().removeprefix("tel:")
+    raw = re.sub(r"[\u2010-\u2015]", "-", raw)
+    try:
+        number = pn.parse(raw, "US")
+    except pn.NumberParseException:
         return None
-    if d[3:6] == "555" and d[6:7] == "0":
-        return None   # fictional block 555-01xx
-    return f"({d[:3]}) {d[3:6]}-{d[6:]}{ext}"
+    if not pn.is_valid_number(number):
+        return None
+    d = str(number.national_number)
+    if number.country_code == 1 and d[3:6] == "555" and d[6:8] == "01":
+        return None  # reserved fictional range
+    ext = f" x{number.extension}" if number.extension else ""
+    number.extension = None
+    fmt = pn.PhoneNumberFormat.NATIONAL if number.country_code == 1 else pn.PhoneNumberFormat.INTERNATIONAL
+    return pn.format_number(number, fmt) + ext
 
 
 _LI_SLUG = re.compile(r"^[^\s/?#&=]{2,100}$")

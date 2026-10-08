@@ -139,8 +139,8 @@ def name_parts(full: str) -> tuple[str, str] | None:
 
 def pretty(filed: str) -> str:
     """Schedule A files 'LAST, FIRST, MIDDLE'; people read the other order."""
-    parts = [p.strip() for p in (filed or "").split(",") if p.strip()]
-    return (" ".join(parts[1:] + parts[:1]) if len(parts) >= 2 else filed).title()
+    from .names import person_name
+    return person_name(filed)
 
 
 def _detect(first: str, last: str, local: str) -> str | None:

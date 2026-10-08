@@ -104,16 +104,17 @@ def _gather() -> dict:
         st = c.execute("""SELECT COUNT(*) n, AVG(coverage) cov,
             COUNT(*) FILTER (WHERE score >= 60) hi FROM product_score
             WHERE product=? AND status='scored'""", (k,)).fetchone()
-        scores = [r["score"] for r in c.execute(
-            "SELECT score FROM product_score WHERE product=? AND status='scored'", (k,))]
-        top = _all(c, """SELECT p.crd, p.score, p.coverage, f.legal_name FROM product_score p
+        top = _all(c, """SELECT p.crd, p.score, p.coverage, f.legal_name, f.state, f.raum,
+            EXISTS (SELECT 1 FROM usable_contact_point cp WHERE cp.crd=p.crd
+                AND cp.kind='email' AND cp.person_key!='' AND cp.is_role=0
+                AND cp.verify_status='valid') AS verified_contact FROM product_score p
             JOIN firm_current f ON f.crd=p.crd WHERE p.product=? AND p.status='scored'
-            ORDER BY p.rank LIMIT 3""", (k,))
+            ORDER BY p.rank LIMIT 6""", (k,))
         fresh = _one(c, """SELECT COUNT(DISTINCT t.crd) FROM trigger_event t
             JOIN product_score p ON p.crd=t.crd AND p.product=? AND p.status='scored'
             WHERE t.suppressed=0 AND t.detected_date >= ?""", (k, cutoff)) or 0
         lists.append({"key": k, "p": p, "n": st["n"] or 0, "cov": st["cov"] or 0,
-                      "hi": st["hi"] or 0, "scores": scores, "top": top, "fresh": fresh})
+                      "hi": st["hi"] or 0, "top": top, "fresh": fresh})
     d["lists"] = lists
 
     # What moved: people and signals on firms on the lists, newest first.
@@ -245,13 +246,14 @@ def _map(by_state: dict) -> str:
 
 
 @router.get("/", response_class=HTMLResponse)
-def home(type: str = "", product: str = "", state: str = ""):
+def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
     # The inbox used to live at /. Old links with its filters land on Signals.
     if type or product or state:
         return RedirectResponse(f"/signals?{qs_join(type=type, product=product, state=state)}",
                                 status_code=307)
     d = data()
     me = current_owner()
+    focus = focus if focus in products.product_keys() else ''
 
     kpis = "".join([
         _kpi(_compact(d["firms"]), "Adviser firms",
@@ -259,8 +261,8 @@ def home(type: str = "", product: str = "", state: str = ""):
         _kpi(f'{d["scope"]:,}', "Ranked for our products", "on at least one list", "/firms?on=any"),
         _kpi(_compact(d["people"]), "People tracked",
              f'{d["hires_12m"] or 0:,} job moves in 12 months', "/people"),
-        _kpi(f'{(d.get("reach") or {}).get("email", d["named_email"]):,}', "Reachable by email",
-             f'{d["verified"]:,} addresses verified', "/people?view=email", accent=True),
+        _kpi(f'{(d.get("reach") or {}).get("email", d["named_email"]):,}', "People with email",
+             f'{(d.get("reach") or {}).get("verified", 0):,} people with verified email', "/people?view=email", accent=True),
         _kpi(f'{(d.get("reach") or {}).get("phone", d["phones"]):,}', "People with a phone",
              f'{(d.get("reach") or {}).get("direct", 0):,} direct lines', "/people?view=direct"),
         _kpi(f'{d["signals_30"]:,}', "Signals in 30 days", "filings, people, assets", "/signals"),
@@ -385,7 +387,7 @@ def home(type: str = "", product: str = "", state: str = ""):
 <details class="detail-section"><summary>Discovery jobs</summary><div class="engine">{engine}</div></details>
 {('<details class="detail-section"><summary>Latest finds</summary><div class="feed">' + finds + '</div></details>') if finds else ''}</div>"""
 
-    ai_ready = ai.configured()
+    ai_ready = ai.enabled('ask')
     askbar = f"""<form class="askbar" method="get" action="{'/ask' if ai_ready else '/firms'}">
 <input name="q" aria-label="{'Ask Bellwether AI' if ai_ready else 'Search firms'}" placeholder="{'Ask Bellwether AI' if ai_ready else 'Search firms'}" autocomplete="off">
 <button class="primary" type="submit">{'Ask' if ai_ready else 'Search'}</button></form>"""
@@ -397,6 +399,47 @@ def home(type: str = "", product: str = "", state: str = ""):
     fresh.append(f"{d['sites']:,} firm websites read")
     if d.get("scored_at"):
         fresh.append(f"scores computed {esc(ui.ago(d['scored_at']))}")
+
+    # One useful shortlist, scoped without losing the rest of the dashboard.
+    candidates = []
+    for item in d['lists']:
+        if not focus or item['key'] == focus:
+            candidates.extend(dict(row, product=item['key'], product_name=item['p']['name'])
+                              for row in item['top'])
+    candidates.sort(key=lambda row: (-row['score'], -row['coverage'], row['legal_name']))
+    leading, seen = [], set()
+    for row in candidates:
+        if row['crd'] not in seen:
+            leading.append(row)
+            seen.add(row['crd'])
+        if len(leading) == 5:
+            break
+    shortlist = ''.join(
+        f'<tr><td><a class="t" href="/firm/{esc(r["crd"])}?p={esc(r["product"])}">{escn(r["legal_name"])}</a>'
+        f'<div class="meta">{esc(r["product_name"])} · {esc(r["state"] or "Location unknown")}</div></td>'
+        f'<td class="num">{score_cell(r["score"], r["coverage"])}</td>'
+        f'<td class="num"><a class="contact-state {"ok" if r["verified_contact"] else "soft"}" href="/firm/{esc(r["crd"])}#people">'
+        f'{"Verified email" if r["verified_contact"] else "View people"}</a></td></tr>' for r in leading)
+    shortlist = ('<div class="table-scroll"><table class="dash-shortlist"><thead><tr><th>Firm</th>'
+                 '<th class="num">Fit / 100</th><th class="num">Contact</th></tr></thead><tbody>'
+                 + shortlist + '</tbody></table></div>') if shortlist else (
+                 '<p class="empty">No ranked firms yet. <a href="/firms">Explore all firms</a></p>')
+    options = ui.opt('', focus, 'All products') + ''.join(
+        ui.opt(k, focus, products.product(k)['name']) for k in products.product_keys())
+    focus_form = (f'<form class="dash-focus" method="get" action="/"><label for="dash-focus">Product</label>'
+                  f'<select id="dash-focus" name="focus">{options}</select>'
+                  f'<button type="submit" class="sm">Apply</button></form>')
+    product_rows = ''.join(
+        f'<a class="dash-product" href="/lists/{item["key"]}"><span>{esc(item["p"]["name"])}</span>'
+        f'<span class="dash-product-bar" aria-hidden="true"><i style="width:{item["n"] / max(1, max(x["n"] for x in d["lists"])) * 100:.1f}%"></i></span>'
+        f'<b>{item["n"]:,}</b></a>' for item in d['lists'])
+    total_people = rc.get('total', 0)
+    contact_rows = ''.join(
+        f'<a class="dash-contact" href="/people?view={view}"><span>{label}</span><b>{rc.get(key, 0):,}</b>'
+        f'<span class="meter"><i style="width:{min(100, rc.get(key, 0) / max(1, total_people) * 100):.1f}%"></i></span></a>'
+        for key, label, view in [('verified', 'Verified email', 'verified'), ('direct', 'Direct phone', 'direct'), ('linkedin', 'LinkedIn', 'linkedin')])
+    score_time = f'Scores updated {esc(ui.ago(d["scored_at"]))}' if d.get('scored_at') else 'Scoring pending'
+    ranked_link = f'/lists/{focus}' if focus else '/firms?on=any'
     body = f"""<div class="pg dashboard">
 <div class="dash-hero"><h1>Home</h1>{askbar}</div>
 <nav class="workspace-tabs" data-workspace-tabs aria-label="Dashboard views">
@@ -405,9 +448,16 @@ def home(type: str = "", product: str = "", state: str = ""):
 <button type="button" data-panel="home-workspace">Your workspace</button>
 <button type="button" data-panel="home-coverage">Data coverage</button></nav>
 <section id="home-overview">
-<div class="overview-totals"><a href="/firms"><strong>{d['firms']:,}</strong> adviser firms</a>
-<a href="/people"><strong>{d['people']:,}</strong> people</a>
-<a href="/signals"><strong>{d['signals_30']:,}</strong> signals <span>in 30 days</span></a></div>
+<div class="dashboard-summary"><a href="/firms"><span>Adviser firms</span><strong>{d['firms']:,}</strong><small>{money(d['aum'])} in assets</small></a>
+<a href="/firms?on=any"><span>Ranked firms</span><strong>{d['scope']:,}</strong><small>Across all products</small></a>
+<a href="/people"><span>People</span><strong>{d['people']:,}</strong><small>{rc.get('verified', 0):,} with verified email</small></a>
+<a href="/signals"><span>Recent signals</span><strong>{d['signals_30']:,}</strong><small>Past 30 days</small></a></div>
+<div class="dashboard-main">
+<section class="dashboard-leading"><div class="s-head"><h2>Leading firms</h2><a class="more" href="{ranked_link}">Open ranking</a></div>
+{focus_form}{shortlist}<p class="meta dash-updated">{score_time} · Missing factors score zero.</p></section>
+<aside class="dashboard-aside"><section><div class="s-head"><h2>Product opportunities</h2><a class="more" href="#home-products">Details</a></div>{product_rows}</section>
+<section><div class="s-head"><h2>Contact coverage</h2><a class="more" href="#home-coverage">Details</a></div>{contact_rows}<p class="meta">Of {total_people:,} people in the contact index</p></section></aside>
+</div>
 <div class="overview-columns">
 <section class="overview-section"><div class="s-head"><h2>Latest intelligence</h2><a href="/signals" class="more">All activity</a></div><div class="feed">{feed_html}</div></section>
 <section class="overview-section"><div class="s-head"><h2>Hiring activity</h2><a href="/firms?sort=hires&amp;on=any" class="more">View firms</a></div><div class="hbars">{hire_rows or '<p class="empty">No recorded hiring activity.</p>'}</div><p class="meta">Joins in the past 12 months</p></section>

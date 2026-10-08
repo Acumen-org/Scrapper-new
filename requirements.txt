@@ -13,6 +13,9 @@ uvicorn==0.41.0
 # attempt -- it refuses to import at all, so the server never starts.
 python-multipart==0.0.32
 lxml==6.1.1
+# Google's numbering-plan metadata and international phone extraction.
+# Apache-2.0: https://github.com/daviddrysdale/python-phonenumbers
+phonenumbers==9.0.41
 pdfplumber==0.11.10
 PyYAML==6.0.3
 requests==2.33.0

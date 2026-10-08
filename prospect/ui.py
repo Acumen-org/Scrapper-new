@@ -18,7 +18,8 @@ SOURCE_LABEL = {"adv": "Form ADV", "adv_office": "Form ADV office list", "adv_so
                 "brochure": "their brochure", "website": "their website",
                 "vcard": "a vCard on their site", "directory": "a directory",
                 "web_search": "web search", "pattern": "verified with their mail server",
-                "ai": "AI reading of their site", "ai_web": "AI research", "manual": "added by hand"}
+                "ai": "AI reading of their site", "ai_web": "AI research", "public_research": "published page",
+                "manual": "added by hand"}
 
 
 def contact_flags(c, crds: list[str]) -> dict[str, dict]:
@@ -115,7 +116,9 @@ def why_line(detail_json: str | None, n: int = 2) -> str:
     if not parts:
         return '<span class="muted">Evidence pending</span>'
     labels = [esc(c['label']) for c in comps if c['contrib'] > 0]
-    return f'<details class="evidence"><summary>{labels[0]}<span>{" + " + str(len(labels)-1) + " factors" if len(labels)>1 else "View evidence"}</span></summary><div>{"".join(parts)}</div></details>'
+    more = len(labels) - 1
+    hint = f'+ {more} factor' + ('s' if more != 1 else '') if more else 'View evidence'
+    return f'<details class="evidence"><summary>{labels[0]}<span>{hint}</span></summary><div>{"".join(parts)}</div></details>'
 
 
 def fbars(components: list[dict], hi: bool = False) -> str:

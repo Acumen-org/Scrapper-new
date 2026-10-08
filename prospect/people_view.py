@@ -21,13 +21,15 @@ from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from . import people_index, products, roles, ui
+from .names import first_name
 from .webapp import FAMILY_COLOUR, conn, esc, escn, money, nice_name, page, qs_join
 
 router = APIRouter()
 
 VIEWS = {
     "": ("Everyone", ""),
-    "email": ("Verified email", "has_email = 1"),
+    "email": ("With email", "has_email = 1"),
+    "verified": ("Verified email", "email_status = 'valid'"),
     "direct": ("Direct line", "has_direct = 1"),
     "linkedin": ("LinkedIn", "has_linkedin = 1"),
     "hunting": ("Still hunting", "has_email = 0"),
@@ -146,6 +148,7 @@ def _person_row(r) -> str:
             f'<td><div class="ent">{ui.mono(r["name"], "p")}<div><div class="t">{esc(r["name"])}</div>'
             f'<div class="meta">{esc(title)}</div>'
             f'{("<div class=pills style=margin-top:6px>" + "".join(badges) + "</div>") if badges else ""}</div></div></td>'
+            f'<td>{esc(first_name(r["name"], r.get("first_name"))) or "<span class=muted>Unknown</span>"}</td>'
             f'<td><a class="firm" href="/firm/{esc(r["crd"])}">{escn(r["firm_name"])}</a>'
             f'<div class="meta">{esc(place)}{" . " + money(r["raum"]) if r["raum"] else ""} {lists}</div></td>'
             f'<td>{reach}</td>'
@@ -163,7 +166,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
                 # Old links used these; they still work.
                 reach: str = Query(""), officers: str = Query(""), cfp: str = Query("")):
     if reach and not view:
-        view = {"email": "email", "verified": "email", "phone": "direct", "none": "hunting",
+        view = {"email": "email", "verified": "verified", "phone": "direct", "none": "hunting",
                 "ready": "email"}.get(reach, "")
     if officers and not role:
         role = "officer"
@@ -177,7 +180,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
     finally:
         c.close()
     if not ready:
-        msg = ("Bellwether is building the people index now; this page fills in within a minute."
+        msg = ("The people index is being prepared. Refresh this page after the job finishes."
                if have else "The roster of every registered adviser rep loads with the weekly SEC "
                "individual feed. It runs by itself; this page fills in as soon as it has.")
         return page("People", "people", f'<div class="pg narrow"><h1>People</h1>'
@@ -220,12 +223,11 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
     pages = max(1, -(-total // per))
     prev = f'<a href="/people?{qs}&page={page_n - 1}">Previous</a>' if page_n > 1 else ""
     nxt = f'<a href="/people?{qs}&page={page_n + 1}">Next</a>' if page_n < pages else ""
-    empty = ('<tr><td colspan="4"><div class="empty"><b>Nobody matches these filters</b>'
+    empty = ('<tr><td colspan="5"><div class="empty"><b>Nobody matches these filters</b>'
              'Remove a filter above, or search a different name.</div></td></tr>')
     body = f"""<div class="pg wide">
 <div class="head"><div><h1>People</h1>
-<p class="lede">Everyone registered at an advisory firm, with the best way to reach them that
-Bellwether has found and checked.</p></div>
+<p class="lede">People, roles and contact details.</p></div>
 <div class="acts"><details class="save-view"><summary>Save view</summary>
 <form method="post" action="/views/save"><input type="hidden" name="page" value="people">
 <input type="hidden" name="qs" value="{esc(qs)}"><input type="text" name="name" placeholder="Name this view" required>
@@ -235,8 +237,8 @@ Bellwether has found and checked.</p></div>
 {bar}
 <div class="resbar"><span><b>{total:,}</b> {"person" if total == 1 else "people"}</span>
 <span class="muted small">Page {page_n} of {pages:,}</span></div>
-<div class="table-scroll"><table><thead><tr><th style="width:30%">Person</th><th style="width:28%">Firm</th>
-<th>Reach</th><th style="width:16%">At the firm since</th></tr></thead>
+<div class="table-scroll"><table><thead><tr><th style="width:26%">Person</th><th>First name</th><th style="width:26%">Firm</th>
+<th>Contact</th><th style="width:14%">Joined firm</th></tr></thead>
 <tbody>{"".join(_person_row(r) for r in rows) or empty}</tbody></table></div>
 <div class="pager"><span>{total:,} people</span><span class="acts">{prev}{nxt}</span></div></div>"""
     return page("People", "people", body)
@@ -249,11 +251,11 @@ def people_export(q: str = "", st: str = "", on: str = "", view: str = "", role:
     c = conn()
     try:
         if not people_index.exists(c):
-            return PlainTextResponse("name\n", media_type="text/csv")
+            return PlainTextResponse("name,first_name\n", media_type="text/csv")
         view = view if view in VIEWS else ""
         sort = sort if sort in ORDER else ""
         where, args = _where(q, st, on, view, role, joined, desig, disc, size, cat)
-        rows = c.execute(f"""SELECT name, title, firm_name AS firm, crd, state, bcity AS branch_city,
+        rows = c.execute(f"""SELECT name, first_name, title, firm_name AS firm, crd, state, bcity AS branch_city,
                 start_date AS at_firm_since, prior_firm, designations, has_disclosure,
                 email, email_status, phone, phone_label, linkedin, iapd_link, category AS firm_type
                 FROM people_index WHERE {where} ORDER BY {ORDER[sort]} LIMIT 50000""", args).fetchall()
@@ -261,9 +263,9 @@ def people_export(q: str = "", st: str = "", on: str = "", view: str = "", role:
         c.close()
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
-    cols = list(rows[0].keys()) if rows else ["name"]
+    cols = list(rows[0].keys()) if rows else ["name", "first_name"]
     w.writerow(cols)
     for r in rows:
-        w.writerow([r[k] for k in cols])
+        w.writerow([first_name(r['name'], r['first_name']) if k == 'first_name' else r[k] for k in cols])
     return PlainTextResponse(buf.getvalue(), media_type="text/csv",
                              headers={"Content-Disposition": 'attachment; filename="people.csv"'})

@@ -62,6 +62,12 @@ typography:
   mono:
     fontFamily: "ui-monospace, \"Cascadia Mono\", Consolas, monospace"
     fontSize: "12.5px"
+  overview-total:
+    fontFamily: "\"Instrument Sans\", \"Segoe UI Variable Text\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+    fontSize: "32px"
+    fontWeight: 550
+    lineHeight: 1.15
+    letterSpacing: "-0.03em"
 rounded:
   chip: "6px"
   control: "8px"
@@ -168,7 +174,7 @@ The October 2026 refinement keeps self-hosted Instrument Sans, solid surfaces an
 - Explicit contact provenance and score uncertainty.
 - Compact controls, visible keyboard focus and responsive layouts.
 
-Refreshed on 2026-10-08 from the active `prospect/static/app.css`, `app.js`, `home_view.py`, `firm_view.py`, `webapp.py` and final desktop/mobile renders in `data/quiet-review/final`. `workspace.css` is unused legacy material and is not part of the cascade.
+Refreshed on 2026-10-08 from the active `prospect/static/app.css`, `app.js`, `home_view.py`, `firm_view.py`, `people_view.py`, `settings_view.py`, `webapp.py` and final desktop/mobile renders in `data/quiet-review/final`. `workspace.css` is unused legacy material and is not part of the cascade.
 
 ## Colors
 
@@ -211,19 +217,19 @@ One sans-serif voice connects navigation, research, tables and conversation. Hea
 - **Body:** General interface and reading text.
 - **Table:** Compact evidence rows with vertical breathing room.
 - **Label:** Standard actions. Primary buttons strengthen the weight to 600; field labels are smaller (12px).
-- **Numeric summary:** Home totals use 25px; firm headline values and fit summaries use 24px at weight 550.
+- **Overview total:** Home's four linked totals use the frontmatter role, reduced to 28px below 760px, with tabular figures. Firm headline values and fit summaries use 24px at weight 550.
 
 **The One Voice Rule.** Keep Instrument Sans across headings, body and controls; express hierarchy with size, weight and spacing.
 
 ## Layout
 
-Desktop uses a fixed sidebar (224px) and a centered page (1440px maximum), with narrow (1120px) and wide (1680px) variants. Standard page insets are 40px 40px 72px. Home and firm overview sections use a 1.25:1 column ratio with a 48px gap, tightened to 32px below 1200px.
+Desktop uses a fixed sidebar (224px) and a centered page (1440px maximum), with narrow (1120px) and wide (1680px) variants. Standard page insets are 40px 40px 72px. Home's leading-firms section and supporting column use a 1.7:1 ratio with a 40px gap, changing to 1.5:1 and 26px below 1200px. Lower Home activity, workspace and firm overview sections retain a 1.25:1 ratio with a 48px gap, tightened to 32px below 1200px.
 
-Home has four views: Overview, Product lists, Your workspace and Data coverage. Its overview begins with plain linked totals and two content columns. Product and coverage detail remain in their own views. Firm identity and three headline facts sit above seven views: Overview, People & contacts, Product fit, Activity, Assets & funds, Research and Workspace. Firm summaries use open rows and section rules; detailed people views may use bordered cards.
+Home has four views: Overview, Product lists, Your workspace and Data coverage. Its overview begins with four evenly spaced linked totals: Adviser firms, Ranked firms, People and Recent signals. A product-filtered leading-firms shortlist sits beside open Product opportunities and Contact coverage rows; latest intelligence and hiring activity follow below. Full product and coverage detail remain in their own views. Firm identity and three headline facts sit above seven views: Overview, People & contacts, Product fit, Activity, Assets & funds, Research and Workspace. Firm summaries use open rows and section rules; detailed people views may use bordered cards.
 
-Below 980px the sidebar becomes an expandable Menu under a mobile header; page insets become 22px 16px 64px. Below 760px overview and workspace columns stack, the Home search fills the width and product summaries reflow. Below 600px fit statuses and reasons continue under their product name; evidence tables scroll inside their own region. Tab strips scroll horizontally and reveal the selected tab.
+Below 980px the sidebar becomes an expandable Menu under a mobile header; page insets become 22px 16px 64px. Below 760px overview and workspace columns stack, Home totals become a two-by-two grid, the Home search fills the width and product summaries reflow. The Home supporting sections share two columns until 500px, then stack with a separating rule. Below 600px fit statuses and reasons continue under their product name; evidence tables scroll inside their own region. Tab strips scroll horizontally and reveal the selected tab.
 
-The global AI conversation is centered in a 780px maximum column. Firm AI opens contextually in a right-hand dialog, 500px wide and constrained to the viewport. Sign-in is one centered 420px maximum panel with a mark, heading, Microsoft action and an optional password disclosure.
+The global AI conversation is centered in a 780px maximum column. Firm AI opens contextually in a right-hand dialog, 500px wide and constrained to the viewport. Sign-in is one centered 460px maximum panel, divided into a solid brand area and form area. Both use 36px horizontal padding on desktop, reducing to 24px below 500px.
 
 **The Named Views Rule.** Reduce simultaneous detail through clearly named views without removing supported workflows or their data.
 
@@ -239,7 +245,7 @@ One shared soft shadow lifts command search, floating filters, bulk actions and 
 
 Standard controls are rounded rectangles; panels soften the corners one step further. Chips use small rectangular corners, while filter pills and compact avatars use circular rounding. Tabs are square-ended text controls with a two-pixel selected underline. Row summaries have no enclosing card shape.
 
-The mark uses its shipped SVG geometry. Supporting icons are inline strokes, subordinate to labels.
+The mark uses its shipped SVG geometry. Sign-in echoes its stacked chevrons in a clipped, low-opacity outline motif within the brand area. Supporting icons are inline strokes, subordinate to labels.
 
 ## Components
 
@@ -257,7 +263,7 @@ General panels use Surface, a fine Rule border, the panel radius and 20px paddin
 
 ### Inputs / Fields
 
-Fields use the raised Field fill, a Control Rule border and the control radius. Standard inputs are 36px high. Focus strengthens the border and adds a three-pixel red tint ring. Visible labels describe form controls; compact search and conversation inputs carry accessible labels. Advanced filters stay behind a named control.
+Fields use the raised Field fill, a Control Rule border and the control radius. Standard inputs are 36px high. Focus strengthens the border and adds a three-pixel red tint ring. Visible labels describe form controls; compact search and conversation inputs carry accessible labels. Advanced filters stay behind a named control. Industry knowledge uses an inline search field and Search button within a 520px maximum row, with an 8px gap and a flexible field.
 
 ### Navigation
 
@@ -269,13 +275,15 @@ Home and firm tabs use a red underline and text emphasis. They expose one named 
 
 Tables retain compact data rows, fine dividers and local horizontal scrolling. Overview fit rows combine a prominent score with explicit known-data coverage or eligibility text. Detailed scoring keeps missing factors visible; coverage tracks use solid fill for known data and amber hatching for the unknown remainder. Preserve the distinction between zero, missing data and ineligible status.
 
+Home's shortlist shows up to five distinct firms with product and location metadata, Fit / 100, known-data coverage and a contact action. A labeled Product selector and Apply button scope the shortlist. Its score bar is omitted so the numeric score and coverage remain readable. Product opportunities use thin red bars with explicit counts; Contact coverage pairs labeled counts with green meters and a stated contact-index denominator. The People table places First name directly after Person, retaining an explicit Unknown state when absent.
+
 ### Conversation
 
 The global neutral composer has a softly rounded outline and a circular send action. The firm composer lives in its contextual dialog, leaving research space available until opened. Opening, closing and focus behavior use native dialog semantics.
 
 ### Sign-in
 
-The centered solid panel leads with the shipped mark and a simple Sign in heading. Microsoft uses a high-contrast light button, 48px high; password sign-in is a secondary disclosure when Microsoft is available. Error text remains near the form.
+The centered solid panel separates the brand area from the form with a fine rule. The brand area holds the shipped 40px mark, wordmark, GTM intelligence description and restrained chevron outline motif. Its padding is 36px 36px 30px; the form uses 32px 36px 30px. Both become 28px 24px below 500px. The form leads with a 23px Sign in heading. Microsoft uses a full-width, high-contrast light button, 48px high, with the icon and label centered together; password sign-in is a secondary disclosure when Microsoft is available. Error text remains near the form and Acumen Strategy appears beneath the panel.
 
 Control color and border transitions usually take 120ms; disclosure and composer state transitions use 150ms, and transient feedback enters over 200ms. Reduced-motion preferences disable animations and transitions and restore immediate scrolling.
 

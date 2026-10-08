@@ -5,11 +5,10 @@ Order: in-scope firms by priority, best first; within a firm, Schedule A
 officers first, then everyone else on the roster. A first pass gives every
 firm its leadership and first PER_FIRM people before going deeper at any one
 firm, so a 25,000-person firm near the top of the list cannot hold the queue
-for weeks. Nobody is searched twice within 60 days, and anyone who already
-has a matched LinkedIn profile (from the firm's site or its filing) is not
-searched at all. The one exception: a person for whom every search came back
-with no results at all is tried again after 7 days, because the free engines
-also answer that way when they are shedding load.
+for weeks. Any missing verified email, personal phone or matched LinkedIn
+keeps a person eligible. The retry interval is editable in Crawling (14 days
+by default); blank search responses are retried after 7 days. Unranked firms
+are included after the prioritised first pass.
 
 For each firm, before its people:
   - one pair of searches for addresses published at the firm's mail domain,
@@ -36,8 +35,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prospect import (config, contacts, db, emailguess, harvest, runlog,  # noqa: E402
-                      websearch)
+from prospect import (config, contacts, db, emailguess, harvest, research, runlog,  # noqa: E402
+                      settings, websearch)
 
 RESEARCH_DAYS = 60
 EMPTY_RETRY_DAYS = 7     # every search came back blank: as likely a hiccup as a fact
@@ -45,7 +44,7 @@ PER_FIRM = 25            # people per firm in the first pass over all firms
 
 # Everyone at an in-scope firm, ranked within the firm (officers first) over
 # the whole roster, so the rank does not shift as people are searched. Then
-# only those not searched lately and without a matched profile, first pass
+# only those not searched lately and missing at least one channel, first pass
 # (rank <= PER_FIRM) before second, best firms first.
 TODO_SQL = """
 WITH ranked AS (
@@ -56,17 +55,24 @@ WITH ranked AS (
                    AND upper(a.name) LIKE upper(p.last_name) || ',%' || upper(p.first_name) || '%')
            DESC, p.name, e.indvl_pk) AS rn
     FROM person_employment e
-    JOIN firm_scope s ON s.crd = e.org_pk
+    LEFT JOIN firm_scope s ON s.crd = e.org_pk
     JOIN person p ON p.indvl_pk = e.indvl_pk
    WHERE e.kind = 'current' {crd_filter}
 )
 SELECT r.* FROM ranked r
  WHERE NOT EXISTS (SELECT 1 FROM contact_search_state x WHERE x.crd = r.crd
                    AND x.person_key = 'i:' || r.indvl_pk
-                   AND x.searched_at > CASE WHEN x.status = 'empty' THEN ? ELSE ? END)
-   AND NOT EXISTS (SELECT 1 FROM contact_point c WHERE c.crd = r.crd
+                   AND x.searched_at > CASE WHEN x.status = 'error' THEN ?
+                       WHEN x.status = 'empty' THEN ? ELSE ? END)
+   AND (NOT EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd = r.crd
                    AND c.person_key = 'i:' || r.indvl_pk AND c.kind = 'linkedin'
                    AND c.verify_status = 'matched')
+     OR NOT EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd = r.crd
+                   AND c.person_key = 'i:' || r.indvl_pk AND c.kind = 'email'
+                   AND c.verify_status = 'valid' AND c.is_role=0)
+     OR NOT EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd = r.crd
+                   AND c.person_key = 'i:' || r.indvl_pk AND c.kind = 'phone'
+                   AND COALESCE(c.label, '') NOT IN ('main','office','toll_free')))
  ORDER BY (r.rn > ?), r.priority DESC NULLS LAST, r.crd, r.rn
  LIMIT ?
 """
@@ -185,18 +191,18 @@ def firm_step(conn, s: websearch.Searcher, crd: str, firm: dict, force: bool,
 
 
 def todo(conn, limit: int, crd: str | None) -> list:
-    cutoff = _iso(_now() - timedelta(days=RESEARCH_DAYS))
+    days = max(1, min(90, settings.get_int("crawl.contact_retry_days", 14)))
+    cutoff = _iso(_now() - timedelta(days=days))
     empty = _iso(_now() - timedelta(days=EMPTY_RETRY_DAYS))
+    error = _iso(_now() - timedelta(days=1))
     if crd:
         # One firm, now: everyone on it, whatever the 60-day rule says.
-        cutoff = empty = _iso(_now() + timedelta(days=1))
-        sql = TODO_SQL.format(crd_filter="AND e.org_pk = ?").replace(
-            "JOIN firm_scope s ON s.crd = e.org_pk",
-            "LEFT JOIN firm_scope s ON s.crd = e.org_pk")
-        rows = conn.execute(sql, (crd, empty, cutoff, PER_FIRM, limit)).fetchall()
+        cutoff = empty = error = _iso(_now() + timedelta(days=1))
+        sql = TODO_SQL.format(crd_filter="AND e.org_pk = ?")
+        rows = conn.execute(sql, (crd, error, empty, cutoff, PER_FIRM, limit)).fetchall()
     else:
         rows = conn.execute(TODO_SQL.format(crd_filter=""),
-                            (empty, cutoff, PER_FIRM, limit)).fetchall()
+                            (error, empty, cutoff, PER_FIRM, limit)).fetchall()
     conn.commit()
     return rows
 
@@ -244,6 +250,8 @@ def main() -> int:
             firms[args.crd] = websearch.firm_info(conn, args.crd)
             firm_results[args.crd] = firm_step(conn, s, args.crd, firms[args.crd], True, tot)
         stopped = ""
+        reader = research.Reader()
+        reader._searcher = s  # one shared rate limiter and search cache
         for r in rows:
             if time.monotonic() - t0 > budget:
                 stopped = "time budget used"
@@ -256,20 +264,31 @@ def main() -> int:
                 firms[crd] = websearch.firm_info(conn, crd)
                 firm_results[crd] = firm_step(conn, s, crd, firms[crd], bool(args.crd), tot)
             person = person_of(r)
-            if conn.execute("SELECT 1 FROM contact_point WHERE crd=? AND person_key=?"
+            have_linkedin = conn.execute("SELECT 1 FROM contact_point WHERE crd=? AND person_key=?"
                             " AND kind='linkedin' AND verify_status='matched'",
-                            (crd, person["person_key"])).fetchone():
-                conn.commit()
-                continue          # the firm-wide search just found them
+                            (crd, person["person_key"])).fetchone()
             conn.commit()
             try:
-                got = websearch.find_linkedin(conn, person, searcher=s, firm=firms[crd],
+                got = ({"status": "none", "queries": 0} if have_linkedin else
+                       websearch.find_linkedin(conn, person, searcher=s, firm=firms[crd],
                                               extra_results=firm_results.get(crd) or [],
-                                              max_queries=max_queries)
+                                              max_queries=max_queries))
+                missing = research._missing(research._have(conn, [crd]).get((crd, person['person_key']), {}))
+                if any(k in missing for k in ('email', 'phone')):
+                    target = research._target(conn, crd, person['person_key'],
+                                              emailguess.pretty(person['name']), person.get('title'),
+                                              research._firm(conn, crd), missing)
+                    if target and not s.tripped and time.monotonic() - t0 < budget:
+                        found = research.research_person(conn, target, reader, use_ai=False)
+                        for kind in ('emails', 'phones', 'linkedin'):
+                            tot['page_' + kind] += found[kind]
+                        if any(found[k] for k in ('emails', 'phones', 'linkedin')):
+                            got['status'] = 'published'
             except Exception as e:  # one person must not end the slice
                 conn.rollback()
                 print(f"  {person['name']} ({crd}): {type(e).__name__}: {e}"[:200])
                 tot["errors"] += 1
+                save_state(conn, crd, person['person_key'], 'error', 0, 0)
                 continue
             if got["status"] == "unsearched":
                 continue          # the engines could not be asked; stays queued
@@ -284,6 +303,7 @@ def main() -> int:
                 mark = (f"{got['verdict']}: {got['url']}  [{got['title'][:80]}]"
                         if got["status"] == "found" else "none")
                 print(f"  {person['name']} @ {crd}: {mark}", flush=True)
+        reader.close()
         took = time.monotonic() - t0
         found = tot["linkedin_matched"] + tot["linkedin_probable"]
         rate = tot["people"] / (took / 60) if took > 0 else 0
@@ -291,7 +311,9 @@ def main() -> int:
                f" ({tot['linkedin_matched']} matched, {tot['linkedin_probable']} probable,"
                f" {tot['from_firm_query']} from firm-wide searches), {tot['status_none']}"
                f" not found, {tot['status_empty']} blank answers; {tot['emails']}"
-               f" published emails; {s.live} live searches, {s.cached} cached,"
+               f" published emails; page research: {tot['page_emails']} emails,"
+               f" {tot['page_phones']} phones, {tot['page_linkedin']} profiles;"
+               f" {s.live} live searches, {s.cached} cached,"
                f" {s.errors} errors; {took:.0f}s, {rate:.1f} people/min"
                + (f"; stopped: {stopped}" if stopped else ""))
         print(msg)

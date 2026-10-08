@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
-from .names import nice_name
+from .names import nice_name, first_name
 
 from . import contacts, products, ui, xlsx
 from .webapp import (conn, current_owner, esc, escn, money, page, qs_join, safe_back,
@@ -369,10 +369,11 @@ def _contacts(c, where, args, page_n, per):
             f'<tr><td><a class="firm" href="/firm/{esc(r["crd"])}">{esc(r["firm"])}</a>'
             f'<div class="meta">CRD {esc(r["crd"])} &middot; {esc(r["state"] or "-")}</div></td>'
             f'<td>{who}<div class="meta">{esc(r["title"] or "")}</div></td>'
+            f'<td>{esc(first_name(r["person"])) if r["person"] != "Shared inbox" else ""}</td>'
             f'<td>{em}</td><td class="nowrap">{esc(r["phone"] or "-")}</td></tr>')
-    empty = ('<tr><td colspan="4" class="empty">No contacts for this set yet. The website, '
+    empty = ('<tr><td colspan="5" class="empty">No contacts for this set yet. The website, '
              'brochure and directory jobs fill them in by themselves.</td></tr>')
-    return (f'<div class="table-scroll"><table><thead><tr><th>Firm</th><th>Person</th><th>Email</th>'
+    return (f'<div class="table-scroll"><table><thead><tr><th>Firm</th><th>Person</th><th>First name</th><th>Email</th>'
             f'<th>Phone</th></tr></thead>'
             f'<tbody>{"".join(body) or empty}</tbody></table></div>'), total
 
@@ -420,9 +421,10 @@ def export_xlsx(q: str = "", st: str = "", size: str = "", reg: str = "",
         f"SELECT f.crd {FROM.format(where=where)} ORDER BY {SORTS[sort][1]} LIMIT 5000", args)]
     rows = contacts_rows(c, crds)
     c.close()
-    headers = ["Firm", "CRD", "State", "Person", "Title", "Email", "Email status",
+    headers = ["Firm", "CRD", "State", "Person", "first_name", "Title", "Email", "Email status",
                "Source", "Confidence", "Phone"]
-    out = [[r["firm"], r["crd"], r["state"] or "", r["person"] or "", r["title"] or "",
+    out = [[r["firm"], r["crd"], r["state"] or "", r["person"] or "",
+            first_name(r["person"]) if r["person"] != "Shared inbox" else "", r["title"] or "",
             r["email"] or "", r["status"] or "", r["source"] or "", r["confidence"] or "",
             r["phone"] or ""] for r in rows]
     data = xlsx.write_sheet(headers, out, sheet_name="Contacts")

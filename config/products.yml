@@ -462,7 +462,7 @@ products:
       - key: supported_system
         # Always passes: a system Glynac works with that we have not seen yet
         # is unknown, never a reason to drop the firm.
-        label: Works with Microsoft, Salesforce, Redtail or Black Diamond, or not known yet
+        label: Microsoft or Black Diamond; compatibility may be unknown
     disqualifiers:
       - key: firm_type
         # Independent and hybrid RIAs and multi-family offices only: not custodians, wirehouses, broker-dealers, banks, insurers, asset or fund managers, TAMPs, robo-advisers or consultants.
@@ -470,9 +470,7 @@ products:
         allow: [independent_ria, hybrid_ria, multi_family_office]
         min_confidence: 60
     criteria:
-      # Glynac works with four systems: Microsoft (Microsoft 365 email,
-      # Dynamics CRMs), Salesforce (including Practifi, XLR8 and Salentica,
-      # which are built on it), Redtail and Black Diamond. Evidence comes from
+      # Glynac supports Microsoft and Black Diamond only. Evidence comes from
       # public mail records, the firm's website and its brochure; a system not
       # seen is missing data (no points, lower coverage), never a negative.
       - key: m365
@@ -482,11 +480,11 @@ products:
           - [100, "Confirmed: Microsoft 365 email or a Dynamics CRM"]
           - [0, "Email on Google Workspace or another provider, no Dynamics seen"]
       - key: black_diamond
-        label: Black Diamond, Salesforce or Redtail
+        label: Black Diamond
         weight: 15
         levels:
-          - [100, "Confirmed (Salesforce includes Practifi and XLR8)"]
-          - [0, "No confirmed supported portfolio or CRM system"]
+          - [100, "Black Diamond confirmed"]
+          - [0, "Black Diamond not confirmed"]
       - key: best_trigger
         label: Best recent trigger
         weight: 15

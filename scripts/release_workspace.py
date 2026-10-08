@@ -5,8 +5,8 @@ import time
 from prospect import db, jobs, products, settings, msauth, ai, users
 
 # Bumped when a release must re-read website signals and rescore every firm once.
-# v3 classify: firm types, Microsoft Dynamics and Salesforce-built CRMs for Glynac.
-RELEASE = 'workspace-2026-10-v3-classify'
+# v4: supported integrations corrected; refresh classifications and all scores.
+RELEASE = 'workspace-2026-10-v4-intelligence'
 # Releases that also re-crawl every website and mail record; the v3 one does
 # not, because the October 5 release queued that full refresh already.
 FULL_REFRESH = False
@@ -21,6 +21,11 @@ def main():
     c.commit()
     applied = c.execute('SELECT 1 FROM app_release WHERE version=?', (RELEASE,)).fetchone()
     if not applied:
+        from prospect import knowledge, firmtype
+        knowledge.init(c)
+        firmtype.init(c)
+        classified = firmtype.classify_all(c)
+        print('All-firm classification complete:', classified['firms'], flush=True)
         from scripts import web_signals
         web_signals.main()
         started = time.monotonic()
@@ -29,14 +34,11 @@ def main():
         assert audit.get('done') == audit.get('total'), 'Scoring did not finish the complete universe'
         print('All-firm rescoring complete:', counts, 'seconds:', round(time.monotonic()-started, 1), flush=True)
         requested = jobs.request_full_refresh(c) if FULL_REFRESH else 0
-        # AI contact research is new in this release. A feature list saved in
-        # Settings before it existed would keep it off, so add it once; the
-        # daily AI limit still bounds what it can spend, and an admin can
-        # untick it under Settings, AI.
-        feats = settings.get_list('ai.features')
-        if feats and 'research' not in feats:
-            settings.set('ai.features', ','.join(feats + ['research']), by='release ' + RELEASE)
-            print('AI contact research switched on in Settings, AI', flush=True)
+        for kind in ('firm_refresh', 'contact_search', 'people_index'):
+            state = jobs.states(c).get(kind, {})
+            if state.get('desired_state') != 'paused':
+                jobs.request_run(c, kind)
+        print('Updated contact and custodian jobs queued', flush=True)
         c.execute('INSERT INTO app_release (version, applied_at, evaluated_firms) VALUES (?,?,?) ON CONFLICT DO NOTHING',
                   (RELEASE, jobs.now_iso(), audit['done']))
         c.commit()
@@ -45,7 +47,7 @@ def main():
     scored = c.execute('SELECT COUNT(DISTINCT crd) n FROM product_score').fetchone()['n']
     hidden = c.execute("SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND verify_status!='valid'").fetchone()['n']
     # Addresses the firm itself published may show unconfirmed; a guess never may.
-    visible_bad = c.execute("SELECT COUNT(*) n FROM usable_contact_point WHERE kind='email' AND source IN ('pattern','ai_web') AND verify_status!='valid'").fetchone()['n']
+    visible_bad = c.execute("SELECT COUNT(*) n FROM usable_contact_point WHERE kind='email' AND source IN ('pattern','ai_web','public_research') AND verify_status!='valid'").fetchone()['n']
     evaluated = c.execute('SELECT evaluated_firms FROM app_release WHERE version=?', (RELEASE,)).fetchone()['evaluated_firms']
     print('Firm universe:', total, 'evaluated on release:', evaluated, 'passing at least one product gate:', scored)
     print('Internal email candidates:', hidden, 'unverified guesses visible:', visible_bad)
@@ -87,7 +89,10 @@ def main():
         if k in jobs.BY_KIND and s.get('last_status') in ('failed', 'timeout'):
             import re
             reason = re.sub(r'https?://\S+', '[source URL]', s.get('message') or '')
-            print('Job retry reason:', k, reason[:220])
+            print('Job retry reason:', k, s.get('last_status'), reason[:220])
+    from prospect import firmtype
+    schwab = c.execute("SELECT category, COUNT(*) n FROM firm_class fc JOIN firm_current f ON f.crd=fc.crd WHERE UPPER(f.legal_name) LIKE '%CHARLES SCHWAB%' GROUP BY category").fetchall()
+    print('Schwab classifications:', {r['category']: r['n'] for r in schwab})
     from prospect import config, procs
     print('Automatic enrichment worker alive:', bool(procs.alive_pid(config.DATA_DIR / 'autopilot.pid')))
     # Why AI calls fail and how far contact discovery has got, in aggregate

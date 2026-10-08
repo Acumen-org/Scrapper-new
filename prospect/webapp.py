@@ -1028,9 +1028,18 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
 <body class="signin-page">
 <div class="signin-wrap">
 <main class="signin">
-<div class="logo-row"><a class="wm" href="/login"><img src="/static/mark.svg" width="34" height="34" alt="">{APP_NAME}</a></div>
+<div class="signin-brand">
+<a class="wm" href="/login"><img src="/static/mark.svg" width="40" height="40" alt="">{APP_NAME}</a>
+<p>GTM intelligence</p>
+<svg class="signin-emblem" viewBox="0 0 160 140" fill="none" aria-hidden="true">
+<path d="M8 66 80 10l72 56M8 98l72-56 72 56M8 130l72-56 72 56" stroke="currentColor" stroke-width="1.2"/>
+<path d="m34 66 46-36 46 36" stroke="var(--red-hi)" stroke-width="2"/>
+</svg>
+</div>
+<div class="signin-form">
 <h1>Sign in</h1>
 {err}{ms_btn}{pw_form}
+</div>
 </main>
 <div class="signin-owner">Acumen Strategy</div>
 </div>

@@ -59,10 +59,8 @@ SOURCE_LABEL = ui.SOURCE_LABEL
 def _pretty_name(filed: str) -> str:
     """Schedule A files names as 'LAST, FIRST, MIDDLE'. People read the other
     order."""
-    parts = [p.strip() for p in (filed or "").split(",") if p.strip()]
-    if len(parts) >= 2:
-        return " ".join(parts[1:] + parts[:1]).title()
-    return (filed or "").title()
+    from .names import person_name
+    return person_name(filed)
 
 
 def _yearpos(iso: str) -> float:
@@ -74,9 +72,7 @@ def aum_chart(history) -> str:
     """Regulatory AUM over time as an inline SVG with real axes: dollar
     gridlines, a year scale, and every filing as a hoverable point."""
     if len(history) < 2:
-        return ('<p class="muted small">Only one filing on record, so there is no '
-                'trajectory to draw yet. The weekly feed adds a point whenever the '
-                'firm files.</p>')
+        return '<p class="muted small">At least two filings are needed to show asset history.</p>'
     vals = [h["raum"] for h in history]
     xs = [_yearpos(h["filing_date"]) for h in history]
     lo, hi = min(vals), max(vals)
@@ -293,7 +289,7 @@ def _person_card(person: dict, key: str, points: list, hunt: dict | None = None)
                  if pk and str(pk).isdigit() else escn(person["prior_firm"]))
         meta.append(f"from {prior}")
     if person.get("branch_city"):
-        meta.append(esc(" ".join(x for x in (person["branch_city"], person.get("branch_state") or "") if x)))
+        meta.append(esc(" ".join(x for x in (nice_name(person["branch_city"]), person.get("branch_state") or "") if x)))
     # Best first: verified email, published email, direct line, office line, profile.
     order = {"email": 0, "phone": 1, "linkedin": 2}
     pts = sorted(points, key=lambda cp: (order.get(cp["kind"], 3), cp["verify_status"] != "valid",
@@ -306,8 +302,7 @@ def _person_card(person: dict, key: str, points: list, hunt: dict | None = None)
     anchor = "p-" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
     return (f'<article class="pcard" id="{anchor}"><div class="top">{ui.mono(name, "p")}<div>'
             f'<span class="nm">{esc(name)}</span><div class="ttl">{esc(title)}'
-            f'{" . " + esc(roles.ROLE_LABEL.get(role, "")) if role and role not in ("other", "") else ""}</div>'
-            f'<div class="meta">{" . ".join(meta)}</div></div>{iapd}</div>'
+            f'</div><div class="meta">{" · ".join(meta)}</div></div>{iapd}</div>'
             f'{("<div class=pills>" + "".join(chips) + "</div>") if chips else ""}'
             f'<div class="reach">{lines}</div></article>')
 
@@ -614,6 +609,16 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                                 ("svc_pooled_vehicles", "pooled vehicles"),
                                 ("svc_selects_advisers", "selects other advisers")) if x.get(key)]
     cust = d["cust"] or {}
+    refreshed = d.get('cust_refresh') or {}
+    current_custody = 'Not checked yet'
+    if refreshed.get('custodians'):
+        current_custody = esc(', '.join(nice_name(x) for x in refreshed['custodians'].split('|')))
+        at = refreshed.get('last_success_at') or (refreshed.get('fetched_at') if refreshed.get('status') == 'ok' else None)
+        current_custody += f'<div class="meta">Current ADV, read {esc(ui.ago(at)) or "previously"}</div>'
+    elif refreshed.get('status') == 'ok':
+        current_custody = 'No custodian names found in the current ADV'
+    if refreshed and refreshed.get('status') != 'ok':
+        current_custody += '<div class="meta warnc">Latest refresh failed; retry scheduled.</div>'
     schwab = "-"
     if cust.get("schwab_share_reported") is not None:
         schwab = (caveat("schwab_share_reported",
@@ -650,8 +655,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                       '<th class="num">Investors</th><th class="num">Minimum</th>'
                       f'<th>As of</th></tr></thead><tbody>{frows}</tbody></table></div>')
     else:
-        funds_html = ('<p class="muted">No private funds on Schedule D. That is typical: most '
-                      'advisers this size run none.</p>')
+        funds_html = '<p class="muted">No private funds recorded on Schedule D.</p>'
     seg = d["seg"]
     seg_html = ""
     if seg:
@@ -666,7 +670,8 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                               f'<td class="meta">{esc(h["quarter"])}</td></tr>' for tk, h in h13[:12])
                     + "</tbody></table></div>")
     invest_html = f"""<dl class="kv">
-<dt>Primary custodian</dt><dd>{esc(cust.get('primary_canonical') or '-')}{f", {cust.get('reported_custodians')} reported" if cust.get('reported_custodians') else ""}</dd>
+<dt>Custodians in latest ADV</dt><dd>{current_custody}</dd>
+<dt>Primary custodian, archive</dt><dd>{esc(cust.get('primary_canonical') or '-')}{f", {cust.get('reported_custodians')} reported" if cust.get('reported_custodians') else ""}{f'<div class="meta">As of {esc(cust["as_of_filing_date"])}</div>' if cust.get('as_of_filing_date') else ''}</dd>
 <dt>Schwab share</dt><dd>{schwab}</dd>
 <dt>Files 13F</dt><dd>{"Yes" + (f' <span class="meta">CIK {esc(match["cik"])}, link confidence {match["confidence"]:.2f}</span>' if match else "") if d["files_13f"] else "No"}</dd>
 </dl><h3 style="margin-top:22px">Private funds</h3>{funds_html}{seg_html}{h13_html}"""
@@ -774,7 +779,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     net = ((stats or {}).get("hires_12m") or 0) - ((stats or {}).get("departures_12m") or 0)
     stats_html = f"""<div class="stats">
 <div><div class="l">Assets under management</div><div class="v">{money(f['raum'])}</div><div class="d">{growth or "&nbsp;"}</div></div>
-<div><div class="l">Clients</div><div class="v">{clients_s}</div><div class="d">{hs:.0f}% of assets high net worth</div></div>
+<div><div class="l">Clients</div><div class="v">{clients_s}</div><div class="d">{hs:.0f}% of assets from high-net-worth clients</div></div>
 <div><div class="l">Registered team</div><div class="v">{team if team is not None else '-'}</div><div class="d">{f'<span class="{"up" if net >= 0 else "dn"}">{net:+d}</span> net in 12 months' if stats else '&nbsp;'}</div></div>
 </div>"""
 

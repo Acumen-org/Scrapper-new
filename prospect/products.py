@@ -119,14 +119,21 @@ def _merge(base: dict, over: dict) -> dict:
                     if g["key"] not in have:
                         body.setdefault(section, []).append(json.loads(json.dumps(g)))
             merged["products"][key] = body
-    # Preserve edited weights and points while expanding the legacy criterion.
+    # Compatibility changed; preserve admin weights/points while migrating
+    # the shipped descriptions stored in older overrides.
+    for gate in merged['products']['glynac']['gates']:
+        if gate['key'] == 'supported_system':
+            gate['label'] = 'Microsoft or Black Diamond; compatibility may be unknown'
     for cr in merged['products']['glynac']['criteria']:
         if cr['key'] == 'black_diamond':
-            if cr.get('label') == 'Portfolio platform is Black Diamond':
-                cr['label'] = 'Black Diamond, Salesforce or Redtail'
+            if cr.get('label') == 'Portfolio platform is Black Diamond' or any(
+                    vendor in cr.get('label', '') for vendor in ('Salesforce', 'Redtail')):
+                cr['label'] = 'Black Diamond'
             for lv in cr.get('levels', []):
-                if lv[1] == 'Orion, Tamarac, Addepar or Advyzon':
-                    lv[1] = 'No confirmed supported portfolio or CRM system'
+                if lv[0] == 100 or any(vendor in lv[1] for vendor in ('Salesforce', 'Redtail')):
+                    lv[1] = 'Black Diamond confirmed'
+                elif lv[0] == 0:
+                    lv[1] = 'Black Diamond not confirmed'
         if cr['key'] == 'm365' and cr.get('label') == 'Email runs on Microsoft 365':
             cr['label'] = 'Microsoft 365 or Dynamics'
     return merged
@@ -541,6 +548,8 @@ def load_features(conn, crds: list[str] | None = None) -> dict[str, dict]:
          lambda d, r: d.__setitem__("seg", dict(r)))
     each(f"SELECT * FROM firm_custodian_profile WHERE 1=1{only('crd')}",
          lambda d, r: d.__setitem__("cust", dict(r)))
+    each(f"SELECT * FROM firm_refresh WHERE 1=1{only('crd')}",
+         lambda d, r: d.__setitem__("cust_refresh", dict(r)))
 
     def hold(d, r):
         prev = d["h13f"].get(r["ticker"])
@@ -738,11 +747,9 @@ PLATFORMS = {"platform_black_diamond": "Black Diamond", "platform_orion": "Orion
              "platform_dynamics": "Microsoft Dynamics", "platform_practifi": "Practifi",
              "platform_xlr8": "XLR8", "platform_salentica": "Salentica"}
 
-# The four systems Glynac works with, and the products that count as each:
-# Practifi, XLR8 and Salentica are CRMs built on Salesforce.
+# Supported integrations only. Other vendors remain factual platform evidence.
 GLYNAC_SYSTEMS = {"Microsoft": ("Microsoft Dynamics",),
-                  "Salesforce": ("Salesforce", "Practifi", "XLR8", "Salentica"),
-                  "Redtail": ("Redtail",), "Black Diamond": ("Black Diamond",)}
+                  "Black Diamond": ("Black Diamond",)}
 OTHER_PLATFORMS = ("Orion", "Tamarac", "Addepar", "Advyzon")
 
 
@@ -758,7 +765,7 @@ def platform_evidence(d) -> dict[str, str]:
 
 
 def glynac_systems(d) -> dict[str, list[str]]:
-    """Which of the four systems Glynac works with a firm is seen to use, each
+    """Which supported integrations a firm is seen to use, each
     with what was found and where: Microsoft 365 from the public mail records,
     the rest from the brochure or the firm's website. A system not found is
     absent from the result, which means unknown, not 'does not use'."""
@@ -847,8 +854,7 @@ def g_supported_system(d, g, key):
         return True, "Compatible: " + "; ".join(v[0] for v in sy.values())
     # A portfolio or email vendor does not establish which CRM a firm uses.
     # Unknown compatibility stays eligible, with the missing factors worth zero.
-    return True, ("Compatibility not confirmed yet; Glynac works with Microsoft 365 and "
-                  "Dynamics, Salesforce (including Practifi and XLR8), Redtail and Black Diamond")
+    return True, ("Compatibility not confirmed; Glynac supports Microsoft and Black Diamond")
 
 
 def g_no_private_funds(d, g, key):
@@ -1277,16 +1283,13 @@ def c_m365(d, c, key):
 
 
 def c_black_diamond(d, c, key):
-    """Black Diamond, Salesforce (or a CRM built on it) or Redtail, seen in
-    the brochure or on the website. Not seen is missing data, never a no:
-    firms rarely name their CRM in public."""
+    """Black Diamond evidence. Absence is unknown, worth zero in the full score."""
     sy = glynac_systems(d)
-    found = [line for s in ("Black Diamond", "Salesforce", "Redtail") for line in sy.get(s, [])]
+    found = sy.get("Black Diamond", [])
     if found:
         return 100, "; ".join(found)
     others = [n for n in platform_evidence(d) if n in OTHER_PLATFORMS]
-    return unknown(0, "Not confirmed yet: no Black Diamond, Salesforce (or Practifi, XLR8) or "
-                      "Redtail in the brochure or on the website"
+    return unknown(0, "Black Diamond not confirmed in the brochure or on the website"
                    + (f"; reports on {', '.join(others)}" if others else ""))
 
 

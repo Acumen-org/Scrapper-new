@@ -118,6 +118,8 @@ SPECS: list[Spec] = [
          help="auto renders a page in a headless browser only when plain fetching returns an empty shell."),
     Spec("crawl.max_pages", "Pages per firm website, at most", "crawl", default="25"),
     Spec("crawl.recrawl_days", "Re-read a firm website after (days)", "crawl", default="90"),
+    Spec("crawl.contact_retry_days", "Search again for missing personal contacts after (days)", "crawl", default="14",
+         help="Public-page and AI research keep retrying missing email, direct phone and LinkedIn details. Minimum 1 day; search-engine backoff and the AI daily limit still apply."),
 ]
 BY_KEY = {s.key: s for s in SPECS}
 
@@ -233,6 +235,9 @@ def set(key: str, value: str | None, by: str = "") -> None:  # noqa: A001
         raise KeyError(f"unknown setting {key}")
     if spec.choices and value not in (None, "") and value not in spec.choices:
         raise ValueError(f"{key} must be one of {', '.join(spec.choices)}")
+    if key == "crawl.contact_retry_days" and value not in (None, ""):
+        if not value.isdigit() or not 1 <= int(value) <= 90:
+            raise ValueError("Contact retry interval must be a whole number from 1 to 90 days.")
     from . import db
     c = db.connect()
     try:

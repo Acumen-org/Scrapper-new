@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-08T12:36:58Z",
+  "generatedAt": "2026-10-08T15:19:04Z",
   "title": "Design System: Bellwether",
   "extensions": {
     "colorMeta": {
@@ -408,6 +408,10 @@
       "mono": {
         "displayName": "Mono",
         "purpose": "Identifiers and technical values only."
+      },
+      "overview-total": {
+        "displayName": "Overview total",
+        "purpose": "The four linked Home totals, with tabular figures; reduced to 28px below 760px."
       }
     },
     "shadows": [
@@ -471,6 +475,10 @@
         "value": "600px"
       },
       {
+        "name": "stacked-home-aside-and-sign-in",
+        "value": "500px"
+      },
+      {
         "name": "small-firm-stats",
         "value": "390px"
       }
@@ -492,11 +500,35 @@
         "prospect/home_view.py",
         "prospect/firm_view.py",
         "prospect/webapp.py",
-        "prospect/static/mark.svg"
+        "prospect/static/mark.svg",
+        "prospect/people_view.py",
+        "prospect/settings_view.py"
       ],
       "renderedSamples": "data/quiet-review/final",
-      "refreshScope": "Approved October 2026 solid-charcoal system and named-view refinement. workspace.css is unused. Token ramps are panel previews, not additional shipped CSS colors."
-    }
+      "refreshScope": "October 2026 extension of the established solid-charcoal and red system: four Home totals, a product-filtered leading-firms shortlist with known-data coverage, product and contact rows, segmented sign-in, the People first-name column and knowledge search. workspace.css is unused. Earlier overridden Home-total and sign-in declarations are not the current cascade. Token ramps are panel previews, not additional shipped CSS colors."
+    },
+    "layouts": [
+      {
+        "name": "home-summary",
+        "value": "grid-template-columns:repeat(4,minmax(0,1fr));gap:24px",
+        "purpose": "Four open linked totals with supporting labels; two columns with a 24px 20px gap below 760px."
+      },
+      {
+        "name": "home-main",
+        "value": "grid-template-columns:minmax(0,1.7fr) minmax(240px,1fr);gap:40px",
+        "purpose": "Leading firms beside Product opportunities and Contact coverage. Below 1200px: minmax(0,1.5fr) minmax(225px,1fr), gap 26px. Below 760px: one column, gap 30px. Supporting sections use two columns until 500px, then stack."
+      },
+      {
+        "name": "sign-in-panel",
+        "value": "max-width:460px",
+        "purpose": "Centered solid panel with separate brand and form areas, a fine dividing rule and a clipped chevron outline at 0.25 opacity. Brand padding is 36px 36px 30px; form padding is 32px 36px 30px. Both areas use 28px 24px padding below 500px."
+      },
+      {
+        "name": "knowledge-search",
+        "value": "display:flex;gap:8px;max-width:520px;margin:20px 0",
+        "purpose": "An accessible search field and Search button; the field flexes to the remaining width."
+      }
+    ]
   },
   "components": [
     {
@@ -567,7 +599,7 @@
       "name": "Fit Summary",
       "kind": "custom",
       "refersTo": "fit-summary",
-      "description": "An open row pairs a score with explicit known-data coverage.",
+      "description": "An open firm-overview row pairs a score with explicit known-data coverage; Home retains this evidence pairing within its leading-firms table.",
       "html": "<a class=\"ds-fit\" href=\"#fit\"><span>AcuBooth<small>82% known data</small></span><strong>70<small>/100</small></strong></a>",
       "css": ".ds-fit{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);display:flex;justify-content:space-between;align-items:center;gap:24px;padding:15px 0;border-bottom:1px solid var(--rule,rgba(255,255,255,.07));color:var(--ink,#f0f0f0);font-size:14px;text-decoration:none;}.ds-fit>span>small{display:block;margin-top:4px;color:var(--amber,#e8ac4a);font-size:12px;}.ds-fit strong{font-size:24px;font-weight:550;font-variant-numeric:tabular-nums;}.ds-fit strong small{margin-left:3px;color:var(--faint,#a0a0a0);font-size:12px;font-weight:400;}.ds-fit:hover{color:var(--red-hi,#ef939c);}.ds-fit:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}"
     },
@@ -575,7 +607,7 @@
       "name": "Microsoft Sign-in",
       "kind": "button",
       "refersTo": "microsoft-sign-in",
-      "description": "The prominent light authentication action in the centered sign-in panel.",
+      "description": "The full-width, 48px light action with its icon and label centered together, inside the form area of the segmented 460px sign-in panel.",
       "html": "<button class=\"ds-microsoft\" type=\"button\"><svg aria-hidden=\"true\" viewBox=\"0 0 21 21\"><path fill=\"#f25022\" d=\"M0 0h10v10H0z\"/><path fill=\"#7fba00\" d=\"M11 0h10v10H11z\"/><path fill=\"#00a4ef\" d=\"M0 11h10v10H0z\"/><path fill=\"#ffb900\" d=\"M11 11h10v10H11z\"/></svg>Sign in with Microsoft</button>",
       "css": ".ds-microsoft{font-family:var(--sans,\"Instrument Sans\",\"Segoe UI\",sans-serif);height:36px;padding:0 14px;border:1px solid var(--rule2,rgba(255,255,255,.13));border-radius:8px;font-size:13px;font-weight:500;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;transition:background .12s,border-color .12s,color .12s,transform .06s;width:100%;height:48px;gap:12px;font-size:14px;font-weight:600;border:0;background:#f4f4f5;color:#151515;}.ds-microsoft svg{width:18px;height:18px;}.ds-microsoft:hover{background:#fff;color:#000;}.ds-microsoft:active{transform:translateY(1px);}.ds-microsoft:focus-visible{outline:2px solid var(--red-hi,#ef939c);outline-offset:2px;}@media(prefers-reduced-motion:reduce){.ds-microsoft{transition:none;}}"
     }

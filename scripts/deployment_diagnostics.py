@@ -21,6 +21,20 @@ def safe(message):
 
 
 allocations = command('job', 'allocs', '-json', 'bellwether') or []
+running = [row for row in allocations if row.get('ClientStatus') == 'running'
+           and row.get('DesiredStatus') == 'run']
+if running:
+    latest = max(running, key=lambda row: row.get('CreateIndex', 0))
+    runtime = subprocess.run(['nomad', 'alloc', 'exec', '-t=false', '-task', 'app',
+                              latest['ID'], 'python', '-m', 'scripts.job_diagnostics'],
+                             capture_output=True, text=True, timeout=60)
+    if runtime.returncode:
+        print('Runtime diagnostics unavailable; exit:', runtime.returncode)
+    else:
+        for line in runtime.stdout.splitlines():
+            if line.startswith(('Runtime jobs:', 'Runtime release:', 'Runtime custodians:',
+                                'Runtime custodian retries:')):
+                print(line)
 for row in sorted(allocations, key=lambda x:x.get('CreateIndex',0), reverse=True)[:3]:
     print('Allocation:', row['ID'], row.get('ClientStatus'), row.get('DesiredStatus'))
     allocation = command('alloc', 'status', '-json', row['ID']) or {}

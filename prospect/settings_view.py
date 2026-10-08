@@ -541,8 +541,8 @@ def job_action(kind: str, action: str):
         c.close()
     from .webapp import ensure_autopilot
     ensure_autopilot()
-    word = {"run": "will run within a minute", "pause": "is paused",
-            "resume": "is running by itself again"}[action]
+    word = {"run": "is queued", "pause": "is paused",
+            "resume": "will run automatically when due"}[action]
     return RedirectResponse(f"/settings/jobs?{qs_join(msg=jobs.BY_KIND[kind].label + ' ' + word + '.')}",
                             status_code=303)
 
@@ -754,7 +754,7 @@ def firmtypes_reclassify():
     from .webapp import ensure_autopilot
     ensure_autopilot()
     return RedirectResponse("/settings/firmtypes?" + qs_join(
-        msg="Every firm will be reclassified within a minute; scores follow if any type changes."),
+        msg="Reclassification queued for all firms. Scores will update if firm types change."),
         status_code=303)
 
 
@@ -771,7 +771,7 @@ def firmtypes_rescore():
         return RedirectResponse("/settings/firmtypes?" + qs_join(
             err="The Scores job is not set up yet; restart Bellwether."), status_code=303)
     return RedirectResponse("/settings/firmtypes?" + qs_join(
-        msg="Every firm will be rescored for every product within a minute."), status_code=303)
+        msg="Rescoring queued for all firms and all products."), status_code=303)
 
 
 # ------------------------------------------------------------- industry knowledge
@@ -808,7 +808,7 @@ def _kn_fields(it: dict | None, kind: str) -> str:
 
 
 @router.get("/settings/knowledge", response_class=HTMLResponse)
-def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str = Query("")):
+def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str = Query(""), q: str = Query("")):
     from . import firmtype, knowledge
     kind = kind if kind in knowledge.KINDS else "entity"
     c = conn()
@@ -822,6 +822,10 @@ def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str =
         f'{esc(label)} <span class="muted">{per[k]}</span></a>'
         for k, label in knowledge.KINDS.items()) + '</div>')
     items = [i for i in all_items if i["kind"] == kind]
+    if q.strip():
+        needle = q.strip().casefold()
+        items = [i for i in items if needle in (i['title'] + ' ' + (i.get('body') or '')
+                 + ' ' + str(i.get('data') or {})).casefold()]
     if kind == "category":
         order = {k: n for n, k in enumerate(firmtype.KEYS)}
         items.sort(key=lambda i: order.get(i["key"], 99))
@@ -885,12 +889,22 @@ def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str =
                f'brief, beside the data on the firm itself.</p><details class="source-help">'
                f'<summary>Show the digest</summary><pre class="small soft" style="white-space:pre-wrap">'
                f'{esc(digest)}</pre></details></section>') if digest else ""
-    inner = (seg + f'<p class="lede">{esc(knowledge.KIND_HELP.get(kind, ""))}</p>'
+    search = (f'<form class="knowledge-search" method="get" action="/settings/knowledge">'
+              f'<input type="hidden" name="kind" value="{esc(kind)}">'
+              f'<input type="search" name="q" value="{esc(q)}" aria-label="Search industry knowledge" placeholder="Search names or rules">'
+              f'<button type="submit">Search</button></form>')
+    inner = (seg + search + f'<p class="lede">{esc(knowledge.KIND_HELP.get(kind, ""))}</p>'
              f'<table><tbody>{"".join(rows) or "<tr><td class=empty>Nothing here yet.</td></tr>"}</tbody></table>'
              + add + ai_html)
     return _frame("Industry knowledge", "knowledge",
-                  "What Bellwether knows about the adviser industry and about Acumen's own purpose. "
-                  "The classifier, the scores and Bellwether AI all read it.", inner, msg, err)
+                  "Edit the firm identities, definitions and product knowledge used by classification and AI.", inner, msg, err)
+
+
+def _knowledge_changed(c, item):
+    if (item or {}).get('kind') == 'entity':
+        jobs.request_run(c, 'classify')
+        from .webapp import ensure_autopilot
+        ensure_autopilot()
 
 
 @router.post("/settings/knowledge/save")
@@ -920,7 +934,7 @@ async def knowledge_save(request: Request):
     if kind == "entity":
         from .webapp import ensure_autopilot
         ensure_autopilot()
-        msg = "Saved. Every firm will be reclassified within a minute."
+        msg = "Saved. Reclassification queued; scores will update if firm types change."
     return RedirectResponse(f"{back}&{qs_join(msg=msg)}", status_code=303)
 
 
@@ -931,6 +945,7 @@ def knowledge_toggle(id: int = Form(...), active: int = Form(...)):
     try:
         it = knowledge.get(c, id)
         knowledge.set_active(c, id, bool(active), current_owner())
+        _knowledge_changed(c, it)
     except ValueError as e:
         return RedirectResponse(f"/settings/knowledge?{qs_join(err=str(e))}", status_code=303)
     finally:
@@ -947,6 +962,8 @@ def knowledge_reset(id: int = Form(...)):
     try:
         it = knowledge.get(c, id)
         ok = knowledge.reset_item(c, id)
+        if ok:
+            _knowledge_changed(c, it)
     finally:
         c.close()
     kind = (it or {}).get("kind", "entity")
@@ -961,6 +978,7 @@ def knowledge_delete(id: int = Form(...)):
     try:
         it = knowledge.get(c, id)
         knowledge.delete_item(c, id)
+        _knowledge_changed(c, it)
     except ValueError as e:
         return RedirectResponse(f"/settings/knowledge?{qs_join(err=str(e))}", status_code=303)
     finally:

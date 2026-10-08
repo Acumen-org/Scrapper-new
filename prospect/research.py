@@ -184,15 +184,17 @@ def _have(conn, crds: list[str]) -> dict[tuple, dict]:
     for i in range(0, len(crds), 500):
         chunk = crds[i:i + 500]
         for r in conn.execute(
-                f"SELECT crd, person_key, kind, label FROM usable_contact_point"
+                f"SELECT crd, person_key, kind, label, verify_status FROM usable_contact_point"
                 f" WHERE crd IN ({','.join('?' * len(chunk))}) AND person_key != ''",
                 chunk).fetchall():
             h = out.setdefault((r["crd"], r["person_key"]), {})
             if r["kind"] == "phone":
                 if r["label"] not in contacts.SHARED_PHONE_LABELS:
                     h["phone"] = True
-            else:
-                h[r["kind"]] = True
+            elif r["kind"] == "email":
+                h["email"] = h.get("email", False) or r["verify_status"] == "valid"
+            elif r["kind"] == "linkedin":
+                h["linkedin"] = h.get("linkedin", False) or r["verify_status"] == "matched"
     return out
 
 
@@ -249,7 +251,9 @@ def targets(conn, limit: int, *, crd: str | None = None, force: bool = False) ->
     """The people to research next, best firms and officers first, missing an
     email before missing only a phone or a profile. With crd, that firm's
     people whether or not the email hunt has reached them yet."""
-    cut, cut_err = _ago(days=RESEARCH_DAYS), _ago(hours=ERROR_RETRY_HOURS)
+    from . import settings
+    retry_days = max(1, min(90, settings.get_int("crawl.contact_retry_days", 14)))
+    cut, cut_err = _ago(days=retry_days), _ago(hours=ERROR_RETRY_HOURS)
     recent = {(r["crd"], r["person_key"]) for r in conn.execute(
         "SELECT crd, person_key FROM ai_research WHERE researched_at >= ?"
         " AND (status != 'error' OR researched_at >= ?)"
@@ -279,7 +283,7 @@ def targets(conn, limit: int, *, crd: str | None = None, force: bool = False) ->
         return out
     rows = conn.execute(
         "SELECT h.crd, h.person_key, h.person_name, h.state FROM email_hunt h"
-        " JOIN firm_scope s ON s.crd = h.crd"
+        " LEFT JOIN firm_scope s ON s.crd = h.crd"
         " WHERE h.state NOT IN ('queued', 'searching') AND COALESCE(h.person_name, '') != ''"
         " AND NOT EXISTS (SELECT 1 FROM ai_research r WHERE r.crd = h.crd"
         "   AND r.person_key = h.person_key AND r.researched_at >= ?"
@@ -505,15 +509,16 @@ _PHONE_RE = re.compile(r"(?:\+?1[\s.\-]*)?\(?\d{3}\)?[\s.\-]*\d{3}[\s.\-]*\d{4}"
 
 
 def _phone_spots(page: Page, phone: str) -> list[int] | None:
-    want = re.sub(r"\D", "", phone)[:10]
-    at = [m.start() for m in _PHONE_RE.finditer(_plain(page.text))
-          if (contacts.norm_phone(m.group(0)) or "") and
-          re.sub(r"\D", "", contacts.norm_phone(m.group(0)))[:10] == want]
+    import phonenumbers as pn
+    want = contacts.norm_phone(phone)
+    at = [m.start for m in pn.PhoneNumberMatcher(_plain(page.text), "US", max_tries=200)
+          if contacts.norm_phone(m.raw_string) == want]
     if at:
         return at
-    for m in re.finditer(r'tel:([+\d().\-\s]{7,25})', page.html or "", re.I):
-        p = contacts.norm_phone(m.group(1))
-        if p and re.sub(r"\D", "", p)[:10] == want:
+    for m in re.finditer(r'tel:([^"<>\s]+)', page.html or "", re.I):
+        from urllib.parse import unquote
+        p = contacts.norm_phone(unquote(m.group(1)))
+        if p and p == want:
             return []
     return None
 
@@ -531,6 +536,15 @@ def _names_firm(t: Target, title: str) -> bool:
     reg = host[4:] if host.startswith("www.") else host
     return any(re.search(rf"\b{re.escape(w)}\b", pt) for w in words) or (
         bool(reg) and reg.split(".")[0] in pt.replace(" ", ""))
+
+
+def _page_belongs(t: Target, page: Page) -> bool:
+    """A namesake at another employer must not become this firm's contact."""
+    site = t.website if "://" in t.website else "https://" + t.website
+    own = (urlparse(site).hostname or "").lower().removeprefix("www.")
+    host = (urlparse(page.url).hostname or "").lower().removeprefix("www.")
+    return bool(own and (host == own or host.endswith('.' + own))) or _names_firm(
+        t, page.title + ' ' + page.text)
 
 
 # ------------------------------------------------------------------ checking claims
@@ -600,6 +614,9 @@ def _check_email(t: Target, item, reader: Reader, conn) -> Verdict:
     if not spots:
         v.why = "its page does not name the person"
         return v
+    if not _page_belongs(t, page):
+        v.why = "the page does not connect this person to this firm"
+        return v
     at = _email_spots(page, email)
     if at is None:
         v.why = "not on its page"
@@ -628,7 +645,7 @@ def _check_phone(t: Target, item, reader: Reader, conn, firm_phones: set) -> Ver
     v = Verdict("phone", phone, url, False, "", label=label if label in
                 ("direct", "mobile", "office", "main") else None)
     if not phone:
-        v.why = "not a US phone number"
+        v.why = "not a valid phone number"
         return v
     if phone in firm_phones or (label or "") == "main":
         v.why = "the firm's own line, already on file"
@@ -638,6 +655,9 @@ def _check_phone(t: Target, item, reader: Reader, conn, firm_phones: set) -> Ver
         v.why = "its page could not be read"
         return v
     spots = _name_spots(t, page.text)
+    if not _page_belongs(t, page):
+        v.why = "the page does not connect this person to this firm"
+        return v
     at = _phone_spots(page, phone) if spots else None
     if not spots:
         v.why = "its page does not name the person"
@@ -708,13 +728,14 @@ def _rule_claims(t: Target, pages: list[Page]) -> dict:
         pt = _plain(page.text)
         for m in re.finditer(rf"\b{re.escape(_plain(t.last))}\b", pt):
             window = pt[m.end():m.end() + 160]
-            pm = _PHONE_RE.search(window)
-            if pm and _mine(t, pt, [m.end() + pm.start()]):
-                before = window[:pm.start()]
+            import phonenumbers as pn
+            pm = next(iter(pn.PhoneNumberMatcher(window, "US", max_tries=20)), None)
+            if pm and _mine(t, pt, [m.end() + pm.start]):
+                before = window[:pm.start]
                 label = ("mobile" if re.search(r"mobile|cell", before) else
                          "direct" if "direct" in before else "other")
-                out["phones"].append({"value": pm.group(0), "label": label,
-                                      "source_url": page.url, "quote": pm.group(0)})
+                out["phones"].append({"value": pm.raw_string, "label": label,
+                                      "source_url": page.url, "quote": pm.raw_string})
         for slug in set(re.findall(r"linkedin\.com/in/([a-z0-9\-_%]+)", _plain(page.html))):
             if last and last in slug.replace("-", ""):
                 out["linkedin"].append({"value": f"https://www.linkedin.com/in/{slug}",
@@ -790,10 +811,10 @@ def _merge(a: dict, b: dict) -> dict:
             for k in ("emails", "phones", "linkedin", "title")}
 
 
-def research_person(conn, t: Target, reader: Reader) -> dict:
+def research_person(conn, t: Target, reader: Reader, *, use_ai: bool = True) -> dict:
     """Find, check and store one person's details. Returns counts and a
     status; raises AIError only for errors that will repeat for everyone."""
-    p = ai.provider()
+    p = ai.provider() if use_ai else "public_pages"
     res = {"status": "nothing", "emails": 0, "phones": 0, "linkedin": 0, "rejected": 0,
            "weak": False, "detail": ""}
     sources: list[dict] = []
@@ -820,7 +841,7 @@ def research_person(conn, t: Target, reader: Reader) -> dict:
         pages = _evidence(conn, t, reader)
         sources = [{"url": pg.url, "title": pg.title, "via": pg.via} for pg in pages]
         excerpt = _excerpts(t, pages)
-        if excerpt:
+        if excerpt and use_ai:
             try:
                 data = ai.complete(
                     EXTRACT_SYSTEM,
@@ -833,7 +854,7 @@ def research_person(conn, t: Target, reader: Reader) -> dict:
                 ai_failed = e
     claims = _merge(data, _rule_claims(t, pages))
     verdicts = check_claims(t, claims, sources, reader, conn)
-    stored = _store(conn, t, verdicts, claims)
+    stored = _store(conn, t, verdicts, claims, source="ai_web" if use_ai else "public_research")
     for k in ("emails", "phones", "linkedin"):
         res[k] = stored[k]
     res["rejected"] = sum(1 for v in verdicts if not v.ok)
@@ -849,7 +870,7 @@ def research_person(conn, t: Target, reader: Reader) -> dict:
     return res
 
 
-def _store(conn, t: Target, verdicts: list[Verdict], claims: dict) -> dict:
+def _store(conn, t: Target, verdicts: list[Verdict], claims: dict, *, source: str = "ai_web") -> dict:
     n = {"emails": 0, "phones": 0, "linkedin": 0}
     title = None
     for item in claims.get("title") or []:
@@ -862,7 +883,7 @@ def _store(conn, t: Target, verdicts: list[Verdict], claims: dict) -> dict:
         if not v.ok:
             continue
         if v.kind == "email":
-            contacts.upsert(conn, t.crd, "email", v.value, "ai_web", person_key=t.key,
+            contacts.upsert(conn, t.crd, "email", v.value, source, person_key=t.key,
                             person_name=t.name, title=title or t.title, source_ref=v.url,
                             confidence=55, is_role=False)
             r = conn.execute("SELECT id, verify_status FROM contact_point WHERE crd=?"
@@ -872,12 +893,12 @@ def _store(conn, t: Target, verdicts: list[Verdict], claims: dict) -> dict:
                 new_ids.append(r["id"])
             n["emails"] += 1
         elif v.kind == "phone":
-            n["phones"] += contacts.upsert(conn, t.crd, "phone", v.value, "ai_web",
+            n["phones"] += contacts.upsert(conn, t.crd, "phone", v.value, source,
                                            person_key=t.key, person_name=t.name,
                                            title=title or t.title, label=v.label,
                                            source_ref=v.url, confidence=60) or 0
         elif v.kind == "linkedin":
-            n["linkedin"] += contacts.upsert(conn, t.crd, "linkedin", v.value, "ai_web",
+            n["linkedin"] += contacts.upsert(conn, t.crd, "linkedin", v.value, source,
                                              person_key=t.key, person_name=t.name,
                                              title=title or t.title, source_ref=v.url,
                                              confidence=60, verify_status=v.status) or 0
@@ -907,7 +928,7 @@ def _verify_found(conn, t: Target, ids: list[int]) -> None:
             hunt.init(conn)
             conn.execute("UPDATE email_hunt SET state='found', found=?, detail=?,"
                          " next_try_at=NULL, updated_at=? WHERE crd=? AND person_key=?",
-                         (r["value"], "Found by AI research on a published page and confirmed"
+                         (r["value"], "Found on a published page and confirmed"
                           " by the mail server", _now(), t.crd, t.key))
         elif r["verify_status"] in ("unknown", "risky"):
             hunt.queue_person(conn, t.crd, t.key)

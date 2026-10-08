@@ -12,6 +12,42 @@ _KEEP_UPPER = {"LLC", "L.L.C.", "LP", "L.P.", "LLP", "L.L.P.", "INC", "INC.", "P
                "CEO", "CIO", "CFO", "COO", "CCO", "CTO", "CMO", "VP", "SVP", "EVP", "MD",
                "LLC,", "IRA", "ESG", "RE"}
 
+_TITLES = {"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "professor", "rev", "sir", "dame"}
+_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "cfa", "cfp", "cpa", "esq"}
+
+
+def first_name(full_name: str | None, given_name: str | None = None) -> str:
+    """Use the filed given name, or parse a display/SEC surname-first name.
+
+    Titles and credentials are never returned as a person's first name.
+    Initials stay initials; a full given name cannot be inferred from them.
+    """
+    def first(value):
+        parts = str(value or "").strip().split()
+        while parts and parts[0].casefold().replace('.', '').strip(',®') in _TITLES:
+            parts.pop(0)
+        if not parts or parts[0].casefold().replace('.', '').strip(',®') in _SUFFIXES:
+            return ""
+        return nice_name(parts[0].strip(","))
+
+    given = first(given_name)
+    if given:
+        return given
+    name = str(full_name or "").strip()
+    if "," in name:
+        left, right = name.split(",", 1)
+        # "Smith, Jane Ann" versus "Jane Smith, CFP".
+        name = right if first(right) else left
+    return first(name)
+
+
+def person_name(filed: str | None) -> str:
+    """Display SEC surname-first records without mangling already mixed-case names."""
+    parts = [p.strip() for p in str(filed or '').split(',') if p.strip()]
+    if len(parts) > 1 and parts[1].casefold().replace('.', '').strip('®') not in _SUFFIXES:
+        parts = parts[1:] + parts[:1]
+    return nice_name(' '.join(parts))
+
 
 def nice_name(name) -> str:
     """Firm names arrive from the SEC in capitals. Title case reads faster,

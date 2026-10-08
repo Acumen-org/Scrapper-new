@@ -184,6 +184,7 @@ def coverage(conn) -> dict:
         return {}
     try:
         r = conn.execute("""SELECT COUNT(*) total, SUM(has_email) email, SUM(has_direct) direct,
+                   COUNT(*) FILTER (WHERE email_status='valid') verified,
                    SUM(has_phone) phone, SUM(has_linkedin) linkedin,
                    SUM(CASE WHEN priority IS NOT NULL THEN 1 ELSE 0 END) listed,
                    SUM(CASE WHEN priority IS NOT NULL THEN has_email ELSE 0 END) listed_email,

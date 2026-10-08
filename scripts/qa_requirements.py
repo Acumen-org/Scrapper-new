@@ -34,12 +34,14 @@ class GlynacCompatibilityChecks(unittest.TestCase):
         current = next(c for c in merged['products']['glynac']['criteria'] if c['key']=='black_diamond')
         self.assertEqual((current['label'], current['weight']), ('Our supported CRM evidence', 27))
 
-    def test_crm_supported_even_with_google_and_orion(self):
-        for platform in ('Salesforce', 'Redtail', 'Black Diamond'):
+    def test_only_black_diamond_earns_portfolio_integration_points(self):
+        for platform in ('Salesforce', 'Redtail', 'Practifi', 'XLR8', 'Salentica', 'Black Diamond'):
             with patch.object(products, 'platform_evidence', return_value={platform:'website evidence', 'Orion':'portfolio'}):
                 data = {'mail':{'platform':'google'}}
                 self.assertTrue(products.g_supported_system(data, {}, 'glynac')[0])
-                self.assertEqual(products.c_black_diamond(data, {}, 'glynac')[0], 100)
+                self.assertEqual(products.c_black_diamond(data, {}, 'glynac')[0], 100 if platform == 'Black Diamond' else 0)
+                self.assertNotIn('Salesforce', products.glynac_systems(data))
+                self.assertNotIn('Redtail', products.glynac_systems(data))
 
     def test_microsoft_is_supported(self):
         with patch.object(products, 'platform_evidence', return_value={}):

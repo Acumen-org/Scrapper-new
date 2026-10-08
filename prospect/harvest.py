@@ -1078,6 +1078,13 @@ def _phones_from(lines: list[str], tels: list[tuple[str, str]]) -> list[dict]:
         p = _norm_phone(num)
         if p and p not in found and p not in fax:
             add(p, _label_from(text, ""))
+    # Also recognise international numbers and valid formats the US regex
+    # misses. Labels still come from the surrounding published text.
+    import phonenumbers as pn
+    for line in lines:
+        for m in pn.PhoneNumberMatcher(line, "US", max_tries=100):
+            add(_norm_phone(m.raw_string),
+                _label_from(line[max(0, m.start - 30):m.start], line[m.end:m.end + 20]))
     # A bare number printed next to the same number with an extension is the
     # switchboard behind that extension; the extension is the person's line.
     with_ext = {p.split(" x")[0] for p in order if " x" in p}
