@@ -184,7 +184,7 @@ def _have(conn, crds: list[str]) -> dict[tuple, dict]:
     for i in range(0, len(crds), 500):
         chunk = crds[i:i + 500]
         for r in conn.execute(
-                f"SELECT crd, person_key, kind, label, verify_status FROM usable_contact_point"
+                f"SELECT crd, person_key, kind, label, verify_status, is_role FROM usable_contact_point"
                 f" WHERE crd IN ({','.join('?' * len(chunk))}) AND person_key != ''",
                 chunk).fetchall():
             h = out.setdefault((r["crd"], r["person_key"]), {})
@@ -192,7 +192,7 @@ def _have(conn, crds: list[str]) -> dict[tuple, dict]:
                 if r["label"] not in contacts.SHARED_PHONE_LABELS:
                     h["phone"] = True
             elif r["kind"] == "email":
-                h["email"] = h.get("email", False) or r["verify_status"] == "valid"
+                h["email"] = h.get("email", False) or (r["verify_status"] == "valid" and not r["is_role"])
             elif r["kind"] == "linkedin":
                 h["linkedin"] = h.get("linkedin", False) or r["verify_status"] == "matched"
     return out
@@ -248,8 +248,8 @@ def _target(conn, crd: str, key: str, name: str, title: str | None, firm: dict,
 
 
 def targets(conn, limit: int, *, crd: str | None = None, force: bool = False) -> list[Target]:
-    """The people to research next, best firms and officers first, missing an
-    email before missing only a phone or a profile. With crd, that firm's
+    """First-time research before the oldest retries; best firms and officers
+    first within that order. With crd, that firm's
     people whether or not the email hunt has reached them yet."""
     from . import settings
     retry_days = max(1, min(90, settings.get_int("crawl.contact_retry_days", 14)))
@@ -284,11 +284,20 @@ def targets(conn, limit: int, *, crd: str | None = None, force: bool = False) ->
     rows = conn.execute(
         "SELECT h.crd, h.person_key, h.person_name, h.state FROM email_hunt h"
         " LEFT JOIN firm_scope s ON s.crd = h.crd"
+        " LEFT JOIN ai_research previous ON previous.crd=h.crd AND previous.person_key=h.person_key"
         " WHERE h.state NOT IN ('queued', 'searching') AND COALESCE(h.person_name, '') != ''"
         " AND NOT EXISTS (SELECT 1 FROM ai_research r WHERE r.crd = h.crd"
         "   AND r.person_key = h.person_key AND r.researched_at >= ?"
         "   AND (r.status != 'error' OR r.researched_at >= ?))"
-        " ORDER BY s.priority DESC NULLS LAST, h.crd, (h.state = 'found'), h.rank, h.person_key"
+        " AND (NOT EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=h.crd"
+        "   AND c.person_key=h.person_key AND c.kind='email' AND c.verify_status='valid' AND c.is_role=0)"
+        " OR NOT EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=h.crd"
+        "   AND c.person_key=h.person_key AND c.kind='phone'"
+        "   AND COALESCE(c.label,'') NOT IN ('main','office','toll_free'))"
+        " OR NOT EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd=h.crd"
+        "   AND c.person_key=h.person_key AND c.kind='linkedin' AND c.verify_status='matched'))"
+        " ORDER BY previous.researched_at NULLS FIRST, s.priority DESC NULLS LAST,"
+        " h.crd, (h.state = 'found'), h.rank, h.person_key"
         " LIMIT ?", (cut, cut_err, max(limit * 20, 200))).fetchall()
     have = _have(conn, sorted({r["crd"] for r in rows}))
     firms: dict[str, dict] = {}

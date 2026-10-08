@@ -84,7 +84,7 @@ class RetryDatabaseChecks(_DB):
 
     def setUp(self):
         c = self.conn
-        for table in ('contact_point', 'contact_search_state', 'firm_refresh', 'schedule_a',
+        for table in ('contact_point', 'contact_search_state', 'ai_research', 'email_hunt', 'firm_refresh', 'schedule_a',
                       'person_employment', 'person', 'firm_scope', 'firm_current'):
             c.execute(f'DELETE FROM {table}')
         c.execute("INSERT INTO firm_current(crd,legal_name,q5k3) VALUES ('900701','QA Wealth','Y'),('900702','Other QA','Y')")
@@ -123,6 +123,49 @@ class RetryDatabaseChecks(_DB):
         self.conn.commit()
         with patch.object(settings, 'get_int', return_value=14):
             self.assertEqual(search_contacts.todo(self.conn, 20, None)[0]['crd'], '900702')
+
+    def test_first_pass_and_oldest_retry_precede_repeating_high_priority_firm(self):
+        c = self.conn
+        c.execute("INSERT INTO person(indvl_pk,name,first_name,last_name) VALUES ('2','Mary Jones','Mary','Jones')")
+        c.execute("INSERT INTO person_employment VALUES ('2','900702','current')")
+        c.execute("INSERT INTO contact_search_state(crd,person_key,searched_at,found,status,queries)"
+                  " VALUES ('900701','i:1','2020-02-01',0,'none',2)")
+        c.commit()
+        with patch.object(settings, 'get_int', return_value=14):
+            self.assertEqual(search_contacts.todo(c, 1, None)[0]['crd'], '900702')
+            c.execute("INSERT INTO contact_search_state(crd,person_key,searched_at,found,status,queries)"
+                      " VALUES ('900702','i:2','2020-01-01',0,'none',2)")
+            c.commit()
+            self.assertEqual(search_contacts.todo(c, 1, None)[0]['crd'], '900702')
+
+    def test_ai_first_pass_reaches_unranked_firms_before_retries(self):
+        c = self.conn
+        c.execute("INSERT INTO email_hunt(crd,person_key,person_name,state,updated_at) VALUES"
+                  " ('900701','i:1','Jane Smith','exhausted','2020-01-01'),"
+                  " ('900702','n:mary jones','Mary Jones','exhausted','2020-01-01')")
+        c.execute("INSERT INTO ai_research(crd,person_key,researched_at,status)"
+                  " VALUES ('900701','i:1','2020-01-01','nothing')")
+        c.commit()
+        with patch.object(settings, 'get_int', return_value=14):
+            self.assertEqual(research.targets(c, 1)[0].crd, '900702')
+
+    def test_complete_contacts_do_not_fill_the_ai_candidate_window(self):
+        c = self.conn
+        for i in range(201):
+            key = f'n:complete {i}'
+            c.execute("INSERT INTO email_hunt(crd,person_key,person_name,state,updated_at)"
+                      " VALUES ('900701',?,'Jane Smith','found','2020-01-01')", (key,))
+            contacts.upsert(c, '900701', 'email', f'person{i}@qa.invalid', 'website',
+                            person_key=key, verify_status='valid')
+            contacts.upsert(c, '900701', 'phone', f'650-253-2222 x{1000+i}', 'website',
+                            person_key=key, label='direct')
+            contacts.upsert(c, '900701', 'linkedin', f'https://www.linkedin.com/in/qa-{i}', 'website',
+                            person_key=key, verify_status='matched')
+        c.execute("INSERT INTO email_hunt(crd,person_key,person_name,state,updated_at)"
+                  " VALUES ('900702','n:mary jones','Mary Jones','exhausted','2020-01-01')")
+        c.commit()
+        with patch.object(settings, 'get_int', return_value=14):
+            self.assertEqual(research.targets(c, 1)[0].crd, '900702')
 
     def test_unverified_research_email_is_hidden(self):
         contacts.upsert(self.conn, '900701', 'email', 'jane@qa.invalid', 'public_research', person_key='i:1')

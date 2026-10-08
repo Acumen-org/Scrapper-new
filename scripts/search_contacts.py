@@ -45,7 +45,8 @@ PER_FIRM = 25            # people per firm in the first pass over all firms
 # Everyone at an in-scope firm, ranked within the firm (officers first) over
 # the whole roster, so the rank does not shift as people are searched. Then
 # only those not searched lately and missing at least one channel, first pass
-# (rank <= PER_FIRM) before second, best firms first.
+# (rank <= PER_FIRM) before second, best firms first within each pass.
+# First-time searches precede retries; retries are oldest first.
 TODO_SQL = """
 WITH ranked AS (
   SELECT e.org_pk AS crd, e.indvl_pk, p.name, p.first_name, p.middle_name, p.last_name,
@@ -60,6 +61,8 @@ WITH ranked AS (
    WHERE e.kind = 'current' {crd_filter}
 )
 SELECT r.* FROM ranked r
+ LEFT JOIN contact_search_state previous ON previous.crd=r.crd
+      AND previous.person_key='i:' || r.indvl_pk
  WHERE NOT EXISTS (SELECT 1 FROM contact_search_state x WHERE x.crd = r.crd
                    AND x.person_key = 'i:' || r.indvl_pk
                    AND x.searched_at > CASE WHEN x.status = 'error' THEN ?
@@ -73,7 +76,8 @@ SELECT r.* FROM ranked r
      OR NOT EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd = r.crd
                    AND c.person_key = 'i:' || r.indvl_pk AND c.kind = 'phone'
                    AND COALESCE(c.label, '') NOT IN ('main','office','toll_free')))
- ORDER BY (r.rn > ?), r.priority DESC NULLS LAST, r.crd, r.rn
+ ORDER BY previous.searched_at NULLS FIRST, (r.rn > ?),
+          r.priority DESC NULLS LAST, r.crd, r.rn
  LIMIT ?
 """
 
