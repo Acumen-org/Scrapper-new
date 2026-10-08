@@ -310,6 +310,18 @@ def _strict_json_ok(base: str) -> bool:
     return provider() == "openai" and "api.openai.com" in (base or "")
 
 
+# Thinking models behind OpenAI-compatible gateways (Gemma 4 on Eden AI) count
+# their reasoning against max_tokens: about 1,500 tokens before a two-line
+# plan, so a 500 token limit ended mid-JSON or with no answer at all. Callers
+# say how long the answer may be; this much more is allowed for the thinking.
+# A model that does not think never uses it, and tokens are billed as used.
+THINK_ROOM = 3000
+
+# Yielded by stream() once, when a model starts thinking before it writes,
+# so the screen can say so instead of sitting silent.
+THINKING = object()
+
+
 def _openai_request(system: str, messages: list[dict], mdl: str, max_tokens: int,
                     schema: dict | None, base: str, schema_hint: bool) -> tuple[dict, dict]:
     """Headers and body for an OpenAI-compatible chat completion."""
@@ -322,7 +334,7 @@ def _openai_request(system: str, messages: list[dict], mdl: str, max_tokens: int
         if schema_hint:
             system += " It must match this JSON schema: " + json.dumps(schema)
     msgs = [{"role": "system", "content": system}] + messages
-    body: dict = {"model": mdl, "messages": msgs, "max_tokens": max_tokens}
+    body: dict = {"model": mdl, "messages": msgs, "max_tokens": max_tokens + THINK_ROOM}
     if schema is not None and _strict_json_ok(base):
         body["response_format"] = {"type": "json_schema", "json_schema": {
             "name": "result", "schema": schema, "strict": True}}
@@ -352,6 +364,11 @@ def _call_openai_compatible(system: str, messages: list[dict], mdl: str, max_tok
     try:
         r = requests.post(base.rstrip("/") + "/chat/completions", json=body,
                           headers=headers, timeout=timeout)
+        if r.status_code == 400 and "max_tokens" in (r.text or "").lower():
+            # A model with a small output cap: ask for the answer length alone.
+            body["max_tokens"] = max_tokens
+            r = requests.post(base.rstrip("/") + "/chat/completions", json=body,
+                              headers=headers, timeout=timeout)
         if r.status_code == 400 and "response_format" in body:
             # Not every endpoint honours json_schema; ask in words instead.
             headers, body = _openai_request(system, messages, mdl, max_tokens, schema, "", True)
@@ -613,7 +630,9 @@ def stream(system: str, messages: list[dict], *, feature: str, tier: str = "smar
             raise AIError("Unknown AI provider.", f"unknown provider {p!r}")
         said = False
         for piece in gen:
-            if piece:
+            if piece is THINKING:
+                yield piece
+            elif piece:
                 said = True
                 yield piece
         if not said:
@@ -670,7 +689,7 @@ def _stream_openai_compatible(system, messages, mdl, max_tokens, base, timeout, 
         return
     if r.status_code >= 400:
         raise _http_error(r, mdl, base)
-    finish, said = None, False
+    finish, said, thinking = None, False, False
     try:
         # chunk_size=None hands over each piece as it arrives; the default
         # waits for 512 bytes, which held a short answer back until it ended.
@@ -693,7 +712,12 @@ def _stream_openai_compatible(system, messages, mdl, max_tokens, base, timeout, 
                 usage["in"] = d["usage"].get("prompt_tokens")
                 usage["out"] = d["usage"].get("completion_tokens")
             for ch in d.get("choices") or []:
-                piece = (ch.get("delta") or {}).get("content")
+                delta = ch.get("delta") or {}
+                if not thinking and not said and (delta.get("reasoning_content")
+                                                   or delta.get("reasoning")):
+                    thinking = True
+                    yield THINKING
+                piece = delta.get("content")
                 if isinstance(piece, list):
                     piece = "".join(x.get("text", "") for x in piece if isinstance(x, dict))
                 if piece:

@@ -40,7 +40,7 @@ if running:
                                 'Runtime custodian retries:', 'Runtime ai')):
                 print(line)
     if os.environ.get('AI_CHECK') == 'true':
-        # Opt in only: this one calls the model (three calls at most).
+        # Opt in only: this one calls the model (two calls at most).
         check = subprocess.run(['nomad', 'alloc', 'exec', '-i', '-t=false', '-task', 'app',
                                 latest['ID'], 'python', '-'],
                                input=Path(__file__).with_name('ai_live_check.py').read_text(),

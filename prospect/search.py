@@ -33,8 +33,10 @@ def _nullable(t: dict) -> dict:
 def filter_schema() -> dict:
     """The JSON schema the AI planner fills in. Every field is required and
     nullable, which strict structured output needs."""
+    products._load_vocab()
     props = {
         "product": _nullable({"type": "string", "enum": products.product_keys()}),
+        "on_lists": _nullable({"type": "boolean"}),
         "min_score": _nullable({"type": "number"}),
         "min_coverage": _nullable({"type": "number"}),
         "states": _nullable({"type": "array", "items": {"type": "string"}}),
@@ -49,6 +51,8 @@ def filter_schema() -> dict:
         "reporting_platform": _nullable({"type": "string", "enum": list(PLATFORM_SIGNAL)}),
         "custodian": _nullable({"type": "string"}),
         "brochure_tags": _nullable({"type": "array", "items": {"type": "string"}}),
+        "platforms_any": _nullable({"type": "array", "items": {
+            "type": "string", "enum": [k for k in products.TAG_LABELS if k.startswith("platform_")]}}),
         "has_personal_email": _nullable({"type": "boolean"}),
         "has_verified_email": _nullable({"type": "boolean"}),
         "min_hires_12m": _nullable({"type": "integer"}),
@@ -94,6 +98,9 @@ def run(c, spec: dict, sort: str = "score", limit: int = 25,
             where.append("p.coverage >= ?")
             args.append(float(spec["min_coverage"]))
             said.append(f"with {float(spec['min_coverage']):.0f}%+ of the score on known data")
+    if spec.get("on_lists") and not product:
+        where.append("sc.crd IS NOT NULL")
+        said.append("on our product lists")
     if spec.get("states"):
         st = [s.strip().upper()[:2] for s in spec["states"] if s and s.strip()]
         if st:
@@ -135,18 +142,34 @@ def run(c, spec: dict, sort: str = "score", limit: int = 25,
         args.append(spec["mail_platform"])
         said.append({"m365": "on Microsoft 365", "google": "on Google Workspace",
                      "other": "on another mail provider"}[spec["mail_platform"]])
+    # Platforms are read from brochures and, once the website job has run,
+    # from firms' own sites as well.
+    sites = _has_table(c, "web_signal")
     if spec.get("reporting_platform") in PLATFORM_SIGNAL:
         sig = PLATFORM_SIGNAL[spec["reporting_platform"]]
-        where.append("(EXISTS (SELECT 1 FROM web_signal w WHERE w.crd=f.crd AND w.signal=?)"
-                     " OR EXISTS (SELECT 1 FROM brochure_tag b WHERE b.crd=f.crd AND b.tag=?"
-                     " AND b.present=1))")
-        args += [sig, sig]
+        where.append("(EXISTS (SELECT 1 FROM brochure_tag b WHERE b.crd=f.crd AND b.tag=?"
+                     " AND b.present=1)"
+                     + (" OR EXISTS (SELECT 1 FROM web_signal w WHERE w.crd=f.crd AND w.signal=?)"
+                        if sites else "") + ")")
+        args += [sig, sig] if sites else [sig]
         said.append(f"using {spec['reporting_platform']}")
     if spec.get("custodian"):
         where.append("EXISTS (SELECT 1 FROM firm_custodian_profile cp WHERE cp.crd=f.crd"
                      " AND cp.primary_canonical ILIKE ?)")
         args.append(f"%{spec['custodian']}%")
         said.append(f"custodying at {spec['custodian']}")
+    products._load_vocab()
+    any_of = [k for k in (spec.get("platforms_any") or []) if k in products.TAG_LABELS]
+    if any_of:
+        # Either platform will do ("Black Diamond, Salesforce or Redtail"):
+        # named in the brochure or seen on the firm's website.
+        ph = ",".join("?" * len(any_of))
+        where.append(f"(EXISTS (SELECT 1 FROM brochure_tag b WHERE b.crd=f.crd AND b.tag IN ({ph})"
+                     f" AND b.present=1)"
+                     + (f" OR EXISTS (SELECT 1 FROM web_signal w WHERE w.crd=f.crd"
+                        f" AND w.signal IN ({ph}))" if sites else "") + ")")
+        args += any_of + any_of if sites else any_of
+        said.append("using " + " or ".join(products.tag_label(k) for k in any_of))
     for tag in spec.get("brochure_tags") or []:
         where.append("EXISTS (SELECT 1 FROM brochure_tag b WHERE b.crd=f.crd AND b.tag=?"
                      " AND b.present=1)")

@@ -32,7 +32,7 @@ import re
 import threading
 import time
 
-from . import ai, dossier, products, search
+from . import ai, dossier, products, quickplan, search
 from .names import nice_name
 
 SYSTEM = (
@@ -301,6 +301,17 @@ def _write(msgs: list[dict], *, live: bool, who: str, max_tokens: int):
                           max_tokens=max_tokens, who=who)
 
 
+def _answer_events(msgs: list[dict], live: bool, who: str, max_tokens: int, parts: list):
+    """Events for the written answer, its text collected in parts. A model
+    that thinks first is said to be thinking, so the wait is not silent."""
+    for piece in _write(msgs, live=live, who=who, max_tokens=max_tokens):
+        if piece is ai.THINKING:
+            yield {"t": "status", "text": "Thinking it through"}
+            continue
+        parts.append(piece)
+        yield {"t": "delta", "text": piece}
+
+
 def _firm_events(c, crd: str, q: str, history: list, who: str, live: bool, lead: str = ""):
     text = dossier.build(c, crd)
     if not text:
@@ -313,10 +324,8 @@ def _firm_events(c, crd: str, q: str, history: list, who: str, live: bool, lead:
     msgs = _history(history, 4000)
     msgs.append({"role": "user", "content": f"DATA ON THIS FIRM\n{text}\n\nQUESTION\n{q}"})
     yield {"t": "status", "text": "Writing the answer"}
-    parts = []
-    for piece in _write(msgs, live=live, who=who, max_tokens=2500):
-        parts.append(piece)
-        yield {"t": "delta", "text": piece}
+    parts: list = []
+    yield from _answer_events(msgs, live, who, 2500, parts)
     out = ai.strip_thinking("".join(parts)).strip()
     if key:
         _ANSWERS.put(key, out)
@@ -369,8 +378,14 @@ def ask_stream(c, q: str, scope: str = "global", history: list[dict] | None = No
         yield dict(_offline(c, q), t="done")
         return
 
-    yield {"t": "status", "text": "Reading your question"}
-    plan = _plan(q, history, who)
+    # A plain list question is read by rules in a millisecond; anything else,
+    # and every follow-up, is planned by the model.
+    quick = None if history else quickplan.plan(q)
+    if quick:
+        plan = _clean_plan(quick)
+    else:
+        yield {"t": "status", "text": "Reading your question"}
+        plan = _plan(q, history, who)
     mode = plan["mode"]
     if mode == "firm":
         f = _find_firm(c, plan["firm_name"])
@@ -412,10 +427,8 @@ def ask_stream(c, q: str, scope: str = "global", history: list[dict] | None = No
         f"QUESTION: {q}\n\nBellwether searched for firms {desc} and found {total} in "
         f"total. The top {len(rows)}, one JSON object per line:\n{brief_rows}\n\n"
         f"Answer the question from these rows.")}]
-    parts = []
-    for piece in _write(msgs, live=live, who=who, max_tokens=2000):
-        parts.append(piece)
-        yield {"t": "delta", "text": piece}
+    parts: list = []
+    yield from _answer_events(msgs, live, who, 2000, parts)
     out = ai.strip_thinking("".join(parts)).strip()
     if key:
         _ANSWERS.put(key, out)

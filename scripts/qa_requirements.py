@@ -279,6 +279,26 @@ class AITransportChecks(unittest.TestCase):
         self.assertEqual((plan['mode'],plan['limit'],plan['sort']),('answer',50,'score'))
         self.assertEqual(assistant._clean_plan('not a dict')['mode'],'search')
 
+    def test_plain_questions_are_planned_without_a_model(self):
+        from prospect import quickplan
+        p=quickplan.plan('AcuBooth firms with $500M+ and at least one verified email')
+        self.assertEqual(p['filters'],{'product':'acubooth','min_aum':5e8,'has_verified_email':True})
+        p=quickplan.plan('Glynac firms on Microsoft 365 that use Black Diamond, Salesforce or Redtail, largest first')
+        self.assertEqual(p['filters']['platforms_any'],
+                         ['platform_black_diamond','platform_salesforce','platform_redtail'])
+        self.assertEqual((p['filters']['mail_platform'],p['sort']),('m365','aum'))
+        p=quickplan.plan('Which PHH Fund I firms in Texas or Florida hired advisors in the last year?')
+        self.assertEqual(sorted(p['filters']['states']),['FL','TX'])
+        self.assertEqual(quickplan.plan('Which Glynac firms are strongest and why?')['mode'],'answer')
+        # A word or number the rules cannot place goes to the model instead.
+        for q in ('Glynac firms in Austin','firms with 50 advisors','Tell me about Aptus Capital',
+                  'AcuBooth firms with an email','OK show me Glynac firms'):
+            self.assertIsNone(quickplan.plan(q),q)
+
+    def test_thinking_models_get_room_beyond_the_answer(self):
+        _,body=ai._openai_request('System',[],'google/gemma',500,None,ai.EDEN_BASE,False)
+        self.assertEqual(body['max_tokens'],500+ai.THINK_ROOM)
+
     def test_streamed_answer_arrives_in_pieces(self):
         lines=['data: {"choices":[{"delta":{"content":"Hello "}}]}','',
                'data: {"choices":[{"delta":{"content":"there"},"finish_reason":"stop"}]}',
