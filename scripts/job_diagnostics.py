@@ -34,7 +34,7 @@ def _health(conn):
             SUM(CASE WHEN next_try_at <= to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS') THEN 1 ELSE 0 END) due
             FROM email_hunt_firm GROUP BY 1 ORDER BY 2 DESC"""), default=str))
     print('Runtime hunt found:', json.dumps(q("""SELECT
-            SUM(CASE WHEN checked_at >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD') THEN 1 ELSE 0 END) day,
+            SUM(CASE WHEN checked_at >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD') THEN 1 ELSE 0 END) last_day,
             COUNT(*) total FROM email_attempt WHERE status='valid'"""), default=str))
     print('Runtime brochures:', json.dumps(q("""SELECT status, COUNT(*) n,
             SUM(CASE WHEN COALESCE(text_chars,0) < 300 * GREATEST(COALESCE(pages,1),1) THEN 1 ELSE 0 END) thin,

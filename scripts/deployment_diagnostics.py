@@ -57,6 +57,25 @@ for row in sorted(allocations, key=lambda x:x.get('CreateIndex',0), reverse=True
         print('Task:', task, state.get('State'), 'failed:', state.get('Failed'))
         for event in state.get('Events', [])[-4:]:
             print('Event:', task, event.get('Type'), safe(event.get('DisplayMessage') or event.get('Message')))
+# How much memory and CPU the running tasks use right now.
+if running:
+    try:
+        req = urllib.request.Request(
+            os.environ['NOMAD_ADDR'].rstrip('/') + f"/v1/client/allocation/{latest['ID']}/stats",
+            headers={'X-Nomad-Token': os.environ['NOMAD_TOKEN']})
+        with urllib.request.urlopen(req, timeout=20) as response:
+            stats = json.load(response)
+        for task, use in (stats.get('Tasks') or {}).items():
+            ru = use.get('ResourceUsage') or {}
+            mem = ru.get('MemoryStats') or {}
+            print('Task usage:', json.dumps({
+                'task': task, 'rss_mb': round((mem.get('RSS') or 0) / 2**20),
+                'usage_mb': round((mem.get('Usage') or 0) / 2**20),
+                'max_usage_mb': round((mem.get('MaxUsage') or 0) / 2**20),
+                'cpu_mhz': round((ru.get('CpuStats') or {}).get('TotalTicks') or 0),
+                'cpu_percent': round((ru.get('CpuStats') or {}).get('Percent') or 0, 1)}))
+    except Exception as exc:
+        print('Task usage unavailable:', type(exc).__name__)
 # What the cluster can offer a job: CPU, memory and any GPUs per ready node.
 for node in (command('node', 'status', '-json') or [])[:12]:
     if node.get('Status') != 'ready':
