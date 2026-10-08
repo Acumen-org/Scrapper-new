@@ -2,8 +2,44 @@
 from __future__ import annotations
 
 import json
+import re
+from urllib.parse import urlsplit
 
 from prospect import db
+
+
+def _scrub(text):
+    text = re.sub(r'[A-Za-z0-9_~+/.=-]{32,}', '[long value omitted]', str(text or ''))
+    return re.sub(r'[\w.+-]+@[\w-]+(\.[\w-]+)+', '[address]', text)[:300]
+
+
+def _ai(conn):
+    """Which model is connected and how its calls went: counts, times and the
+    latest errors. The key is reported only as set or not, the base URL only
+    as its host."""
+    try:
+        from prospect import ai, settings
+        base = settings.get('ai.base_url') or ''
+        print('Runtime ai config:', json.dumps({
+            'provider': ai.provider(), 'model_smart': ai.model('smart'),
+            'model_fast': ai.model('fast'), 'key_set': bool(settings.get('ai.api_key')),
+            'base_host': urlsplit(base).netloc if base else '',
+            'features': settings.get_list('ai.features'),
+            'daily_limit': settings.get_int('ai.daily_limit', 400),
+            'used_today': ai.calls_today()}))
+        rows = conn.execute("""SELECT feature, provider, model, ok, COUNT(*) AS n,
+            ROUND(AVG(ms)) AS avg_ms, MAX(ms) AS max_ms, ROUND(AVG(out_tokens)) AS avg_out
+            FROM ai_call WHERE at >= to_char(NOW() - INTERVAL '2 day', 'YYYY-MM-DD')
+            GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC LIMIT 20""").fetchall()
+        for row in rows:
+            print('Runtime ai calls:', json.dumps(dict(row), default=str))
+        for row in conn.execute("""SELECT at, feature, provider, model, ms, error FROM ai_call
+                WHERE ok=0 ORDER BY id DESC LIMIT 8""").fetchall():
+            print('Runtime ai failure:', row['at'], row['feature'], row['provider'],
+                  row['model'], row['ms'], _scrub(row['error']))
+    except Exception as exc:
+        conn.rollback()
+        print('Runtime ai config:', json.dumps({'unavailable': type(exc).__name__}))
 
 
 def main():
@@ -18,7 +54,8 @@ def main():
         releases = conn.execute("""SELECT version, applied_at, evaluated_firms
             FROM app_release ORDER BY applied_at DESC LIMIT 1""").fetchall()
         print('Runtime release:', json.dumps([dict(row) for row in releases]))
-        ready = conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
+        _ai(conn)
+        ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='firm_refresh'
               AND column_name IN ('detail','last_success_at')""").fetchone()['n']
         if ready != 2:

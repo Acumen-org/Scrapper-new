@@ -37,7 +37,7 @@ if running:
     else:
         for line in runtime.stdout.splitlines():
             if line.startswith(('Runtime jobs:', 'Runtime release:', 'Runtime custodians:',
-                                'Runtime custodian retries:')):
+                                'Runtime custodian retries:', 'Runtime ai')):
                 print(line)
 for row in sorted(allocations, key=lambda x:x.get('CreateIndex',0), reverse=True)[:3]:
     print('Allocation:', row['ID'], row.get('ClientStatus'), row.get('DesiredStatus'))
