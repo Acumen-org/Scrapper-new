@@ -1025,12 +1025,6 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
                        f'<summary>Sign in with a password</summary>{form}</details>')
         else:
             pw_form = form
-    stats = dict((k, v) for k, v in _signin_stats())
-    caption = ""
-    if stats.get("advisory firms"):
-        caption = (f'<p class="signin-caption">Watching <b>{stats["advisory firms"]}</b> advisory firms'
-                   + (f' and <b>{stats["people"]}</b> people' if stats.get("people") else "")
-                   + ' across the United States</p>')
     return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to {APP_NAME}</title>{FAVICON}
@@ -1052,40 +1046,11 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
 {err}{ms_btn}{pw_form}
 </div>
 </main>
-{caption}
 <div class="signin-owner">Acumen Strategy</div>
 </div>
 <script src="{asset('signin.js')}" defer></script>
 </body></html>""",
                         status_code=status or (200 if not error else 401))
-
-
-_SIGNIN_CACHE: dict = {"t": 0.0, "v": []}
-
-
-def _signin_stats() -> list[tuple[str, str]]:
-    """The two headline numbers under the sign-in card, refreshed every ten
-    minutes; an estimate for people keeps the public page cheap."""
-    import time as _time
-    if _time.monotonic() - _SIGNIN_CACHE["t"] < 600 and _SIGNIN_CACHE["v"]:
-        return _SIGNIN_CACHE["v"]
-    out: list[tuple[str, str]] = []
-    try:
-        c = conn()
-        try:
-            firms = c.execute("SELECT COUNT(*) n FROM firm_current").fetchone()["n"]
-            people = c.execute("SELECT GREATEST(reltuples, 0)::bigint n FROM pg_class"
-                               " WHERE relname='person'").fetchone()
-            if firms:
-                out = [("advisory firms", f"{firms:,}")]
-            if people and people["n"]:
-                out.append(("people", f"{int(people['n']):,}"))
-        finally:
-            c.close()
-    except Exception:
-        out = []
-    _SIGNIN_CACHE.update(t=_time.monotonic(), v=out)
-    return out
 
 
 @app.get("/login", response_class=HTMLResponse)

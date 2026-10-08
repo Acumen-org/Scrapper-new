@@ -283,9 +283,34 @@ def request_rescore(refresh_all: bool = False, conn=None) -> bool:
 
 
 # ------------------------------------------------------- firm-type rules
-# Each product's firm_type disqualifier lists the firm types it sells to.
-# The scoring editor reads firm_type_rule() and writes with set_firm_types()
-# or, inside its own save handler, apply_firm_types().
+# Each product's firm_type rule sorts every firm type into one of three:
+#   allow   the types it sells to;
+#   remove  types that can never buy it: such a firm leaves the list, but only
+#           when Bellwether is at least remove_confidence sure (default 90) or
+#           a person set the type by hand;
+#   lower   everything else: the firm stays on the list, marked as not a usual
+#           buyer, with `penalty` points off (default 20) once Bellwether is
+#           min_confidence sure (default 60).
+# The owner asked (2026-10-08) that firms be removed only when Bellwether is
+# very sure they fail a required criterion, so a likely-but-unproven poor fit
+# is lowered and shown, never hidden. The scoring editor reads
+# firm_type_rule() and writes with apply_firm_types().
+
+# Types no product can sell to; removed by default unless a product allows them.
+NEVER_BUYERS = ("custodian", "wirehouse", "bank_trust", "insurance")
+
+
+def firm_type_policy(g: dict) -> dict:
+    """The rule with its defaults filled in: allow, remove, remove_confidence,
+    min_confidence (to lower) and penalty."""
+    allow = list(g.get("allow") or [])
+    remove = g.get("remove")
+    if remove is None:
+        remove = [t for t in NEVER_BUYERS if t not in allow]
+    return {"allow": allow, "remove": [t for t in remove if t not in allow],
+            "remove_confidence": float(g.get("remove_confidence", 90)),
+            "min_confidence": float(g.get("min_confidence", 60)),
+            "penalty": float(g.get("penalty", 20))}
 
 def _check_firm_type_rule(name: str, g: dict) -> None:
     from . import firmtype
@@ -295,12 +320,21 @@ def _check_firm_type_rule(name: str, g: dict) -> None:
     bad = [c for c in allow if c not in firmtype.KEYS or c == "unknown"]
     if bad:
         raise ValueError(f"{name}: unknown firm type {bad[0]}")
-    try:
-        mc = float(g.get("min_confidence", 60))
-    except (TypeError, ValueError):
-        raise ValueError(f"{name}: firm-type confidence must be a number") from None
-    if not 0 <= mc <= 100:
-        raise ValueError(f"{name}: firm-type confidence must be between 0 and 100")
+    remove = g.get("remove") or []
+    bad = [c for c in remove if c not in firmtype.KEYS or c == "unknown"]
+    if bad:
+        raise ValueError(f"{name}: unknown firm type {bad[0]}")
+    if set(remove) & set(allow):
+        raise ValueError(f"{name}: a firm type cannot be both sold to and removed")
+    for field, what in (("min_confidence", "confidence to lower a firm"),
+                        ("remove_confidence", "confidence to remove a firm"),
+                        ("penalty", "points taken off")):
+        try:
+            v = float(g.get(field, 0))
+        except (TypeError, ValueError):
+            raise ValueError(f"{name}: {what} must be a number") from None
+        if not 0 <= v <= 100:
+            raise ValueError(f"{name}: {what} must be between 0 and 100")
 
 
 def firm_type_rule(key: str) -> dict | None:
@@ -312,16 +346,22 @@ def firm_type_rule(key: str) -> dict | None:
     for i, g in enumerate(product(key).get("disqualifiers", [])):
         if g["key"] != "firm_type":
             continue
-        allow = list(g.get("allow") or [])
-        return {"index": i, "label": g.get("label", ""), "allow": allow,
-                "min_confidence": int(float(g.get("min_confidence", 60))),
+        pol = firm_type_policy(g)
+        allow, remove = pol["allow"], pol["remove"]
+        return {"index": i, "label": g.get("label", ""), "allow": allow, "remove": remove,
+                "min_confidence": int(pol["min_confidence"]),
+                "remove_confidence": int(pol["remove_confidence"]),
+                "penalty": int(pol["penalty"]),
                 "off": bool(g.get("off")),
-                "categories": [dict(c, allowed=c["key"] in allow)
+                "categories": [dict(c, allowed=c["key"] in allow,
+                                    choice="allow" if c["key"] in allow
+                                    else "remove" if c["key"] in remove else "lower")
                                for c in firmtype.categories() if c["key"] != "unknown"]}
     return None
 
 
-def apply_firm_types(body: dict, allow: list[str], min_confidence=None) -> dict:
+def apply_firm_types(body: dict, allow: list[str], min_confidence=None, remove=None,
+                     remove_confidence=None, penalty=None) -> dict:
     """Write the allowed firm types (and optionally the confidence needed to
     disqualify) into a product body in place, adding the rule if the body
     lacks it; validated. For the scoring editor's save handler, before
@@ -333,12 +373,17 @@ def apply_firm_types(body: dict, allow: list[str], min_confidence=None) -> dict:
                 "min_confidence": 60}
         body.setdefault("disqualifiers", []).insert(0, rule)
     rule["allow"] = allow
-    if min_confidence not in (None, ""):
+    if remove is not None:
+        rule["remove"] = [r for r in dict.fromkeys(remove) if r]
+    for field, value in (("min_confidence", min_confidence),
+                         ("remove_confidence", remove_confidence), ("penalty", penalty)):
+        if value in (None, ""):
+            continue
         try:
-            mc = float(min_confidence)
+            v = float(value)
         except (TypeError, ValueError):
-            raise ValueError("Firm-type confidence must be a number") from None
-        rule["min_confidence"] = int(mc) if mc == int(mc) else mc
+            raise ValueError("Firm-type numbers must be numbers") from None
+        rule[field] = int(v) if v == int(v) else v
     _check_firm_type_rule(body.get("name", "This product"), rule)
     return body
 
@@ -928,25 +973,53 @@ def g_left_schwab(d, g, key):
 
 
 def g_firm_type(d, g, key):
-    """Disqualifier: the firm's type is not one this product sells to. A firm
-    not classified yet, typed 'unknown', or classified below min_confidence by
-    the rules or AI is never removed (missing data never disqualifies); a type
-    set by hand always counts."""
+    """Disqualifier: the firm is a type that can never buy this product
+    (a custodian, a wirehouse, a bank or trust company, an insurer, or what
+    the product's rule lists), and Bellwether is very sure of it, or a person
+    set the type by hand. Every other doubt lowers the firm on the list
+    instead (firm_type_penalty); missing data never removes anyone."""
     fc = d.get("firm_class")
-    allow = g.get("allow") or []
-    if not fc or not allow:
+    pol = firm_type_policy(g)
+    if not fc or not pol["allow"]:
         return False, "Firm type not classified yet"
     cat = fc.get("category")
     from . import firmtype
-    if cat in allow or cat == "unknown":
+    if cat in pol["allow"] or cat == "unknown" or cat not in pol["remove"]:
         return False, f"{firmtype.label(cat)}"
     manual = fc.get("source") == "manual"
     conf = int(fc.get("confidence") or 0)
-    if not manual and conf < float(g.get("min_confidence", 60)):
-        return False, f"Possibly {firmtype.label(cat).lower()} ({conf}%), too unsure to remove"
+    if not manual and conf < pol["remove_confidence"]:
+        return False, f"Possibly {firmtype.label(cat).lower()} ({conf}%), not sure enough to remove"
+    why = "; ".join(str(e) for e in (fc.get("evidence") or [])[:2])
+    name = product(key)["name"]
+    how = "Its type was set by hand" if manual else f"Bellwether is {conf}% sure"
+    return True, (f"{firmtype.label(cat)}, a kind of firm that never buys {name}. "
+                  f"{how}" + (f": {why}." if why else "."))
+
+
+def firm_type_penalty(d, key: str) -> dict | None:
+    """A firm whose type this product does not usually sell to, but which is
+    not sure enough (or not clear-cut enough) to remove: it stays on the list
+    with points off and a plain-words flag, so nobody loses sight of it."""
+    rule = next((g for g in product(key).get("disqualifiers", [])
+                 if g["key"] == "firm_type" and not g.get("off")), None)
+    fc = d.get("firm_class")
+    if not rule or not fc:
+        return None
+    pol = firm_type_policy(rule)
+    cat = fc.get("category")
+    if not pol["allow"] or cat in pol["allow"] or cat in (None, "", "unknown"):
+        return None
+    manual = fc.get("source") == "manual"
+    conf = int(fc.get("confidence") or 0)
+    if not manual and conf < pol["min_confidence"]:
+        return None
+    from . import firmtype
     why = (fc.get("evidence") or [""])[0]
-    how = "set by hand" if manual else f"{conf}% confident"
-    return True, f"{firmtype.label(cat)} ({how})" + (f": {why}" if why else "")
+    how = "set by hand" if manual else f"{conf}% sure"
+    return {"key": "firm_type", "label": f"{firmtype.label(cat)}: not a usual buyer",
+            "points": pol["penalty"],
+            "evidence": f"{firmtype.label(cat)} ({how})" + (f": {why}" if why else "")}
 
 
 GATES = {
@@ -1660,8 +1733,9 @@ def evaluate(key: str, d: dict) -> Result:
         if hit:
             gates.append({"label": g["label"], "passed": False, "evidence": ev,
                           "disqualifier": True})
-            return Result(key, "disqualified", reason=f"{g['label']}: {ev}",
-                          gates=gates)
+            # The firm-type reason is already a full sentence.
+            reason = ev if g["key"] == "firm_type" else f"{g['label']}: {ev}"
+            return Result(key, "disqualified", reason=reason, gates=gates)
     comps, total, known_w, unknown_w = [], 0.0, 0.0, 0.0
     for c in p["criteria"]:
         weight = float(c.get("weight", 0))
@@ -1701,6 +1775,10 @@ def evaluate(key: str, d: dict) -> Result:
         if ev:
             total -= pen["points"]
             pens.append({"label": pen["label"], "points": pen["points"], "evidence": ev})
+    ftp = firm_type_penalty(d, key)
+    if ftp:
+        total -= ftp["points"]
+        pens.append(ftp)
     total = round(max(0.0, total), 1)
     return Result(key, "scored", score=total, coverage=round(known_w, 1),
                   potential=round(min(100.0, total + unknown_w), 1), gates=gates,

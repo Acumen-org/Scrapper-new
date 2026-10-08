@@ -188,32 +188,45 @@
     var band = (W - PL - PR) / labels.length, bw = Math.min(34, band * 0.56);
     var svg = node("svg", { class: "chart live", width: W, height: H, viewBox: "0 0 " + W + " " + H,
                             role: "img", "aria-label": box.dataset.label || "Chart" });
+    // The highlight sits behind the bars; one transparent surface on top of
+    // everything takes the pointer, so moving over a bar, a gap or a label
+    // never drops the readout (the old per-column targets sat under the bars).
+    var shade = node("rect", { class: "colshade", x: -100, y: PT, width: band - 2, height: H - PT - PB, rx: 4 }, svg);
     node("line", { class: "grid", x1: PL, x2: W - PR, y1: mid, y2: mid }, svg);
     node("text", { x: 0, y: PT + 10 }, svg).textContent = d.upName || "";
     if (mid < H - PB) node("text", { x: 0, y: H - PB - 2 }, svg).textContent = d.downName || "";
-    var cols = [];
     labels.forEach(function (lab, i) {
       var cx = PL + band * i + band / 2;
       var hu = (up[i] || 0) / top * (mid - PT - 4), hd = (down[i] || 0) / top * (H - PB - mid - 4);
-      var col = node("rect", { class: "col", x: PL + band * i + 1, y: PT, width: band - 2, height: H - PT - PB,
-                               rx: 4 }, svg);
       if (hu) node("rect", { x: cx - bw / 2, y: mid - hu, width: bw, height: hu, rx: 3, fill: "var(--ok)",
                              opacity: ".85" }, svg);
       if (hd) node("rect", { x: cx - bw / 2, y: mid + 1, width: bw, height: hd, rx: 3, fill: "var(--red-hi)",
                              opacity: ".75" }, svg);
       var short = labels.length > 9 && String(lab).length === 4 ? "'" + String(lab).slice(2) : lab;
       node("text", { x: cx, y: H - 7, "text-anchor": "middle" }, svg).textContent = short;
-      cols.push(col);
-      col.addEventListener("pointerenter", function () {
-        cols.forEach(function (c) { c.classList.remove("on"); });
-        col.classList.add("on");
-        var r = col.getBoundingClientRect(), net = (up[i] || 0) - (down[i] || 0);
-        showTip("<b>" + esc(lab) + "</b><span>" + (up[i] || 0) + " " + esc(d.upName || "") + ", " +
-                (down[i] || 0) + " " + esc(d.downName || "") + "</span><span>" +
-                (net > 0 ? "Team grew by " + net : net < 0 ? "Team shrank by " + (-net) : "No change") +
-                "</span>", r.left + r.width / 2, r.top + 8);
-      });
-      col.addEventListener("pointerleave", function () { col.classList.remove("on"); hideTip(); });
+    });
+    var hit = node("rect", { x: PL, y: 0, width: W - PL - PR, height: H, fill: "transparent" }, svg);
+    var shown = -1;
+    function at(e) {
+      var r = svg.getBoundingClientRect();
+      var i = Math.floor((e.clientX - r.left - PL) / band);
+      return Math.max(0, Math.min(labels.length - 1, i));
+    }
+    function show(e) {
+      var i = at(e);
+      if (i === shown) return;
+      shown = i;
+      shade.setAttribute("x", PL + band * i + 1);
+      var r = svg.getBoundingClientRect(), net = (up[i] || 0) - (down[i] || 0);
+      showTip("<b>" + esc(labels[i]) + "</b><span>" + (up[i] || 0) + " " + esc(d.upName || "") + ", " +
+              (down[i] || 0) + " " + esc(d.downName || "") + "</span><span>" +
+              (net > 0 ? "Team grew by " + net : net < 0 ? "Team shrank by " + (-net) : "No change") +
+              "</span>", r.left + PL + band * i + band / 2, r.top + PT);
+    }
+    hit.addEventListener("pointermove", show);
+    hit.addEventListener("pointerdown", show);
+    hit.addEventListener("pointerleave", function () {
+      shown = -1; shade.setAttribute("x", -100); hideTip();
     });
     box.replaceChildren(svg);
   }

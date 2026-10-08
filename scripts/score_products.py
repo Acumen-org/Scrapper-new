@@ -42,13 +42,16 @@ def main() -> int:
                 " WHERE product=? AND status='scored'", (key,)).fetchone()
             dq = conn.execute("SELECT COUNT(*) n FROM product_score WHERE product=?"
                               " AND status='disqualified'", (key,)).fetchone()["n"]
-            rule = products.firm_type_rule(key)
             by_type = conn.execute(
                 "SELECT COUNT(*) n FROM product_score WHERE product=? AND status='disqualified'"
-                " AND reason LIKE ?", (key, (rule or {}).get("label", "-") + ":%")).fetchone()["n"]
+                " AND reason LIKE ?", (key, "%a kind of firm that never buys%")).fetchone()["n"]
+            lowered = conn.execute(
+                "SELECT COUNT(*) n FROM product_score WHERE product=? AND status='scored'"
+                " AND detail_json LIKE ?", (key, '%"key":"firm_type"%')).fetchone()["n"]
             lines.append(f"{p['name']:<12} {counts[key]:>6,} scored   top={st['top'] or 0:.0f}"
                          f"  60+={st['hi'] or 0:,}  avg coverage={st['cov'] or 0:.0f}%"
-                         f"   disqualified={dq:,} ({by_type:,} by firm type)")
+                         f"   removed={dq:,} ({by_type:,} by firm type)"
+                         f"   lowered as not a usual buyer={lowered:,}")
         scope = conn.execute("SELECT COUNT(*) n FROM firm_scope").fetchone()["n"]
         for ln in lines:
             print(ln)

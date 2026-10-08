@@ -6,7 +6,8 @@ from prospect import db, jobs, products, settings, msauth, ai, users
 
 # Bumped when a release must re-read website signals and rescore every firm once.
 # v4: supported integrations corrected; refresh classifications and all scores.
-RELEASE = 'workspace-2026-10-v4-intelligence'
+# v5: only sure never-buyers are removed; likely poor fits are lowered instead.
+RELEASE = 'workspace-2026-10-v5-removals'
 # Releases that also re-crawl every website and mail record; the v3 one does
 # not, because the October 5 release queued that full refresh already.
 FULL_REFRESH = False

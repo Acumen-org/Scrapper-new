@@ -272,7 +272,27 @@ def _contact_line(cp, show_verify=True) -> str:
 PEOPLE_CARDS_MAX = 60
 
 
-def _person_card(person: dict, key: str, points: list, hunt: dict | None = None) -> str:
+def _icp_tags(hits: list[dict]) -> tuple[str, str]:
+    """The ICP label for a card and the product colour it is tinted with.
+    Products sharing a role are named together: "AcuBooth and PHH Fund I ICP"."""
+    if not hits:
+        return "", ""
+    from .webapp import FAMILY_COLOUR
+    by_label: dict[str, list[str]] = {}
+    for h in hits:
+        by_label.setdefault(h["label"], []).append(h["product"])
+    first = products.product(hits[0]["product"])
+    colour = FAMILY_COLOUR.get(first["family"], "#888")
+    tags = []
+    for label, keys in list(by_label.items())[:2]:
+        names = [products.product(k)["name"] for k in keys]
+        who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+        tags.append(f'<div class="icp-tag"><i></i><b>{esc(who)} ICP</b><span>{esc(label)}</span></div>')
+    return "".join(tags), colour
+
+
+def _person_card(person: dict, key: str, points: list, hunt: dict | None = None,
+                 icp_hits: list | None = None) -> str:
     name = person.get("name") or "Name unavailable"
     title = roles.clean_title(person.get("title") or "") or (
         "Officer" if person.get("is_officer") else "Registered representative")
@@ -306,7 +326,9 @@ def _person_card(person: dict, key: str, points: list, hunt: dict | None = None)
     iapd = (f'<a class="more" href="{esc(person["iapd_link"])}" target="_blank" rel="noopener" '
             f'data-noprefetch>SEC record</a>' if person.get("iapd_link") else "")
     anchor = "p-" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
-    return (f'<article class="pcard" id="{anchor}"><div class="top">{ui.mono(name, "p")}<div>'
+    tags, colour = _icp_tags(icp_hits or [])
+    cls, style = ("pcard icp", f' style="--c:{colour}"') if tags else ("pcard", "")
+    return (f'<article class="{cls}" id="{anchor}"{style}>{tags}<div class="top">{ui.mono(name, "p")}<div>'
             f'<span class="nm">{esc(name)}</span><div class="ttl">{esc(title)}'
             f'</div><div class="meta">{" · ".join(meta)}</div></div>{iapd}</div>'
             f'{("<div class=pills>" + "".join(chips) + "</div>") if chips else ""}'
@@ -335,9 +357,12 @@ def _hunt_line(hunt: dict | None) -> str:
 
 def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: list,
                     unmatched: list, stats: dict | None,
-                    hunts: dict | None = None) -> tuple[str, list[str], dict]:
-    """Every person as a card, the ones we can reach first. Returns the HTML,
-    the top cards for the overview, and the counts for the header."""
+                    hunts: dict | None = None, icp_products=()) -> tuple[str, list[str], dict]:
+    """Every person as a card: each product's ICP first (the compliance
+    officer for Glynac, the investment chief for AcuBooth), then the people we
+    can reach. Returns the HTML, the top cards for the overview, and the counts
+    for the header."""
+    from . import icp
     records, seen = [], set()
     for person in roster:
         records.append((person, f"i:{person['indvl_pk']}"))
@@ -353,23 +378,37 @@ def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: 
         seen.add(key)
         uniq.append((person, key))
 
+    def title_of(person, key):
+        if person.get("title"):
+            return person["title"]
+        return next((cp["title"] for cp in cps_by_person.get(key, []) if cp["title"]), "")
+
+    # Every list at once: each product's main buyer only. One list in focus:
+    # its secondary buyers too.
+    primary_only = len(icp_products) > 1
+    hits = {key: icp.match(title_of(person, key), icp_products, primary_only) for person, key in uniq}
+
     def rank(item):
         person, key = item
+        h = hits.get(key) or []
         pts = cps_by_person.get(key, [])
         has_mail = any(cp["kind"] == "email" for cp in pts)
         has_direct = any(cp["kind"] == "phone" and cp["label"] in ("direct", "mobile") for cp in pts)
         leader = roles.classify(person.get("title") or "") in ("leadership", "exec", "owner")
-        return (not has_mail, not person.get("is_officer"), not leader, not has_direct,
+        icp_rank = 0 if any(x["primary"] for x in h) else 1 if h else 2
+        return (icp_rank, not has_mail, not person.get("is_officer"), not leader, not has_direct,
                 person.get("since") or "9999", person.get("name") or "")
     uniq.sort(key=rank)
-    counts = {"people": len(uniq), "email": 0, "direct": 0, "linkedin": 0}
+    counts = {"people": len(uniq), "email": 0, "direct": 0, "linkedin": 0,
+              "icp": sum(1 for v in hits.values() if v)}
     for person, key in uniq:
         pts = cps_by_person.get(key, [])
         counts["email"] += any(cp["kind"] == "email" for cp in pts)
         counts["direct"] += any(cp["kind"] == "phone" and cp["label"] in ("direct", "mobile") for cp in pts)
         counts["linkedin"] += any(cp["kind"] == "linkedin" for cp in pts)
     hunts = hunts or {}
-    cards = [_person_card(person, key, cps_by_person.get(key, []), hunts.get(key))
+    cards = [_person_card(dict(person, title=title_of(person, key)), key,
+                          cps_by_person.get(key, []), hunts.get(key), hits.get(key))
              for person, key in uniq[:PEOPLE_CARDS_MAX]]
     more = ""
     if len(uniq) > PEOPLE_CARDS_MAX:
@@ -738,8 +777,12 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
         hunts = _hunt.person_status(c, crd)
     except Exception:
         c.rollback()
+    # ICP marks follow the lists the firm is on; a firm opened from one list
+    # highlights that product's buyers only.
+    on_lists = [k for k, r in results.items() if r.status == "scored"]
+    icp_products = [focus] if focus in on_lists else on_lists
     people_html, top_cards, pc = _people_section(c, crd, roster, cps_by_person, web_people,
-                                                 unmatched, stats, hunts)
+                                                 unmatched, stats, hunts, icp_products)
     c.close()
     hiring_html = _hiring_section(None, crd, stats, mv, series)
     hunting = max(0, pc["people"] - pc["email"])

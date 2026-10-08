@@ -1,0 +1,41 @@
+# Who to reach first at a firm, for each product: the ideal customer profile
+# (ICP) as job titles. A person whose filed or published title matches is
+# shown first on the firm page, with a small "<Product> ICP" label, but only
+# for products the firm is actually ranked for.
+#
+#   label   what the role is called on screen
+#   match   a regular expression tested against the person's title, ignoring
+#           case; keep it narrow, so the label means something
+#
+# The first role listed is the primary buyer. Edit freely; the app reads this
+# file when it starts.
+
+glynac:
+  - label: Chief Compliance Officer
+    match: '\bCCO\b|chief compliance|compliance (officer|director|manager|lead|head)|head of compliance|director of compliance'
+  - label: COO or head of operations
+    match: '\bCOO\b|chief operating|head of operations|director of operations|operations (director|manager|lead)'
+
+acubooth:
+  - label: Chief Investment Officer
+    match: '\bCIO\b|chief investment|head of investments|director of investments|director of research'
+  - label: Portfolio manager
+    match: 'portfolio manager|head trader|\btrader\b|investment strategist'
+
+phh_fund:
+  - label: Chief Investment Officer
+    match: '\bCIO\b|chief investment|head of investments|director of investments|investment committee|head of alternatives|alternative investments'
+  - label: Founder or managing partner
+    match: 'founder|managing (partner|member|director|principal)|\bCEO\b|chief executive'
+
+phh_1031:
+  - label: Founder or managing partner
+    match: 'founder|managing (partner|member|director|principal)|\bCEO\b|chief executive'
+  - label: Lead advisor
+    match: '(senior|lead|principal) (wealth|financial) (advisor|adviser|planner)|wealth (advisor|adviser)|financial planner'
+
+phh_jv:
+  - label: Chief Investment Officer
+    match: '\bCIO\b|chief investment|head of investments|director of investments|head of real estate|real assets'
+  - label: Principal or managing partner
+    match: 'founder|managing (partner|member|director|principal)|\bprincipal\b|\bCEO\b|chief executive|family office'

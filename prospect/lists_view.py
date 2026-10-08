@@ -322,6 +322,11 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
                  f'<div class="meta">{esc(ui.ago(t["detected_date"]))}</div>' if t else
                  '<span class="dim small">None new</span>')
         tags = []
+        low = next((pe for pe in ui.detail(r["detail_json"]).get("penalties", [])
+                    if pe.get("key") == "firm_type"), None)
+        if low:
+            tags.append(f'<span class="chip warn" title="{esc(low["evidence"])}. '
+                        f'{esc(_num(low["points"]))} points off.">Not a usual buyer</span>')
         ft = ftypes.get(r["crd"]) if ftypes else None
         if ft and ft.get("category"):
             tags.append(f'<span class="ftype">{esc(ft.get("short") or ft.get("label") or ft["category"])}</span>')
@@ -389,9 +394,26 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
 <div class="pager"><span>Page {page_n} of {pages:,}</span><span class="acts">{prev}{nxt}</span></div>"""
 
 
+def _reason_group(reason: str) -> str:
+    """The short name of a removal reason, for the counts at the top."""
+    head = (reason or "").split(",")[0].split(":")[0].strip()
+    return head or "Other"
+
+
 def _disq(c, key, q, page_n, per):
+    """Firms taken off the list, each with the full reason in plain words.
+    Removal is kept for the sure cases: a type that can never buy the product,
+    or a hard rule such as leaving Schwab; every other doubt only lowers a firm
+    on the ranked list, where it stays visible."""
+    from .webapp import is_admin
+    p = products.product(key)
     where = "p.product=? AND p.status='disqualified'"
     args: list = [key]
+    groups = {}
+    for r in c.execute("SELECT reason FROM product_score WHERE product=? AND status='disqualified'",
+                       (key,)):
+        g = _reason_group(r["reason"])
+        groups[g] = groups.get(g, 0) + 1
     if q:
         where += " AND (f.legal_name ILIKE ? OR f.crd=?)"
         args += [f"%{q}%", q]
@@ -399,16 +421,32 @@ def _disq(c, key, q, page_n, per):
         FROM product_score p JOIN firm_current f ON f.crd=p.crd WHERE {where}
         ORDER BY f.raum DESC NULLS LAST LIMIT ? OFFSET ?""",
                      args + [per, (page_n - 1) * per]).fetchall()
-    body = "".join(
-        f'<tr class="go" data-href="/firm/{esc(r["crd"])}?p={key}"><td><div class="firm">'
-        f'<a href="/firm/{esc(r["crd"])}?p={key}">{escn(r["legal_name"])}</a></div>'
-        f'<div class="meta">{ui.firm_meta(r)}</div></td>'
-        f'<td class="why">{esc(r["reason"])}</td></tr>' for r in rows)
-    return (f'<p class="lede" style="margin:14px 0 4px">Firms that passed the gates and were '
-            f'then removed. They stay visible so nobody calls them by mistake, and so a wrong '
-            f'call can be spotted.</p>'
-            f'<div class="table-scroll"><table><thead><tr><th>Firm</th><th>Why it was removed</th></tr></thead>'
-            f'<tbody>{body or "<tr><td colspan=2 class=empty>None.</td></tr>"}</tbody></table></div>')
+    admin = is_admin()
+    body = []
+    for r in rows:
+        fix = ""
+        if "a kind of firm that never buys" in (r["reason"] or "") and admin:
+            fix = (f'<div class="meta" style="margin-top:6px"><a href="/settings/firmtypes?'
+                   f'{qs_join(q=r["crd"])}">Wrong firm type? Correct it</a> and the firm comes back '
+                   f'on the next rescore.</div>')
+        body.append(
+            f'<tr class="go" data-href="/firm/{esc(r["crd"])}?p={key}"><td><div class="ent">'
+            f'{ui.mono(r["legal_name"])}<div><a class="t" href="/firm/{esc(r["crd"])}?p={key}">'
+            f'{escn(r["legal_name"])}</a><div class="meta">{ui.firm_meta(r)}</div></div></div></td>'
+            f'<td><div class="why" style="color:var(--ink)">{esc(r["reason"])}</div>{fix}</td></tr>')
+    summary = "".join(f'<span class="pill">{esc(g)}<b style="margin-left:4px">{n:,}</b></span>'
+                      for g, n in sorted(groups.items(), key=lambda kv: -kv[1]))
+    lede = (f'<p class="lede" style="margin:4px 0 12px">A firm is removed from {esc(p["name"])} only '
+            f'when Bellwether is very sure it fails a required rule: a kind of firm that can never '
+            f'buy it (a custodian, a wirehouse, a bank or trust company, an insurer) or a hard rule '
+            f'on the Scoring tab. Firms that are only a likely poor fit stay on the ranked list, '
+            f'lower down and marked <span class="chip warn">Not a usual buyer</span>.</p>')
+    return (lede + (f'<div class="pills" style="margin:0 0 14px">{summary}</div>' if summary else "")
+            + f'<div class="table-scroll"><table><thead><tr><th style="width:38%">Firm</th>'
+              f'<th>Why it was removed</th></tr></thead><tbody>'
+            + ("".join(body) or '<tr><td colspan="2"><div class="empty"><b>Nothing removed</b>'
+                                'Every firm that passed the gates is on the ranked list.</div></td></tr>')
+            + '</tbody></table></div>')
 
 
 # ------------------------------------------------------------------ scoring
@@ -476,20 +514,27 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
     except Exception:
         ft = None
     if ft:
-        boxes = "".join(
-            f'<label class="inline ftbox" title="{esc(c.get("treatment") or c.get("description") or "")}">'
-            f'<input type="checkbox" name="ft-allow" value="{esc(c["key"])}"'
-            f'{" checked" if c.get("allowed") else ""}{dis}> {esc(c["label"])}</label>'
-            for c in ft["categories"] if c["key"] not in ("unknown",))
-        ftype_html = (f'<h3 style="margin-top:22px">Firm types {esc(p["name"])} sells to</h3>'
-                      f'<p class="meta" style="margin:-4px 0 10px">Unchecked types are moved to Removed, '
-                      f'with the reason, when Bellwether is at least this sure of the firm&rsquo;s type. '
-                      f'Firms not classified yet always stay.</p>'
+        def choice(c):
+            opts = "".join(f'<option value="{v}"{" selected" if c["choice"] == v else ""}>{t}</option>'
+                           for v, t in (("allow", "Sells to"), ("lower", "Lower in the list"),
+                                        ("remove", "Remove")))
+            return (f'<label class="ftbox ft-{esc(c["choice"])}" title="{esc(c.get("treatment") or c.get("description") or "")}">'
+                    f'<span>{esc(c["label"])}</span><select name="ft-{esc(c["key"])}"{dis}>{opts}</select></label>')
+        boxes = "".join(choice(c) for c in ft["categories"])
+        ftype_html = (f'<h3 style="margin-top:22px">Firm types for {esc(p["name"])}</h3>'
+                      f'<p class="meta" style="margin:-4px 0 10px">Sells to: scored normally. '
+                      f'Lower in the list: stays on the list, marked Not a usual buyer, with points off. '
+                      f'Remove: taken off the list, with the reason, only when Bellwether is very sure '
+                      f'of the type or a person set it. Firms not classified yet always stay.</p>'
                       f'<input type="hidden" name="ft-present" value="1">'
                       f'<div class="ftgrid">{boxes}</div>'
-                      f'<label class="inline" style="margin-top:10px">Confidence needed to remove '
-                      f'<input type="number" name="ft-min_conf" min="0" max="100" '
-                      f'value="{esc(_num(ft.get("min_confidence") or 60))}"{dis}>%</label>')
+                      f'<div class="row" style="margin-top:12px;gap:18px">'
+                      f'<label class="inline">Points off when lowered <input type="number" name="ft-penalty" '
+                      f'min="0" max="100" value="{esc(_num(ft.get("penalty", 20)))}"{dis}></label>'
+                      f'<label class="inline">Sure enough to lower <input type="number" name="ft-min_conf" '
+                      f'min="0" max="100" value="{esc(_num(ft.get("min_confidence", 60)))}"{dis}>%</label>'
+                      f'<label class="inline">Sure enough to remove <input type="number" name="ft-remove_conf" '
+                      f'min="0" max="100" value="{esc(_num(ft.get("remove_confidence", 90)))}"{dis}>%</label></div>')
 
     rows = []
     for i, cr in enumerate(p["criteria"]):
@@ -704,7 +749,12 @@ async def scoring_save(key: str, request: Request):
         for i, pe in enumerate(p.get("penalties", [])):
             pe["points"] = _clean(_float(form, f"p-{i}-points", pe["points"]))
         if form.get("ft-present"):
-            products.apply_firm_types(p, form.getlist("ft-allow"), form.get("ft-min_conf"))
+            ft_rule = products.firm_type_rule(key) or {"categories": []}
+            picks = {c["key"]: form.get(f"ft-{c['key']}") or c["choice"] for c in ft_rule["categories"]}
+            products.apply_firm_types(
+                p, [k for k, v in picks.items() if v == "allow"], form.get("ft-min_conf"),
+                remove=[k for k, v in picks.items() if v == "remove"],
+                remove_confidence=form.get("ft-remove_conf"), penalty=form.get("ft-penalty"))
         note = (form.get("note") or "").strip()[:200]
         who = current_owner()
         if p["family"] == "PHH" and ("phh_focus_states" in form or "major_custodians" in form):

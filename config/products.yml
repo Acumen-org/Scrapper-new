@@ -5,11 +5,14 @@
 #   gates         must all pass, or the firm is not on the list
 #   disqualifiers remove a firm that passed the gates; each product has a
 #                 firm_type disqualifier listing the firm types (see
-#                 config/industry.yml and prospect/firmtype.py) it sells to.
-#                 A firm of any other type is removed when its type is set by
-#                 hand or classified with min_confidence or more. A firm not
-#                 classified yet, or classified with less confidence, is never
-#                 removed: missing data never disqualifies.
+#                 config/industry.yml and prospect/firmtype.py) it sells to
+#                 (allow). Types that can never buy it (remove; by default a
+#                 custodian, wirehouse, bank or trust company, or insurer) are
+#                 removed only when classified with remove_confidence (90) or
+#                 set by hand. Every other type stays on the list, marked not a
+#                 usual buyer, with `penalty` points off once classified with
+#                 min_confidence (60). A firm not classified yet is never
+#                 touched: missing data never disqualifies.
 #   criteria      each earns 0-100 points, multiplied by its weight; weights add to 100
 #   penalties     points taken off the final score
 #   signals       never scored; shown as talking points or flags
@@ -73,7 +76,7 @@ products:
     disqualifiers:
       - key: firm_type
         # Wealth managers placing HNW clients. Broker-dealers and wirehouses buy through a home-office platform review, not this list.
-        label: Firm type PHH Fund I does not sell to
+        label: A kind of firm that never buys PHH Fund I
         allow: [independent_ria, hybrid_ria, multi_family_office]
         min_confidence: 60
       - key: bans_illiquid
@@ -172,7 +175,7 @@ products:
     disqualifiers:
       - key: firm_type
         # RIAs whose clients own businesses or investment property. CPAs, attorneys and intermediaries are scored by hand.
-        label: Firm type PHH 1031 does not work with
+        label: A kind of firm that never works with PHH 1031
         allow: [independent_ria, hybrid_ria, multi_family_office]
         min_confidence: 60
     criteria:
@@ -260,7 +263,7 @@ products:
     disqualifiers:
       - key: firm_type
         # Family offices and the wealth managers, OCIOs and trust companies that allocate for wealthy families and institutions. Fund managers with their own real estate teams are competitors.
-        label: Firm type PHH JV does not partner with
+        label: A kind of firm that never partners with PHH JV
         allow: [multi_family_office, independent_ria, hybrid_ria, consultant_ocio, bank_trust]
         min_confidence: 60
     criteria:
@@ -354,7 +357,7 @@ products:
     disqualifiers:
       - key: firm_type
         # Advisers with HNW books who place the overlay themselves.
-        label: Firm type AcuBooth does not sell to
+        label: A kind of firm that never buys AcuBooth
         allow: [independent_ria, hybrid_ria, multi_family_office]
         min_confidence: 60
       - key: left_schwab
@@ -466,7 +469,7 @@ products:
     disqualifiers:
       - key: firm_type
         # Independent and hybrid RIAs and multi-family offices only: not custodians, wirehouses, broker-dealers, banks, insurers, asset or fund managers, TAMPs, robo-advisers or consultants.
-        label: Firm type Glynac does not sell to
+        label: A kind of firm that never buys Glynac
         allow: [independent_ria, hybrid_ria, multi_family_office]
         min_confidence: 60
     criteria:
