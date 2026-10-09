@@ -40,6 +40,36 @@ def _health(conn):
             SUM(CASE WHEN COALESCE(text_chars,0) < 300 * GREATEST(COALESCE(pages,1),1) THEN 1 ELSE 0 END) thin,
             SUM(CASE WHEN COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1) THEN 1 ELSE 0 END) image_only,
             SUM(COALESCE(pages,0)) pages FROM brochure GROUP BY 1 ORDER BY 2 DESC"""), default=str))
+    # Throughput: every recorded run in the last day, per source.
+    for row in q("""SELECT source_key, COUNT(*) n,
+            SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) ok,
+            SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed,
+            SUM(CASE WHEN status NOT IN ('ok','failed') THEN 1 ELSE 0 END) other,
+            ROUND(AVG(EXTRACT(EPOCH FROM (finished_at::timestamptz - started_at::timestamptz)))) avg_s,
+            ROUND(MAX(EXTRACT(EPOCH FROM (finished_at::timestamptz - started_at::timestamptz)))) max_s,
+            ROUND(SUM(EXTRACT(EPOCH FROM (finished_at::timestamptz - started_at::timestamptz)))) busy_s,
+            SUM(rows_in) rows_in, SUM(rows_out) rows_out
+            FROM run_log WHERE started_at >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD"T"HH24:MI:SS')
+            GROUP BY 1 ORDER BY busy_s DESC NULLS LAST"""):
+        print('Runtime throughput:', json.dumps(row, default=str))
+    try:
+        from prospect import jobs, settings
+        for j in jobs.overview(conn):
+            print('Runtime backlog:', json.dumps({
+                'kind': j['job'].kind, 'lane': j['job'].lane, 'state': j['state'],
+                'backlog': j['backlog'], 'done': j['done'], 'total': j['total'],
+                'recent': j.get('recent'), 'fails': j.get('fails'), 'runs': j.get('runs'),
+                'args': list(j['job'].args), 'timeout_s': j['job'].timeout_s,
+                'every_hours': j['job'].every_hours}, default=str))
+        print('Runtime settings:', json.dumps({k: settings.get(k) for k in (
+            'verify.engine', 'verify.per_minute', 'crawl.max_pages', 'crawl.recrawl_days',
+            'crawl.contact_retry_days', 'crawl.use_browser', 'ai.daily_limit')}))
+    except Exception as exc:
+        conn.rollback()
+        print('Runtime backlog: unavailable', type(exc).__name__, str(exc)[:120])
+    print('Runtime scanned:', json.dumps(q("""SELECT crd, version_id, pages, text_chars FROM brochure
+            WHERE status='ok' AND COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1)
+            ORDER BY pages LIMIT 4"""), default=str))
     print('Runtime scheduler:', json.dumps(q("SELECT * FROM scheduler_state"), default=str))
     print('Runtime lanes:', json.dumps(q("SELECT lane, beat_at, job FROM worker_lane ORDER BY lane"),
                                        default=str))
