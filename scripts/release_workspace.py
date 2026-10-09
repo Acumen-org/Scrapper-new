@@ -75,14 +75,22 @@ def main():
         if not working:
             issues.append('Reacher API')
     if ai.enabled('ask'):
-        try:
-            response = ai.complete('This is an application connectivity check. Reply with Ready.',
-                                   [{'role':'user', 'content':'Check connection.'}],
-                                   feature='ask', max_tokens=1000)
-            print('AI provider response received:', bool(response), flush=True)
-        except Exception as exc:
-            print('AI provider check failed:', type(exc).__name__, flush=True)
-            issues.append('AI provider')
+        # Twice before calling it broken: one DNS hiccup inside the container
+        # (seen 2026-10-09) is not a release problem.
+        for attempt in (1, 2):
+            try:
+                response = ai.complete('This is an application connectivity check. Reply with Ready.',
+                                       [{'role':'user', 'content':'Check connection.'}],
+                                       feature='ask', max_tokens=1000)
+                print('AI provider response received:', bool(response), flush=True)
+                break
+            except Exception as exc:
+                print(f'AI provider check failed (attempt {attempt}):', type(exc).__name__, flush=True)
+                if attempt == 2:
+                    issues.append('AI provider')
+                else:
+                    import time
+                    time.sleep(20)
     print('Scheduled jobs:', len(jobs.JOBS), 'paused:', sum(s.get('desired_state')=='paused' for k,s in jobs.states(c).items() if k in jobs.BY_KIND))
     print('Jobs requiring a retry:', [k for k,s in jobs.states(c).items()
           if k in jobs.BY_KIND and s.get('last_status') in ('failed', 'timeout')])

@@ -317,13 +317,25 @@ def _strict_json_ok(base: str) -> bool:
 # A model that does not think never uses it, and tokens are billed as used.
 THINK_ROOM = 3000
 
+# Background features (reading team pages, briefs, clean-up, research) are
+# not waited on by a person, so a thinking model gets longer and more room:
+# Bonsai-27B on Eden AI often thinks past 120 seconds and 6,000 tokens there.
+INTERACTIVE = ("ask", "test", "diagnostics")
+BACKGROUND_TIMEOUT_S = 300.0
+
+
+def _room(feature: str) -> int:
+    return THINK_ROOM if feature in INTERACTIVE else THINK_ROOM * 2
+
+
 # Yielded by stream() once, when a model starts thinking before it writes,
 # so the screen can say so instead of sitting silent.
 THINKING = object()
 
 
 def _openai_request(system: str, messages: list[dict], mdl: str, max_tokens: int,
-                    schema: dict | None, base: str, schema_hint: bool) -> tuple[dict, dict]:
+                    schema: dict | None, base: str, schema_hint: bool,
+                    room: int = THINK_ROOM) -> tuple[dict, dict]:
     """Headers and body for an OpenAI-compatible chat completion."""
     key = settings.get("ai.api_key")
     headers = {"Content-Type": "application/json"}
@@ -334,7 +346,7 @@ def _openai_request(system: str, messages: list[dict], mdl: str, max_tokens: int
         if schema_hint:
             system += " It must match this JSON schema: " + json.dumps(schema)
     msgs = [{"role": "system", "content": system}] + messages
-    body: dict = {"model": mdl, "messages": msgs, "max_tokens": max_tokens + THINK_ROOM}
+    body: dict = {"model": mdl, "messages": msgs, "max_tokens": max_tokens + room}
     if schema is not None and _strict_json_ok(base):
         body["response_format"] = {"type": "json_schema", "json_schema": {
             "name": "result", "schema": schema, "strict": True}}
@@ -357,10 +369,12 @@ def _http_error(r, mdl: str, base: str) -> AIError:
 
 
 def _call_openai_compatible(system: str, messages: list[dict], mdl: str, max_tokens: int,
-                            schema: dict | None, base: str, timeout: float = 120.0,
+                            schema: dict | None, base: str, timeout: float = 120.0, *,
+                            room: int = THINK_ROOM,
                             schema_hint: bool = True) -> tuple[str, int, int]:
     import requests
-    headers, body = _openai_request(system, messages, mdl, max_tokens, schema, base, schema_hint)
+    headers, body = _openai_request(system, messages, mdl, max_tokens, schema, base, schema_hint,
+                                    room)
     try:
         r = requests.post(base.rstrip("/") + "/chat/completions", json=body,
                           headers=headers, timeout=timeout)
@@ -371,7 +385,8 @@ def _call_openai_compatible(system: str, messages: list[dict], mdl: str, max_tok
                               headers=headers, timeout=timeout)
         if r.status_code == 400 and "response_format" in body:
             # Not every endpoint honours json_schema; ask in words instead.
-            headers, body = _openai_request(system, messages, mdl, max_tokens, schema, "", True)
+            headers, body = _openai_request(system, messages, mdl, max_tokens, schema, "", True,
+                                            room)
             r = requests.post(base.rstrip("/") + "/chat/completions", json=body,
                               headers=headers, timeout=timeout)
     except requests.Timeout:
@@ -537,7 +552,7 @@ def _coerce(v, schema: dict | None):
 
 def complete(system: str, messages: list[dict], *, feature: str, tier: str = "smart",
              schema: dict | None = None, max_tokens: int = 4000,
-             who: str | None = None, timeout: float = 120.0,
+             who: str | None = None, timeout: float | None = None,
              schema_hint: bool = True, effort: str | None = None) -> str | dict:
     """One model call. Returns text, or a dict when a JSON schema is given.
     schema_hint=False when the prompt already spells out the JSON wanted, so
@@ -548,6 +563,8 @@ def complete(system: str, messages: list[dict], *, feature: str, tier: str = "sm
     if budget_left() <= 0:
         raise AIError("Today's AI allowance is used up. It resets at midnight UTC.")
     mdl = model(tier)
+    if timeout is None:
+        timeout = 120.0 if feature in INTERACTIVE else BACKGROUND_TIMEOUT_S
     opts = {"timeout": timeout, "schema_hint": schema_hint, "effort": effort}
     try:
         return _complete_once(system, messages, mdl, feature, tier, schema, max_tokens, who, **opts)
@@ -585,7 +602,8 @@ def _complete_once(system: str, messages: list[dict], mdl: str, feature: str, ti
                                               timeout)
         elif p in ("edenai", "openai"):
             text, tin, tout = _call_openai_compatible(system, messages, mdl, max_tokens, schema,
-                                                      _base(), timeout, schema_hint)
+                                                      _base(), timeout, schema_hint=schema_hint,
+                                                      room=_room(feature))
         else:
             raise AIError("Unknown AI provider.", f"unknown provider {p!r}")
         if not str(text or "").strip():
