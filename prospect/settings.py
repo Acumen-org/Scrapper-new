@@ -108,9 +108,10 @@ SPECS: list[Spec] = [
          help="The sender used in SMTP checks. A real domain you own keeps checks from being refused."),
     Spec("verify.hello_name", "HELO name", "verify", default="acumen-strategy.com"),
     Spec("verify.per_minute", "Mail server conversations per minute, at most", "verify",
-         default="30",
+         default="45",
          help="Across all mail servers. One conversation can ask about several addresses, "
-              "and no server ever has two at once or two within two seconds."),
+              "and no server ever has two at once or two within two seconds. The pace halves "
+              "by itself while servers answer \"try again later\" more than usual."),
     # ---- crawling
     Spec("crawl.respect_robots", "Obey robots.txt", "crawl", default="on", choices=("on", "off")),
     Spec("crawl.use_browser", "Render JavaScript pages", "crawl", default="auto",
@@ -120,10 +121,10 @@ SPECS: list[Spec] = [
     Spec("crawl.recrawl_days", "Re-read a firm website after (days)", "crawl", default="90"),
     Spec("crawl.contact_retry_days", "Search again for missing personal contacts after (days)", "crawl", default="14",
          help="Public-page and AI research keep retrying missing email, direct phone and LinkedIn details. Minimum 1 day; search-engine backoff and the AI daily limit still apply."),
-    Spec("ocr.base_url", "OCR server (Unlimited-OCR)", "crawl", env="BELLWETHER_OCR_URL",
-         help="For scanned brochures, which have no text layer. A vLLM or SGLang server running "
-              "baidu/Unlimited-OCR on an NVIDIA GPU, for example http://ocr-host:8000/v1. Blank: "
-              "scanned brochures wait."),
+    Spec("ocr.base_url", "Unlimited-OCR server (optional)", "crawl", env="BELLWETHER_OCR_URL",
+         help="Leave blank: scanned brochures are read with Tesseract on this server's CPU. Only "
+              "if you have an NVIDIA GPU running baidu/Unlimited-OCR (vLLM or SGLang), give its "
+              "address here, for example http://ocr-host:8000/v1, and scans go to it instead."),
     Spec("ocr.model", "OCR model name", "crawl", default="Unlimited-OCR",
          help="The name the server was started with (--served-model-name)."),
     Spec("ocr.api_key", "OCR server key", "crawl", secret=True, env="BELLWETHER_OCR_KEY",

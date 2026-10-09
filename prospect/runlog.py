@@ -7,6 +7,7 @@ is loud by construction: the context manager records the exception and re-raises
 
 from __future__ import annotations
 
+import os
 import traceback
 from datetime import datetime, timezone
 
@@ -40,11 +41,21 @@ class Run:
         self.message = message
 
     def __enter__(self) -> "Run":
-        cur = self.conn.execute(
-            "INSERT INTO run_log (source_key, stage, started_at, status, config_stamp)"
-            " VALUES (?,?,?,'running',?) RETURNING id",
-            (self.source_key, self.stage, _now(), self.config_stamp),
-        )
+        # A run inside a background-job slice carries the slice's id, so the
+        # worker can close it if the slice is stopped before it can.
+        slice_id = os.environ.get("BELLWETHER_SLICE")
+        if slice_id:
+            cur = self.conn.execute(
+                "INSERT INTO run_log (source_key, stage, started_at, status, config_stamp,"
+                " slice_id) VALUES (?,?,?,'running',?,?) RETURNING id",
+                (self.source_key, self.stage, _now(), self.config_stamp, slice_id),
+            )
+        else:
+            cur = self.conn.execute(
+                "INSERT INTO run_log (source_key, stage, started_at, status, config_stamp)"
+                " VALUES (?,?,?,'running',?) RETURNING id",
+                (self.source_key, self.stage, _now(), self.config_stamp),
+            )
         self.id = cur.lastrowid
         self.conn.commit()
         return self

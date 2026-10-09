@@ -67,23 +67,59 @@ def is_alive(pid: int) -> bool:
         k32.CloseHandle(handle)
 
 
+def started_at(pid: int) -> float | None:
+    """When a process started, as a Unix time; None where /proc is not there
+    (Windows) or the process is gone."""
+    try:
+        with open(f"/proc/{int(pid)}/stat", "rb") as fh:
+            fields = fh.read().rsplit(b")", 1)[1].split()
+        ticks = int(fields[19])                 # starttime, field 22 of stat
+        with open("/proc/stat") as fh:
+            boot = next(int(line.split()[1]) for line in fh if line.startswith("btime"))
+        return boot + ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, StopIteration, AttributeError):
+        return None
+
+
 def alive_pid(pidfile: Path) -> int | None:
     """The pid recorded in pidfile if that process is still running, else None.
-    A stale file is left in place; callers decide whether to claim it."""
+    A stale file is left in place; callers decide whether to claim it.
+
+    A pid file outlives its process, and in a container the numbers start
+    again from 1 after every restart, so the number in an old file often
+    belongs to some other live process. A process that started after the
+    file was written cannot be the one that wrote it: that file is stale."""
+    pidfile = Path(pidfile)
     try:
-        pid = int(Path(pidfile).read_text().strip())
+        pid = int(pidfile.read_text().strip())
     except (OSError, ValueError):
         return None
-    return pid if is_alive(pid) else None
-
-
-def kill_tree(pid: int) -> None:
-    """Kill a process and its children, on either platform.
-
-    Only ever called on a pid confirmed alive. On Windows taskkill /T walks the
-    tree; on POSIX the process group is the tree, and uvicorn's supervisor leads
-    its own group when started by a service manager."""
     if not is_alive(pid):
+        return None
+    began = started_at(pid)
+    if began is not None:
+        try:
+            if began > pidfile.stat().st_mtime + 2:
+                return None
+        except OSError:
+            return None
+    return pid
+
+
+def group_kwargs() -> dict:
+    """Popen arguments that give a child its own process group, so it and
+    everything it starts can be stopped together without touching the parent:
+    a new session on POSIX, a new process group (and no console window) on
+    Windows."""
+    if os.name == "nt":
+        return {"creationflags": SPAWN_FLAGS}
+    return {"start_new_session": True}
+
+
+def kill_group(pid: int, hard: bool = True) -> None:
+    """Stop a child started with group_kwargs() and everything it started (a
+    headless browser, a shard). Never the caller's own group."""
+    if not pid or pid <= 0:
         return
     if os.name == "nt":
         import subprocess
@@ -92,12 +128,51 @@ def kill_tree(pid: int) -> None:
         return
     import signal
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        if os.getpgid(pid) == os.getpgid(0):
+            os.kill(pid, signal.SIGKILL if hard else signal.SIGTERM)
+            return
     except (OSError, ProcessLookupError):
+        pass
+    try:
+        os.killpg(pid, signal.SIGKILL if hard else signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def kill_tree(pid: int) -> None:
+    """Kill a process and its children, on either platform.
+
+    Only ever called on a pid confirmed alive. On Windows taskkill /T walks the
+    tree. On POSIX the process group is the tree, except when it is the
+    caller's own group: then only the process itself is signalled, so stopping
+    the worker can never take the web server down with it. A process that
+    ignores SIGTERM for five seconds gets SIGKILL."""
+    if not is_alive(pid):
+        return
+    if os.name == "nt":
+        import subprocess
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       capture_output=True, creationflags=0x08000000)
+        return
+    import signal
+    import time
+    try:
+        pgid = os.getpgid(pid)
+        own = pgid == os.getpgid(0)
+    except (OSError, ProcessLookupError):
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+            if own:
+                os.kill(pid, sig)
+            else:
+                os.killpg(pgid, sig)
+        except (OSError, ProcessLookupError):
+            return
+        for _ in range(50):
+            if not is_alive(pid):
+                return
+            time.sleep(0.1)
 
 
 def claim_pidfile(pidfile: Path) -> bool:
@@ -111,7 +186,10 @@ def claim_pidfile(pidfile: Path) -> bool:
         try:
             fd = os.open(pidfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            if alive_pid(pidfile) is not None:
+            holder = alive_pid(pidfile)
+            if holder == os.getpid():
+                return True             # a file from before a restart that reused our pid
+            if holder is not None:
                 return False
             try:
                 pidfile.unlink()

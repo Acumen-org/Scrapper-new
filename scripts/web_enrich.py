@@ -37,7 +37,12 @@ site said before, since a person no longer on the team page has usually left.
 Commits happen after every page and nothing is ever written while a page is
 being fetched: see enrich_one for why.
 
-    python -m scripts.web_enrich [--limit N] [--crd CRD] [--url URL]
+Several sites are read at once with --parallel N: the firms due are split
+into N shards by CRD, and each shard is read by its own process (its own
+crawler, browser and database connection), so no two ever read the same
+firm and one stuck site holds up only its own shard.
+
+    python -m scripts.web_enrich [--limit N] [--parallel N] [--crd CRD] [--url URL]
 """
 
 from __future__ import annotations
@@ -835,12 +840,13 @@ def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
 
 # ------------------------------------------------------------------ schedule
 
-def todo(conn, limit: int) -> list[dict]:
-    """All firm websites, including explicit refresh requests and contact gaps."""
+def todo(conn, limit: int, shard: tuple[int, int] | None = None) -> list[dict]:
+    """All firm websites, including explicit refresh requests and contact gaps.
+    With shard (k, n), only the firms whose CRD falls in shard k of n."""
     days = settings.get_int("crawl.recrawl_days", 90) or 90
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
     retry = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(timespec="seconds")
-    return conn.execute("""
+    return conn.execute(f"""
         SELECT f.crd, f.website FROM firm_current f
         LEFT JOIN firm_scope s ON s.crd=f.crd
         LEFT JOIN web_enrich_state w ON w.crd=f.crd
@@ -853,8 +859,9 @@ def todo(conn, limit: int) -> list[dict]:
                AND cp.person_key='i:'||pe.indvl_pk AND cp.kind='email') OR
              NOT EXISTS (SELECT 1 FROM usable_contact_point cp WHERE cp.crd=f.crd
                AND cp.person_key='i:'||pe.indvl_pk AND cp.kind='phone')))))
+          {"AND MOD(ABS(hashtext(f.crd)), ?) = ?" if shard else ""}
         ORDER BY COALESCE(w.scanned_at, '1970-01-01'), s.priority DESC NULLS LAST
-        LIMIT ?""", (cutoff, retry, limit)).fetchall()
+        LIMIT ?""", (cutoff, retry, *((shard[1], shard[0]) if shard else ()), limit)).fetchall()
 
 
 def save_state(conn, crd: str, res: dict) -> None:
@@ -871,12 +878,44 @@ def save_state(conn, crd: str, res: dict) -> None:
     conn.commit()
 
 
+def run_shards(args) -> int:
+    """Read --parallel shards at once, one process each, and wait for all.
+    Each shard prints its own firm lines; the last line here sums them up."""
+    import subprocess
+    n = args.parallel
+    procs = [subprocess.Popen([sys.executable, "-m", "scripts.web_enrich", "--limit", str(args.limit),
+                               "--shard", f"{k}/{n}"], cwd=str(config.ROOT),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              encoding="utf-8", errors="replace")
+             for k in range(n)]
+    lines, failed = [], 0
+    for pr in procs:
+        out, _ = pr.communicate()
+        lines += [ln for ln in (out or "").splitlines() if ln.strip()]
+        failed += pr.returncode != 0
+    for ln in lines:
+        if ln.startswith("  "):
+            print(ln, flush=True)
+    firms = sum(1 for ln in lines if ln.startswith("  ") and ":" in ln)
+    print(f"{n} shards read {firms} firm websites at once"
+          + (f"; {failed} shard{'s' if failed != 1 else ''} failed" if failed else ""))
+    return 1 if failed == n else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=8)
     ap.add_argument("--crd", help="read this one firm now, whatever the schedule says")
     ap.add_argument("--url", help="with --crd: read this address instead of the filed one")
+    ap.add_argument("--parallel", type=int, default=1, help="read this many shards at once")
+    ap.add_argument("--shard", help="k/n: read only shard k of n (set by --parallel)")
     args = ap.parse_args()
+    if args.parallel > 1 and not args.crd and not args.shard:
+        return run_shards(args)
+    shard = None
+    if args.shard:
+        k, n = (int(x) for x in args.shard.split("/"))
+        shard = (k, n)
 
     cfg = config.load()
     conn = db.connect()
@@ -896,7 +935,7 @@ def main() -> int:
             website = args.url or (r["website"] if r else None)
             rows = [{"crd": args.crd, "website": website}]
         else:
-            rows = todo(conn, args.limit)
+            rows = todo(conn, args.limit, shard)
         conn.commit()
         if not rows:
             print("nothing left to enrich")

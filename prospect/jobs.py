@@ -42,6 +42,22 @@ EXTRA_COLUMNS = (("last_run_at", "TEXT"), ("next_run_at", "TEXT"), ("last_status
                  ("force", "INTEGER DEFAULT 0"), ("last_output", "TEXT"),
                  ("fails", "INTEGER DEFAULT 0"), ("ok_at", "TEXT"))
 
+# One row per slice: how long it took, how it ended, the most memory it used.
+# Settings and the diagnostics read lane use and job speed from here.
+RUN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS job_run (
+    id          INTEGER PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    lane        TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    seconds     REAL,
+    status      TEXT NOT NULL,
+    peak_mb     REAL,
+    output      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_job_run_started ON job_run (started_at);
+"""
+
 # Lanes run side by side, each with its own turn order. Mail and search wait on
 # other people's servers and use little memory; websites may start a headless
 # browser; the data jobs read and write the big tables, one at a time.
@@ -118,7 +134,7 @@ JOBS: list[Job] = [
         "Reads each firm's own website (team, bio, contact pages and vCards) for the "
         "people who work there, their titles, emails and direct lines. Re-reads a site "
         "after the interval set in Settings.",
-        "scripts.web_enrich", ("--limit", "6"), every_hours=6, timeout_s=2400,
+        "scripts.web_enrich", ("--limit", "6", "--parallel", "3"), every_hours=6, timeout_s=2400,
         backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN web_enrich_state w ON w.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE f.website IS NOT NULL AND f.website != '' AND (w.crd IS NULL OR w.scanned_at < '{recrawl_cutoff}' OR r.requested_at > w.scanned_at)",
         done_sql="SELECT COUNT(*) n FROM web_enrich_state",
         total_sql="SELECT COUNT(*) n FROM firm_current WHERE website IS NOT NULL AND website != ''",
@@ -145,7 +161,7 @@ JOBS: list[Job] = [
         "Finds published personal emails, phones and LinkedIn profiles. Keeps searching "
         "while any channel is missing, including people with a LinkedIn profile already. "
         "Repeat interval is set in Crawling. Search engines are rate limited and source pages checked.",
-        "scripts.search_contacts", ("--limit", "40", "--seconds", "420"), every_hours=0.5,
+        "scripts.search_contacts", ("--limit", "40", "--seconds", "420"), every_hours=0.1,
         timeout_s=900,
         backlog_sql=None,
         done_sql="SELECT COUNT(*) n FROM contact_search_state x JOIN person_employment e ON e.org_pk=x.crd AND x.person_key='i:'||e.indvl_pk WHERE e.kind='current'",
@@ -229,14 +245,15 @@ JOBS: list[Job] = [
         "Repeat interval is set in Crawling; the AI daily limit still applies.",
         "scripts.ai_research", ("--limit", "8"), every_hours=1, timeout_s=1500,
         needs="ai:research", group="ai", lane="search"),
-    Job("brochure_ocr", "Scanned brochures",
-        "Reads brochures filed as scanned images, which carry no text layer, with the "
-        "Unlimited-OCR model on the OCR server set in Settings, Crawling. Every other "
-        "brochure already has exact text and needs no OCR.",
-        "scripts.ocr_brochures", ("--limit", "4"), every_hours=24, timeout_s=1800,
-        needs="ocr", group="filings", lane="search",
+    Job("brochure_ocr", "Brochures without a text layer",
+        "Reads the few brochures that come back empty from the PDF reader: most were typed "
+        "into the SEC's fillable form, so their text is read exactly from the form fields; "
+        "scanned pages are read with OCR (Tesseract on this server, or an Unlimited-OCR "
+        "server if one is set in Settings, Crawling); a blank template is marked as such.",
+        "scripts.ocr_brochures", ("--limit", "6"), every_hours=24, timeout_s=1800,
+        group="filings", lane="search",
         backlog_sql="SELECT COUNT(*) n FROM brochure WHERE status='ok' AND COALESCE(ocr_status,'') = '' AND COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1)",
-        done_sql="SELECT COUNT(*) n FROM brochure WHERE ocr_status='ok'",
+        done_sql="SELECT COUNT(*) n FROM brochure WHERE ocr_status IN ('ok','empty')",
         total_sql="SELECT COUNT(*) n FROM brochure WHERE status='ok' AND (ocr_status IS NOT NULL OR COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1))"),
 ]
 BY_KIND = {j.kind: j for j in JOBS}
@@ -254,6 +271,10 @@ def init(conn) -> None:
     from .db import add_column
     for col, typ in EXTRA_COLUMNS:
         add_column(conn, "auto_task", col, typ)
+    add_column(conn, "run_log", "slice_id", "TEXT")
+    conn.executescript(RUN_SCHEMA)
+    # Jobs retired from the registry leave a row that would read as overdue.
+    conn.execute("DELETE FROM auto_task WHERE kind IN ('infer_emails')")
     for j in JOBS:
         conn.execute("INSERT INTO auto_task (kind, desired_state) VALUES (?, 'running')"
                      " ON CONFLICT (kind) DO NOTHING", (j.kind,))
@@ -359,6 +380,10 @@ def due(job: Job, st: dict, backlog: int | None) -> bool:
         age = _age_minutes(st.get("last_run_at"))
         if not job.min_gap_minutes or age is None or age >= job.min_gap_minutes:
             return True
+        # Inside the gap the request waits, folded into the run at its end.
+        # request_run also moved next_run_at to now, so falling through to the
+        # schedule below would let every request straight in.
+        return False
     if st.get("desired_state") == "paused":
         return False
     nxt = st.get("next_run_at")

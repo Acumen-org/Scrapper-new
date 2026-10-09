@@ -265,6 +265,13 @@ def _init_once() -> None:
     for mod in ("contacts", "jobs", "ai", "roles", "people", "verify", "directory",
                 "websignals", "firmtype", "knowledge", "websearch", "health", "ocr"):
         _init_optional(c, mod)
+    # A fresh start: a run left "running" from before it is a ghost of the
+    # previous container, whatever its age.
+    try:
+        from . import health
+        health.close_ghost_runs(c, minutes=2)
+    except Exception:
+        c.rollback()
     c.close()
 
     # First boot after the contact tables were unified: copy the old ones in.
@@ -397,7 +404,7 @@ def start_weekly() -> None:
     log = open(config.DATA_DIR / "weekly.log", "ab")
     subprocess.Popen([sys.executable, "-m", "scripts.run_weekly", "--brochure-slice", "120"],
                      cwd=str(config.ROOT), stdout=log, stderr=log,
-                     creationflags=procs.SPAWN_FLAGS)
+                     **procs.group_kwargs())
 
 
 def _scheduler_loop() -> None:
@@ -458,17 +465,30 @@ def ensure_autopilot() -> bool:
     log = open(config.DATA_DIR / "autopilot.log", "ab")
     subprocess.Popen([sys.executable, "-m", "scripts.autopilot"],
                      cwd=str(config.ROOT), stdout=log, stderr=log,
-                     creationflags=procs.SPAWN_FLAGS)
+                     **procs.group_kwargs())
     return True
 
 
 def restart_worker() -> None:
     """Stop the background worker and every slice it is running, then start
-    a fresh one. The watchdog calls this when a slice or a lane is stuck."""
+    a fresh one. The watchdog calls this when a slice or a lane is stuck.
+    Slices run in process groups of their own, so they are stopped by the
+    pids the lanes recorded, as well as by the worker on its way out."""
     apf = config.DATA_DIR / "autopilot.pid"
     pid = procs.alive_pid(apf)
+    slices = []
+    try:
+        c = conn()
+        slices = [r["slice_pid"] for r in c.execute(
+            "SELECT slice_pid FROM worker_lane WHERE slice_pid IS NOT NULL")]
+        c.close()
+    except Exception:
+        pass
     if pid is not None:
         procs.kill_tree(pid)
+    for sp in slices:
+        if sp and procs.is_alive(int(sp)):
+            procs.kill_group(int(sp))
     apf.unlink(missing_ok=True)
     ensure_autopilot()
 

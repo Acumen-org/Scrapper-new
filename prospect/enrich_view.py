@@ -97,7 +97,7 @@ def frame(title: str, tab: str, lede: str, inner: str, msg: str = "", err: str =
 def _bg(args: list[str], log: str = "directories.log") -> None:
     f = open(config.DATA_DIR / log, "ab")
     subprocess.Popen([sys.executable, "-m", *args], cwd=str(config.ROOT), stdout=f, stderr=f,
-                     creationflags=procs.SPAWN_FLAGS)
+                     **procs.group_kwargs())
 
 
 def _directory():

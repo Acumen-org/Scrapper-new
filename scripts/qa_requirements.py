@@ -339,5 +339,133 @@ class AITransportChecks(unittest.TestCase):
         self.assertEqual(pieces,['Hello ','there'])
 
 
+def _form_pdf(text: bytes) -> bytes:
+    """A one-page PDF whose only content is a filled form field, as the SEC's
+    fillable Form ADV template is."""
+    objs = [b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [4 0 R] >>",
+            b"<< /FT /Tx /T (Text69) /V (" + text + b") /Rect [50 600 550 700]"
+            b" /Subtype /Widget /P 3 0 R >>"]
+    out, offs = b"%PDF-1.4\n", []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out))
+        out += f"{i} 0 obj\n".encode() + o + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offs)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
+
+
+class WorkerChecks(unittest.TestCase):
+    """The background worker's edge cases that need no database: slices that
+    fail or hang, what a stopped slice leaves behind, stale pid files, and
+    retry timing. The process tests matter most on Linux, where the Docker
+    build runs them."""
+
+    def job(self, *args, timeout=20):
+        from prospect import jobs
+        return jobs.Job('qa', 'QA', '', 'scripts.qa_child', args, timeout_s=timeout)
+
+    def test_slice_outcomes(self):
+        from scripts import autopilot
+        status, msg, _ = autopilot.run_slice(self.job('ok'), 'qa1')
+        self.assertEqual((status, msg), ('ok', 'stand-in job did its work'))
+        status, msg, _ = autopilot.run_slice(self.job('fail'), 'qa2')
+        self.assertEqual((status, msg), ('failed', 'stand-in job failed on purpose'))
+
+    def test_timeout_stops_the_slice_and_what_it_started(self):
+        import tempfile, time
+        from pathlib import Path
+        from prospect import procs
+        from scripts import autopilot
+        pidfile = Path(tempfile.mkdtemp()) / 'grandchild.pid'
+        t0 = time.monotonic()
+        status, msg, _ = autopilot.run_slice(self.job('spawn', str(pidfile), '120', timeout=4), 'qa3')
+        self.assertEqual(status, 'timeout')
+        self.assertLess(time.monotonic() - t0, 30)
+        gc = int(pidfile.read_text())
+        for _ in range(50):
+            if not procs.is_alive(gc):
+                break
+            time.sleep(0.1)
+        self.assertFalse(procs.is_alive(gc), 'a headless browser must not outlive its slice')
+
+    def test_stale_pid_file_is_not_a_live_worker(self):
+        import os, subprocess, sys, tempfile, time
+        from pathlib import Path
+        from prospect import procs
+        d = Path(tempfile.mkdtemp())
+        mine = d / 'mine.pid'
+        mine.write_text(str(os.getpid()))
+        self.assertTrue(procs.claim_pidfile(mine), 'a file holding our own pid is ours')
+        if os.name == 'nt':
+            self.skipTest('process start times come from /proc')
+        stale = d / 'stale.pid'
+        other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            stale.write_text(str(other.pid))
+            old = time.time() - 3600
+            os.utime(stale, (old, old))     # written long before that process began
+            self.assertIsNone(procs.alive_pid(stale))
+            self.assertTrue(procs.claim_pidfile(stale))
+        finally:
+            other.kill()
+
+    def test_stopping_a_child_in_our_own_group_spares_us(self):
+        import os, subprocess, sys
+        from prospect import procs
+        if os.name == 'nt':
+            self.skipTest('process groups are POSIX')
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        procs.kill_tree(child.pid)          # same group as this test process
+        child.wait(timeout=10)
+        self.assertTrue(procs.is_alive(os.getpid()))
+
+    def test_retry_timing_and_odd_states(self):
+        from datetime import datetime, timezone
+        from prospect import jobs
+        mins = [round((datetime.fromisoformat(jobs.retry_at(n)) - datetime.now(timezone.utc))
+                      .total_seconds() / 60) for n in (1, 2, 3, 9)]
+        self.assertEqual(mins, [15, 60, 180, 480])
+        job = jobs.BY_KIND['rescore']
+        self.assertTrue(jobs.due(job, {'next_run_at': 'not a date'}, None))
+        self.assertFalse(jobs.due(job, {'desired_state': 'paused', 'next_run_at': None}, None))
+        self.assertTrue(jobs.due(jobs.BY_KIND['offices'], {'desired_state': 'paused', 'force': 1}, None),
+                        'Run now runs a paused job once')
+        now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        self.assertFalse(jobs.due(job, {'force': 1, 'last_run_at': now, 'next_run_at': now}, None),
+                         'a Run now request inside the gap waits for the gap')
+
+    def test_form_field_brochure_is_read_exactly(self):
+        from prospect import ocr
+        body = (b'We write covered calls on concentrated stock positions for clients. '
+                b'Item 4 Advisory Business. ' * 4)
+        text = ocr.form_text(_form_pdf(body))
+        self.assertIn('covered calls on concentrated stock', text)
+        text, method, pages = ocr.read_pdf(_form_pdf(body), 10)
+        self.assertEqual((method, pages), ('form', 0))
+        self.assertEqual(ocr.read_pdf(_form_pdf(b'x'), 10)[1], 'empty')
+
+    def test_tesseract_reads_a_typed_page(self):
+        import io, os
+        from prospect import ocr
+        if not ocr.tesseract_cmd():
+            if os.name == 'nt':
+                self.skipTest('no Tesseract on this Windows machine')
+            self.fail('the app image must ship Tesseract for scanned brochures')
+        from PIL import Image, ImageDraw, ImageFont
+        try:
+            font = ImageFont.load_default(size=48)
+        except TypeError:
+            self.skipTest('Pillow too old for a sized default font')
+        img = Image.new('L', (1200, 200), 255)
+        ImageDraw.Draw(img).text((20, 60), 'We write covered calls', fill=0, font=font)
+        buf = io.BytesIO()
+        img.save(buf, 'PNG')
+        self.assertIn('covered calls', ocr.tesseract_page(buf.getvalue()).lower())
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -82,9 +82,12 @@ def init(conn) -> None:
     conn.commit()
 
 
-def close_ghost_runs(conn) -> int:
-    """run_log rows a restart left saying "running" for ever."""
-    cutoff = _iso(_now() - timedelta(hours=GHOST_HOURS))
+def close_ghost_runs(conn, minutes: float | None = None) -> int:
+    """run_log rows a restart left saying "running" for ever: older than
+    GHOST_HOURS, or than `minutes` when the caller knows better (the web app
+    at startup, when nothing from before can still be running)."""
+    age = timedelta(minutes=minutes) if minutes is not None else timedelta(hours=GHOST_HOURS)
+    cutoff = _iso(_now() - age)
     cur = conn.execute("UPDATE run_log SET status='interrupted', finished_at=?,"
                        " message=COALESCE(NULLIF(message,''), 'stopped when the worker restarted')"
                        " WHERE status='running' AND started_at < ?", (_iso(_now()), cutoff))
@@ -172,13 +175,23 @@ def evaluate(conn, *, restart_worker=None, start_weekly=None) -> dict[str, dict]
         ok, why = jobs.requirement(j)
         backlog = jobs.count(conn, j.backlog_sql, tv)
         if not ok:
-            if j.needs == "ocr" and backlog:
-                alerts[j.kind] = {"level": "warn",
-                                  "title": f"{backlog:,} scanned brochure{'s' if backlog != 1 else ''} wait for OCR",
-                                  "detail": "They were filed as images, with no text to read. Set an "
-                                            "Unlimited-OCR server in Settings, Crawling and they are read "
-                                            "by themselves.", "href": "/settings/crawl"}
             continue
+        if j.kind == "brochure_ocr":
+            try:
+                waiting = conn.execute("SELECT COUNT(*) n FROM brochure WHERE ocr_status='waiting'"
+                                       ).fetchone()["n"]
+            except Exception:
+                conn.rollback()
+                waiting = 0
+            if waiting:
+                alerts[j.kind] = {"level": "warn",
+                                  "title": f"{waiting:,} scanned brochure{'s' if waiting != 1 else ''} "
+                                           "need an OCR engine",
+                                  "detail": "They were filed as scanned images. This server has no "
+                                            "Tesseract; it is installed with the app image, so a redeploy "
+                                            "brings it back. They are read by themselves once it is there.",
+                                  "href": "/settings/crawl"}
+                continue
         out = s.get("last_output") or ""
         fails = int(s.get("fails") or 0)
         if fails >= FAILS_ALERT or (s.get("last_status") == "ok" and QUOTA_RE.search(out)
@@ -275,6 +288,10 @@ def run(conn, *, restart_worker=None, start_weekly=None) -> dict[str, dict]:
             conn.execute("DELETE FROM job_alert WHERE kind=?", (kind,))
             event(conn, kind, "resolved", f"{have[kind]['title']}: cleared")
     conn.execute("DELETE FROM job_progress WHERE at < ?", (_iso(_now() - timedelta(days=3)),))
+    try:
+        conn.execute("DELETE FROM job_run WHERE started_at < ?", (_iso(_now() - timedelta(days=14)),))
+    except Exception:
+        conn.rollback()
     conn.execute("DELETE FROM job_event WHERE at < ?", (_iso(_now() - timedelta(days=30)),))
     conn.commit()
     return alerts

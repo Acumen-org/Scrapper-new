@@ -88,7 +88,10 @@ WORKERS = 4
 # Conversations per minute across every mail server, when Settings holds no
 # value. Each conversation may ask about several addresses (MailSession), so
 # this caps how often we knock, not how much we learn per knock.
-PER_MINUTE_DEFAULT = 30
+PER_MINUTE_DEFAULT = 45
+BRAKE_RETRY_SHARE = 0.15    # "try later" answers in the last half hour above this halve the pace
+BRAKE_MIN_ASKED = 40        # too few answers to judge below this
+_BRAKE = {"t": -1e9, "factor": 1.0}
 RCPT_PER_SESSION = 10       # questions per conversation, the made-up probes included
 # Providers whose many customer domains are answered by one shared fleet. The
 # one-at-a-time rule applies to the provider as a whole for these, so a run
@@ -195,11 +198,37 @@ def _explicit(key: str) -> str:
         return ""
 
 
+def _brake_factor() -> float:
+    """1.0 normally; 0.5 while mail servers are telling us to slow down. Read
+    from the hunt's own record of answers, at most every two minutes, so a
+    rate limit somewhere eases the pace by itself and lifts once it passes."""
+    now = time.monotonic()
+    if now - _BRAKE["t"] < 120:
+        return _BRAKE["factor"]
+    _BRAKE["t"] = now
+    try:
+        from datetime import datetime, timedelta, timezone
+        from . import db
+        since = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(timespec="seconds")
+        c = db.connect()
+        try:
+            r = c.execute("SELECT COUNT(*) n, SUM(CASE WHEN status='retry' THEN 1 ELSE 0 END) r"
+                          " FROM email_attempt WHERE checked_at >= ?", (since,)).fetchone()
+        finally:
+            c.close()
+        n, slow = int(r["n"] or 0), int(r["r"] or 0)
+        _BRAKE["factor"] = 0.5 if n >= BRAKE_MIN_ASKED and slow / n > BRAKE_RETRY_SHARE else 1.0
+    except Exception:
+        pass
+    return _BRAKE["factor"]
+
+
 def _per_minute() -> int:
     try:
-        return settings.get_int("verify.per_minute", PER_MINUTE_DEFAULT)
+        base = settings.get_int("verify.per_minute", PER_MINUTE_DEFAULT)
     except Exception:
-        return PER_MINUTE_DEFAULT
+        base = PER_MINUTE_DEFAULT
+    return max(1, int(base * _brake_factor())) if base > 0 else base
 
 
 def _reacher_url() -> str:

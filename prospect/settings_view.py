@@ -462,10 +462,11 @@ Scrapling, using a real browser's network fingerprint so ordinary sites answer a
 person. Pages that only draw themselves with JavaScript are rendered in a headless browser when one
 is installed{"" if b else " (none is installed here, so those pages are skipped)"}.</p>
 {_group_form("crawl")}
-<section class="s"><h2>Scanned brochures</h2><p class="lede">A few brochures are filed as scanned
-images with no text. They are read with Baidu's Unlimited-OCR model, which needs an NVIDIA GPU and
-runs as its own server; set its address above. Every other brochure already has exact text.</p>
-<form method="post" action="/settings/ocr/test"><button class="sm" type="submit">Test the OCR server</button></form></section>"""
+<section class="s"><h2>Brochures without a text layer</h2><p class="lede">A few brochures come back
+empty from the PDF reader. Most were typed into the SEC's fillable form, and their text is read
+exactly from the form fields. Scanned pages are read with Tesseract on this server's CPU; an
+Unlimited-OCR server is used instead only if one is set above.</p>
+<form method="post" action="/settings/ocr/test"><button class="sm" type="submit">Test OCR</button></form></section>"""
     return _frame("Crawling", "crawl", "How firm websites, directories and scanned brochures are read.",
                   inner, msg, err)
 

@@ -170,6 +170,14 @@ def extract_text(pdf: bytes, max_pages: int) -> tuple[str, int]:
         pages = len(doc.pages)
         for pg in doc.pages[:max_pages]:
             parts.append(pg.extract_text() or "")
+    # A brochure typed into the SEC's fillable template keeps its text in form
+    # fields, which the page text above does not include. Read only when the
+    # pages came back nearly empty, so a filled and flattened form is not doubled.
+    if sum(len(p) for p in parts) < 50 * max(1, min(pages, max_pages)):
+        from prospect import ocr
+        form = ocr.form_text(pdf)
+        if form:
+            parts.append(form)
     # Some embedded fonts make pdfplumber emit NUL bytes. SQLite stored them
     # without complaint; Postgres rejects them outright in a text column, so
     # every snippet lifted from such a brochure failed on insert. They carry
@@ -458,7 +466,7 @@ def main() -> int:
                      if c.strip() != "crd")
     upsert = (f"INSERT INTO brochure ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
               f" ON CONFLICT (crd) DO UPDATE SET {sets}, ocr_status=NULL, ocr_at=NULL,"
-              f" ocr_pages=NULL")
+              f" ocr_pages=NULL, ocr_method=NULL")
     ok = nobro = failed = same = 0
     streak = 0            # consecutive download failures
     with runlog.Run(conn, "brochures", "ingest", stamp) as run:

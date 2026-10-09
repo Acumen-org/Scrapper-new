@@ -188,7 +188,7 @@ def api_verify_one(cid: int):
 def _bg(cmd: list[str], log: str) -> None:
     f = open(config.DATA_DIR / log, "ab")
     subprocess.Popen(cmd, cwd=str(config.ROOT), stdout=f, stderr=f,
-                     creationflags=procs.SPAWN_FLAGS)
+                     **procs.group_kwargs())
 
 
 @router.post("/api/firm/{crd}/verify")

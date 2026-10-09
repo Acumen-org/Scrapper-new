@@ -67,9 +67,33 @@ def _health(conn):
     except Exception as exc:
         conn.rollback()
         print('Runtime backlog: unavailable', type(exc).__name__, str(exc)[:120])
+    # Per slice, from the worker's own record: how busy each lane was, and how
+    # long, how heavy and how reliable each job's slices are.
+    for row in q("""SELECT lane, COUNT(*) slices, ROUND(SUM(seconds)) busy_s,
+            ROUND(100.0 * SUM(seconds) / GREATEST(EXTRACT(EPOCH FROM (NOW() - MIN(started_at)::timestamptz)), 1)) busy_pct
+            FROM job_run WHERE started_at >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD"T"HH24:MI:SS')
+            GROUP BY 1 ORDER BY 1"""):
+        print('Runtime lane use:', json.dumps(row, default=str))
+    for row in q("""SELECT kind, COUNT(*) slices, ROUND(AVG(seconds)) avg_s, ROUND(MAX(seconds)) max_s,
+            MAX(peak_mb) peak_mb, SUM(CASE WHEN status='timeout' THEN 1 ELSE 0 END) timeouts,
+            SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failures
+            FROM job_run WHERE started_at >= to_char(NOW() - INTERVAL '1 day', 'YYYY-MM-DD"T"HH24:MI:SS')
+            GROUP BY 1 ORDER BY 1"""):
+        print('Runtime job speed:', json.dumps(row, default=str))
+    print('Runtime ocr:', json.dumps(q("""SELECT ocr_status, ocr_method, COUNT(*) n FROM brochure
+            WHERE ocr_status IS NOT NULL GROUP BY 1, 2 ORDER BY 3 DESC"""), default=str))
+    try:
+        from prospect import ocr as _ocr, settings as _settings, verify as _verify
+        print('Runtime engines:', json.dumps({
+            'ocr_engine': _ocr.engine(), 'tesseract': _ocr.tesseract_cmd(),
+            'per_minute_setting_stored': _settings.is_set('verify.per_minute'),
+            'per_minute_now': _verify._per_minute()}))
+    except Exception as exc:
+        conn.rollback()
+        print('Runtime engines: unavailable', type(exc).__name__)
     print('Runtime scanned:', json.dumps(q("""SELECT crd, version_id, pages, text_chars FROM brochure
             WHERE status='ok' AND COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1)
-            ORDER BY pages LIMIT 100"""), default=str))
+            ORDER BY pages LIMIT 5"""), default=str))
     print('Runtime scheduler:', json.dumps(q("SELECT * FROM scheduler_state"), default=str))
     print('Runtime lanes:', json.dumps(q("SELECT lane, beat_at, job FROM worker_lane ORDER BY lane"),
                                        default=str))
