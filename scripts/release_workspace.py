@@ -89,7 +89,6 @@ def main():
                 if attempt == 2:
                     issues.append('AI provider')
                 else:
-                    import time
                     time.sleep(20)
     print('Scheduled jobs:', len(jobs.JOBS), 'paused:', sum(s.get('desired_state')=='paused' for k,s in jobs.states(c).items() if k in jobs.BY_KIND))
     print('Jobs requiring a retry:', [k for k,s in jobs.states(c).items()

@@ -161,7 +161,7 @@ JOBS: list[Job] = [
         "Finds published personal emails, phones and LinkedIn profiles. Keeps searching "
         "while any channel is missing, including people with a LinkedIn profile already. "
         "Repeat interval is set in Crawling. Search engines are rate limited and source pages checked.",
-        "scripts.search_contacts", ("--limit", "40", "--seconds", "420"), every_hours=0.1,
+        "scripts.search_contacts", ("--limit", "40", "--seconds", "420"), every_hours=0.25,
         timeout_s=900,
         backlog_sql=None,
         done_sql="SELECT COUNT(*) n FROM contact_search_state x JOIN person_employment e ON e.org_pk=x.crd AND x.person_key='i:'||e.indvl_pk WHERE e.kind='current'",
