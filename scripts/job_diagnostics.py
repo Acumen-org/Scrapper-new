@@ -69,7 +69,7 @@ def _health(conn):
         print('Runtime backlog: unavailable', type(exc).__name__, str(exc)[:120])
     print('Runtime scanned:', json.dumps(q("""SELECT crd, version_id, pages, text_chars FROM brochure
             WHERE status='ok' AND COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1)
-            ORDER BY pages LIMIT 4"""), default=str))
+            ORDER BY pages LIMIT 100"""), default=str))
     print('Runtime scheduler:', json.dumps(q("SELECT * FROM scheduler_state"), default=str))
     print('Runtime lanes:', json.dumps(q("SELECT lane, beat_at, job FROM worker_lane ORDER BY lane"),
                                        default=str))
