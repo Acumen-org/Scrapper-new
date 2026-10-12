@@ -48,7 +48,7 @@ def contacts_rows(c, crds: list[str]) -> list[dict]:
         chunk = crds[i:i + 1000]
         ph = ",".join("?" * len(chunk))
         rows = c.execute(f"""
-            SELECT cp.crd, f.legal_name AS firm, f.state, f.phone AS firm_phone,
+            SELECT cp.crd, f.legal_name AS firm, f.city, f.state, f.phone AS firm_phone,
                    cp.person_key, cp.person_name AS person, cp.title, cp.kind, cp.value,
                    cp.verify_status, cp.source, cp.confidence, cp.is_role
             FROM usable_contact_point cp JOIN firm_current f ON f.crd = cp.crd
@@ -70,7 +70,8 @@ def contacts_rows(c, crds: list[str]) -> list[dict]:
             label = contacts.VERIFY_LABEL.get(status, status)
             if r["source"] == "pattern" and status in ("unverified", "queued"):
                 label = "Guess, not checked"
-            out.append({"crd": r["crd"], "firm": nice_name(r["firm"]), "state": r["state"],
+            out.append({"crd": r["crd"], "firm": nice_name(r["firm"]),
+                        "city": nice_name(r["city"]) if r["city"] else "", "state": r["state"],
                         "person": r["person"] or ("Shared inbox" if r["is_role"] else ""),
                         "title": r["title"], "email": r["value"], "status": label,
                         "status_key": status, "source": r["source"],
@@ -80,7 +81,8 @@ def contacts_rows(c, crds: list[str]) -> list[dict]:
             if k in emailed:
                 continue
             r = first[k]
-            out.append({"crd": r["crd"], "firm": nice_name(r["firm"]), "state": r["state"],
+            out.append({"crd": r["crd"], "firm": nice_name(r["firm"]),
+                        "city": nice_name(r["city"]) if r["city"] else "", "state": r["state"],
                         "person": r["person"], "title": r["title"], "email": "",
                         "status": "", "status_key": "", "source": r["source"],
                         "confidence": r["confidence"], "phone": num})
@@ -431,9 +433,9 @@ def export_xlsx(q: str = "", st: str = "", size: str = "", reg: str = "",
         f"SELECT f.crd {FROM.format(where=where)} ORDER BY {SORTS[sort][1]} LIMIT 5000", args)]
     rows = contacts_rows(c, crds)
     c.close()
-    headers = ["Firm", "CRD", "State", "Person", "first_name", "Title", "Email", "Email status",
-               "Source", "Confidence", "Phone"]
-    out = [[r["firm"], r["crd"], r["state"] or "", r["person"] or "",
+    headers = ["Firm", "CRD", "City", "State", "Person", "first_name", "Title", "Email",
+               "Email status", "Source", "Confidence", "Phone"]
+    out = [[r["firm"], r["crd"], r["city"] or "", r["state"] or "", r["person"] or "",
             first_name(r["person"]) if r["person"] != "Shared inbox" else "", r["title"] or "",
             r["email"] or "", r["status"] or "", r["source"] or "", r["confidence"] or "",
             r["phone"] or ""] for r in rows]
