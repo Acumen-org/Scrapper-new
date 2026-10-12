@@ -125,8 +125,8 @@ def _shapes(conn):
             fh = gzip.open(p, "rt", errors="replace") if gz else open(p, "rt", errors="replace")
             with fh:
                 head = fh.readline().strip().lstrip("﻿")
-            cols = head.split(",")
-            print("Runtime archive columns:", len(cols), json.dumps([c for c in cols if c.startswith(("5", "2", "1E", "Date"))][:120]))
+            cols = [c.strip().strip('"') for c in head.split(",")]
+            print("Runtime archive columns:", len(cols), json.dumps(cols[:243]))
         for key in ("adv_feed", "adv_state_feed"):
             r = conn.execute("SELECT rel_path FROM snapshot WHERE source_key=? ORDER BY id DESC LIMIT 1",
                              (key,)).fetchone()
@@ -141,7 +141,8 @@ def _shapes(conn):
                         if ch.tag == "FormInfo":
                             continue
                         out[ch.tag] = {"attrs": sorted(ch.attrib),
-                                       "children": sorted({g.tag for g in ch.iter() if g is not ch})[:20]}
+                                       "children": sorted({g.tag for g in ch.iter() if g is not ch})[:20],
+                                       "sample": [dict(g.attrib) for g in ch.iter() if g is not ch and g.attrib][:3]}
                     if any(k not in ("Info", "MainAddr", "MailingAddr", "Filing") for k in out):
                         print("Runtime feed shape:", key, json.dumps(out)[:1500])
                         break
