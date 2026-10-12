@@ -131,17 +131,20 @@ FUNCTIONS = (
     ("Technology", re.compile(r"engineer|developer|technolog|(?-i:\bIT\b)|\bdata\b|systems|"
                               r"architect|\bcto\b|software", re.I)),
     ("Finance and tax", re.compile(r"\btax\b|accountant|accounting|bookkeep|controller|\bcfo\b|"
-                                   r"finance manager|payroll|preparer", re.I)),
+                                   r"finance|payroll|preparer|\baudit|treasury|fund account", re.I)),
     ("Marketing and growth", re.compile(r"marketing|business development|\bsales\b|growth|"
-                                        r"communications|events|brand", re.I)),
+                                        r"communications|events|brand|account executive|"
+                                        r"content|digital|social media", re.I)),
     ("People and HR", re.compile(r"recruit|talent|human resources|\bhr\b|people operations", re.I)),
     ("Operations and client service", re.compile(
         r"operations|client service|client success|client experience|client associate|"
         r"service associate|administrat|assistant|coordinator|receptionist|onboarding|billing|"
-        r"office manager|\bcsa\b|support", re.I)),
+        r"office manager|\bcsa\b|support|service|\baccount (manager|coordinator|associate)|"
+        r"vendor|contract|project|platform|workplace|facilit|\boffice\b|licensing|registration|"
+        r"trading|implementation|transition|data entry|reconcil|settlement|\bclerk", re.I)),
     ("Advisory", re.compile(r"advis[eo]r|planner|paraplanner|planning|wealth manag|"
                             r"relationship manag|portfolio manag|investment|analyst|trader|"
-                            r"\bcfp\b|research|strategist", re.I)),
+                            r"\bcfp\b|research|strategist|estate", re.I)),
 )
 FUNCTION_ORDER = [name for name, _ in FUNCTIONS] + ["Other"]
 

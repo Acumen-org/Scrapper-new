@@ -167,6 +167,22 @@ def states(conn) -> int:
     return len(data)
 
 
+def refresh_functions(conn) -> int:
+    """Sort every open posting by the current function rules, so a rule
+    change reaches roles found before it."""
+    changed = []
+    for r in conn.execute("SELECT crd, title, url, function FROM firm_job_posting WHERE active=1"):
+        fn = openroles.function_of(r["title"])
+        if fn != r["function"]:
+            changed.append((fn, r["crd"], r["title"], r["url"]))
+    conn.commit()
+    if changed:
+        conn.executemany("UPDATE firm_job_posting SET function=? WHERE crd=? AND title=? AND url=?",
+                         changed)
+        conn.commit()
+    return len(changed)
+
+
 def main() -> int:
     cfg = config.load()
     conn = db.connect()
@@ -180,6 +196,9 @@ def main() -> int:
         st = states(conn)
         if st:
             print(f"{st:,} state registrations and notice filings read")
+        moved = refresh_functions(conn)
+        if moved:
+            print(f"{moved:,} open roles sorted into a different function")
         counts = growth.compute_all(conn)
         run.rows_out = counts["firms"]
         line = (f"growth for {counts['firms']:,} firms: {counts['growing_team']:,} with a growing team,"

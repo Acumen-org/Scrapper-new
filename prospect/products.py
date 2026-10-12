@@ -2201,7 +2201,12 @@ def score_all(conn, progress=None) -> dict[str, int]:
     st = stamp()
     rows, scope = [], []
     counts: dict[str, int] = {k: 0 for k in product_keys()}
-    for i, (crd, d) in enumerate(feats.items(), 1):
+    total = len(feats)
+    # Each firm's features are dropped once scored, so the rows being built
+    # replace them in memory instead of adding to them (every firm is on the
+    # ATS list, which doubled the peak when both were held).
+    for i, crd in enumerate(list(feats), 1):
+        d = feats.pop(crd)
         res = evaluate_all(d)
         rows.extend(_rows_for(crd, d, res, now, st))
         s = _scope_row(crd, res)
@@ -2211,7 +2216,7 @@ def score_all(conn, progress=None) -> dict[str, int]:
             if r.status == "scored":
                 counts[k] += 1
         if progress and i % 5000 == 0:
-            progress(i, len(feats))
+            progress(i, total)
     conn.execute("DELETE FROM product_score")
     for i in range(0, len(rows), 5000):
         conn.executemany(INSERT, rows[i:i + 5000])
@@ -2223,7 +2228,7 @@ def score_all(conn, progress=None) -> dict[str, int]:
     rerank(conn)
     conn.commit()
     if progress:
-        progress(len(feats), len(feats))
+        progress(total, total)
     return counts
 
 
