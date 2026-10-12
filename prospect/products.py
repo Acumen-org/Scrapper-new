@@ -1558,7 +1558,7 @@ def c_client_growth(d, c, key):
     gd = _gdetail(d)
     ch = gd.get("clients")
     if not ch:
-        return unknown(0, "Clients (Item 5.C) not on both filings yet")
+        return unknown(0, "Clients (Item 5.D) not on both filings yet")
     pts = _rate_points(ch["annual"], ((0.25, 100), (0.15, 85), (0.08, 65), (0.03, 45)))
     return pts, "Clients " + _compared(ch, gd.get("period") or {}, _count)
 

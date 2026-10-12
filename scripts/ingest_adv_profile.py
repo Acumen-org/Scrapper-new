@@ -11,8 +11,8 @@ rebuilt from the newest snapshot of each weekly feed:
              pension consultant (2A7), internet adviser (2A11), and so on
   Item 5.B   advisory staff, and how many are registered reps of a
              broker-dealer (5B2) or licensed insurance agents (5B5)
-  Item 5.C   how many clients (5C1), which the Growth tab compares with the
-             same answer in older filings
+  Item 5.C   clients without assets under management (5C1), such as
+             planning-only clients, and the share outside the US (5C2)
   Item 5.D   every client type with its count and assets: individuals, HNW,
              banks, registered funds, pooled vehicles, pension plans,
              charities, governments, other advisers, insurers, sovereigns,

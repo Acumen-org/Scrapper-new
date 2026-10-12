@@ -2,9 +2,12 @@
 
 Three steps, each cheap to repeat:
 
-  1. Filing history gains total staff (Item 5.A) and clients (Item 5.C(1)) for
-     every filing since 2011, read once from the Base_A archive already held,
-     and kept current from the weekly feed and the current Form ADV answers.
+  1. Filing history gains total staff (Item 5.A) for every filing since 2011
+     and clients for every filing since the October 2017 form, read once from
+     the Base_A archive already held, and kept current from the weekly feed.
+     Clients are the Item 5.D counts summed over client types, the same total
+     the firm row carries. (Item 5.C(1) counts only clients without managed
+     assets, so it is not the firm's client count.)
   2. Each firm's state registrations and notice filings, with their dates,
      from the newest weekly feeds (re-read only when a new feed arrives).
   3. firm_growth: one row per firm with every figure the Growth tab shows and
@@ -43,9 +46,22 @@ def _set_meta(conn, k: str, v: str) -> None:
     conn.commit()
 
 
+# Item 5.D(1): number of clients of each type, (a) individuals to (n) other.
+CLIENT_COLS = tuple(f"5D1{c}" for c in "abcdefghijklmn")
+# Before the October 2017 amendments Item 5.D asked for percentages, not counts.
+COUNTS_FROM = "2017-10-01"
+ARCHIVE_KEY = "archive_staff_v2"     # v1 read clients from 5.C(1)
+
+
+def _clients(rec) -> int | None:
+    vals = [_num(rec.get(c)) for c in CLIENT_COLS]
+    vals = [v for v in vals if v is not None]
+    return sum(vals) if vals else None
+
+
 def archive_staff(conn) -> int:
     """Total staff and clients for every archived filing, once."""
-    if _meta(conn, "archive_staff") in ("done", "no_columns"):
+    if _meta(conn, ARCHIVE_KEY) in ("done", "no_columns"):
         return 0
     row = conn.execute("SELECT rel_path FROM snapshot WHERE source_key='adv_filing_crosswalk'"
                        " ORDER BY id DESC LIMIT 1").fetchone()
@@ -63,16 +79,17 @@ def archive_staff(conn) -> int:
     with _open_text(path) as fh:
         rdr = csv.DictReader(fh)
         cols = set(rdr.fieldnames or [])
-        if not {"1E1", "DateSubmitted", "5A", "5C1"} <= cols:
-            print("archive is missing 5A or 5C1; staff and client history skipped")
-            _set_meta(conn, "archive_staff", "no_columns")
+        if not {"1E1", "DateSubmitted", "5A", "5D1a"} <= cols:
+            print("archive is missing 5A or 5D; staff and client history skipped")
+            _set_meta(conn, ARCHIVE_KEY, "no_columns")
             return 0
         for rec in rdr:
             crd = (rec.get("1E1") or "").strip()
             d = pdate(rec.get("DateSubmitted"))
             if not crd or not d:
                 continue
-            batch.append((crd, d, _num(rec.get("5A")), _num(rec.get("5C1"))))
+            batch.append((crd, d, _num(rec.get("5A")),
+                          _clients(rec) if d >= COUNTS_FROM else None))
             if len(batch) >= 20000:
                 conn.executemany("INSERT INTO growth_hist_fix VALUES (?,?,?,?)", batch)
                 n += len(batch)
@@ -86,37 +103,22 @@ def archive_staff(conn) -> int:
         WHERE h.crd = t.crd AND h.filing_date = t.filing_date AND h.source = 'archive'""")
     conn.execute("DROP TABLE IF EXISTS growth_hist_fix")
     conn.commit()
-    _set_meta(conn, "archive_staff", "done")
+    _set_meta(conn, ARCHIVE_KEY, "done")
     return n
 
 
 def feed_staff(conn) -> None:
-    """Staff for every feed point, and clients for the current filing."""
-    conn.execute("""UPDATE firm_history h SET employees = f.total_employees
-        FROM (SELECT DISTINCT ON (crd, filing_date) crd, filing_date, total_employees
+    """Staff and clients for every weekly feed point."""
+    conn.execute("""UPDATE firm_history h SET employees = f.total_employees,
+            clients = f.clients_total
+        FROM (SELECT DISTINCT ON (crd, filing_date) crd, filing_date, total_employees,
+                     clients_total
               FROM firm WHERE filing_date IS NOT NULL
               ORDER BY crd, filing_date, snapshot_id DESC) f
         WHERE h.source = 'feed' AND h.crd = f.crd AND h.filing_date = f.filing_date
-          AND h.employees IS DISTINCT FROM f.total_employees""")
-    try:
-        conn.execute("""UPDATE firm_history h
-            SET clients = NULLIF(p.answers::json->>'Q5C1', '')::numeric::int
-            FROM firm_adv_profile p
-            WHERE h.crd = p.crd AND h.filing_date = p.filing_date
-              AND p.answers::json->>'Q5C1' ~ '^[0-9]+(\\.[0-9]+)?$'""")
-    except Exception:
-        conn.rollback()
+          AND (h.employees IS DISTINCT FROM f.total_employees
+               OR h.clients IS DISTINCT FROM f.clients_total)""")
     conn.commit()
-
-
-def profile_has_clients(conn) -> bool:
-    try:
-        r = conn.execute("SELECT COUNT(*) n FROM firm_adv_profile WHERE answers LIKE '%\"_Item5C\"%'"
-                         ).fetchone()
-        return bool(r and r["n"])
-    except Exception:
-        conn.rollback()
-        return False
 
 
 def states(conn) -> int:
@@ -169,10 +171,6 @@ def main() -> int:
     growth.init(conn)
     openroles.init(conn)
     with runlog.Run(conn, "growth", "derive", cfg.stamp) as run:
-        if not profile_has_clients(conn):
-            from scripts import ingest_adv_profile
-            n = ingest_adv_profile.build(conn, quiet=True)
-            print(f"Form ADV answers re-read with Item 5.C for {n:,} firms")
         fixed = archive_staff(conn)
         if fixed:
             print(f"staff and clients added to {fixed:,} archived filings")

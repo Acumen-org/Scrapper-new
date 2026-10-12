@@ -8,7 +8,8 @@ the "growth" job:
               from the SEC's record of every registered person
   business    assets, clients, total staff and advisory staff at the latest
               filing against the filing about a year before it (Form ADV
-              Items 5.F, 5.C(1), 5.A and 5.B(1); the record goes back to 2011)
+              Items 5.F, 5.D, 5.A and 5.B(1); the record goes back to 2011,
+              clients to the October 2017 form)
   capacity    assets and clients per advisor, and support staff per advisor
               against firms of a similar size
   backfill    who left in the last year, how long they had been at the firm and
@@ -200,7 +201,7 @@ def compute_all(conn) -> dict:
         except ValueError:
             ans = {}
         firms[r["crd"]] = {"crd": r["crd"], "raum": r["raum"], "advisors": r["iar_count"],
-                           "staff": r["total_employees"], "clients": _int(ans.get("Q5C1")),
+                           "staff": r["total_employees"], "clients": r["clients_total"],
                            "q5b2": _int(ans.get("Q5B2")), "q5b5": _int(ans.get("Q5B5")),
                            "registered": r["registered_date"], "filed": r["filing_date"]}
 

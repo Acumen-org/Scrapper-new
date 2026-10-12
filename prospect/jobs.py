@@ -140,8 +140,10 @@ JOBS: list[Job] = [
         "name the firm. Each firm again after 30 days. Shares the search engines' pacing "
         "with the contact search.",
         "scripts.find_open_roles", ("--boards", "--limit", "12", "--seconds", "300"),
-        every_hours=1, timeout_s=900,
-        backlog_sql="SELECT COUNT(*) n FROM firm_careers c JOIN firm_current f ON f.crd=c.crd LEFT JOIN firm_growth g ON g.crd=c.crd WHERE c.status != 'roles' AND COALESCE(g.headcount, f.iar_count, 0) >= 3 AND (c.searched_at IS NULL OR c.searched_at < '{ago:30}')",
+        # On a cadence, not a backlog: while the engines rest after a block the
+        # run ends at once, and a backlog would start it again straight away.
+        every_hours=0.5, timeout_s=900,
+        backlog_sql=None,
         done_sql="SELECT COUNT(*) n FROM firm_careers WHERE searched_at IS NOT NULL",
         group="contacts", lane="search", min_gap_minutes=45,
         recent_sql="SELECT COUNT(*) n FROM firm_careers WHERE searched_at >= '{day_ago}'",

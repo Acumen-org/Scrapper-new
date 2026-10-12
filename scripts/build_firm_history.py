@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS firm_history (
     iar_count   INTEGER,
     source      TEXT NOT NULL,      -- archive | feed
     employees   INTEGER,            -- Item 5.A total staff (scripts/build_growth.py)
-    clients     INTEGER,            -- Item 5.C(1) clients (scripts/build_growth.py)
+    clients     INTEGER,            -- Item 5.D clients, summed (scripts/build_growth.py)
     PRIMARY KEY (crd, filing_date)
 );
 CREATE INDEX IF NOT EXISTS ix_fh_crd ON firm_history (crd, filing_date);
@@ -118,14 +118,16 @@ def main() -> int:
         # last one; Postgres rejects the whole command. Pick the newest
         # snapshot per key explicitly rather than relying on that.
         conn.execute("""
-            INSERT INTO firm_history (crd, filing_date, raum, iar_count, source, employees)
+            INSERT INTO firm_history (crd, filing_date, raum, iar_count, source, employees,
+                                      clients)
             SELECT DISTINCT ON (f.crd, f.filing_date)
-                   f.crd, f.filing_date, f.raum, f.iar_count, 'feed', f.total_employees
+                   f.crd, f.filing_date, f.raum, f.iar_count, 'feed', f.total_employees,
+                   f.clients_total
             FROM firm f WHERE f.filing_date IS NOT NULL
             ORDER BY f.crd, f.filing_date, f.snapshot_id DESC
             ON CONFLICT (crd, filing_date) DO UPDATE SET raum = EXCLUDED.raum,
                 iar_count = EXCLUDED.iar_count, source = EXCLUDED.source,
-                employees = EXCLUDED.employees""")
+                employees = EXCLUDED.employees, clients = EXCLUDED.clients""")
         conn.commit()
         pts = conn.execute("SELECT COUNT(*) n FROM firm_history").fetchone()["n"]
         firms = conn.execute("SELECT COUNT(DISTINCT crd) n FROM firm_history").fetchone()["n"]

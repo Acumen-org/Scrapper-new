@@ -178,7 +178,7 @@ def section(crd: str, f, d: dict, stats: dict | None, mv: dict, series: list, hi
     parts.append(_block("hiring", "Team", "From the SEC record of every registered person",
                         _team(gd, stats, mv, series)))
     parts.append(_block("growth-business", "Assets, clients and staff",
-                        "Form ADV: assets (Item 5.F), clients (5.C), total staff (5.A), "
+                        "Form ADV: assets (Item 5.F), clients (5.D), total staff (5.A), "
                         "advisory staff (5.B)", _business(f, gd, history)))
     parts.append(_block("growth-needs", "Where they will need people",
                         "Hiring needs by function", _needs(gd, d)))
