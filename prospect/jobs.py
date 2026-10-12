@@ -117,7 +117,9 @@ JOBS: list[Job] = [
         "staff and client history is read from the filings once; state filings again "
         "whenever a weekly feed arrives.",
         "scripts.build_growth", (), every_hours=24, timeout_s=3600,
-        backlog_sql="SELECT CASE WHEN to_regclass('firm_growth') IS NULL OR NOT EXISTS (SELECT 1 FROM firm_growth) THEN 1 ELSE 0 END n",
+        # Also due once when the archive has not been read for staff and
+        # clients in its current form (scripts/build_growth.py ARCHIVE_KEY).
+        backlog_sql="SELECT CASE WHEN to_regclass('firm_growth') IS NULL OR NOT EXISTS (SELECT 1 FROM firm_growth) OR (to_regclass('growth_meta') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM growth_meta WHERE k='archive_staff_v2') AND EXISTS (SELECT 1 FROM snapshot WHERE source_key='adv_filing_crosswalk')) THEN 1 ELSE 0 END n",
         done_sql="SELECT COUNT(*) n FROM firm_growth",
         total_sql="SELECT COUNT(*) n FROM firm_current", group="filings", min_gap_minutes=60,
         recent_sql="SELECT COUNT(*) n FROM firm_growth WHERE computed_at >= LEFT('{day_ago}', 10)",

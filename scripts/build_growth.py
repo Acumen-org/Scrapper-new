@@ -61,7 +61,7 @@ def _clients(rec) -> int | None:
 
 def archive_staff(conn) -> int:
     """Total staff and clients for every archived filing, once."""
-    if _meta(conn, ARCHIVE_KEY) in ("done", "no_columns"):
+    if _meta(conn, ARCHIVE_KEY) in ("done", "no_columns", "missing"):
         return 0
     row = conn.execute("SELECT rel_path FROM snapshot WHERE source_key='adv_filing_crosswalk'"
                        " ORDER BY id DESC LIMIT 1").fetchone()
@@ -69,7 +69,9 @@ def archive_staff(conn) -> int:
         return 0
     path = config.SNAPSHOT_DIR / row["rel_path"]
     if not path.exists():
+        # Marked, so the job's backlog does not keep asking for it.
         print(f"archive {path.name} is not on this machine")
+        _set_meta(conn, ARCHIVE_KEY, "missing")
         return 0
     from scripts.build_firm_history import _open_text, pdate
     conn.execute("DROP TABLE IF EXISTS growth_hist_fix")
