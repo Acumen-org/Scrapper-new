@@ -109,6 +109,48 @@ def _health(conn):
             GROUP BY 1, 2 ORDER BY 1, 2"""), default=str))
 
 
+def _shapes(conn):
+    """The layout of the SEC files on disk: the Base_A archive's columns and
+    one firm element of each weekly feed, tag and attribute names only."""
+    try:
+        import gzip
+        from prospect import config
+        from lxml import etree
+        r = conn.execute("SELECT rel_path FROM snapshot WHERE source_key='adv_filing_crosswalk'"
+                         " ORDER BY id DESC LIMIT 1").fetchone()
+        if r:
+            p = config.SNAPSHOT_DIR / r["rel_path"]
+            with open(p, "rb") as fh:
+                gz = fh.read(2) == b"\x1f\x8b"
+            fh = gzip.open(p, "rt", errors="replace") if gz else open(p, "rt", errors="replace")
+            with fh:
+                head = fh.readline().strip().lstrip("﻿")
+            cols = head.split(",")
+            print("Runtime archive columns:", len(cols), json.dumps([c for c in cols if c.startswith(("5", "2", "1E", "Date"))][:120]))
+        for key in ("adv_feed", "adv_state_feed"):
+            r = conn.execute("SELECT rel_path FROM snapshot WHERE source_key=? ORDER BY id DESC LIMIT 1",
+                             (key,)).fetchone()
+            if not r:
+                continue
+            p = config.SNAPSHOT_DIR / r["rel_path"]
+            opener = gzip.open if str(p).endswith(".gz") else open
+            with opener(p, "rb") as fh:
+                for _, el in etree.iterparse(fh, tag="Firm"):
+                    out = {}
+                    for ch in el:
+                        if ch.tag == "FormInfo":
+                            continue
+                        out[ch.tag] = {"attrs": sorted(ch.attrib),
+                                       "children": sorted({g.tag for g in ch.iter() if g is not ch})[:20]}
+                    if any(k not in ("Info", "MainAddr", "MailingAddr", "Filing") for k in out):
+                        print("Runtime feed shape:", key, json.dumps(out)[:1500])
+                        break
+                    el.clear()
+    except Exception as exc:
+        conn.rollback()
+        print("Runtime feed shape: unavailable", type(exc).__name__, str(exc)[:160])
+
+
 def _ai(conn):
     """Which model is connected and how its calls went: counts, times and the
     latest errors. The key is reported only as set or not, the base URL only
@@ -151,6 +193,7 @@ def main():
             FROM app_release ORDER BY applied_at DESC LIMIT 1""").fetchall()
         print('Runtime release:', json.dumps([dict(row) for row in releases]))
         _health(conn)
+        _shapes(conn)
         _ai(conn)
         ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='firm_refresh'
