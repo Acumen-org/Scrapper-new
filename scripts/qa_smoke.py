@@ -318,7 +318,7 @@ def pass_roles(base: str) -> None:
 def pass_routes(base: str, detail_crd: str) -> None:
     print("\n[1] route matrix")
     routes = ROUTES + [(f"/firm/{detail_crd}", "Pipeline"),
-                       (f"/firm/{detail_crd}", "Where they will need people"),
+                       (f"/firm/{detail_crd}", "Hiring needs"),
                        (f"/firm/{detail_crd}", "Discovery, sources and contact tools"),
                        (f"/firm/{detail_crd}", 'data-scope="firm:'),
                        (f"/firm/{detail_crd}?p=phh_fund", "Gates passed")]

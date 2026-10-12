@@ -523,12 +523,6 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
         unmatched = people.officers_unmatched(c, crd)
     except Exception:
         c.rollback()
-    growth_hist = []
-    try:
-        from . import growth
-        growth_hist = growth.history(c, crd)
-    except Exception:
-        c.rollback()
     if not roster and not unmatched:
         unmatched = [dict(r) for r in rows("""SELECT name, title FROM schedule_a WHERE crd=?
             AND is_individual=1 ORDER BY (control_person!='Y'), name LIMIT 30""", (crd,))]
@@ -633,14 +627,13 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                    f'{esc(site_host)}</a>')
     firm_li = next((cp["value"] for cp in firm_level if cp["kind"] == "linkedin"), None)
 
-    assets_html = f"""<div class="card"><div class="card-head"><h2>Assets over time</h2></div>{aum_chart(history)}</div>
-<div class="facts" style="margin-top:12px">
+    clients_html = f"""<div class="facts four">
 <div><div class="l">High net worth clients</div><div class="v">{f['hnw_clients'] or 0:,} <small>{money(f['hnw_aum'])}, {hs:.0f}% of assets</small></div></div>
 <div><div class="l">Other individuals</div><div class="v">{f['retail_clients'] or 0:,} <small>{money(f['retail_aum'])}</small></div></div>
 <div><div class="l">All clients</div><div class="v">{f['clients_total'] or 0:,} <small>average {caveat('est_avg_client_size', est)}</small></div></div>
 <div><div class="l">Discretionary</div><div class="v">{money(f['raum_disc'])} <small>of {money(f['raum'])}</small></div></div>
 </div>
-<dl class="kv" style="margin-top:18px"><dt>Services</dt><dd>{esc(", ".join(svc)) or "-"}</dd></dl>"""
+<dl class="kv sub-sec"><dt>Services</dt><dd>{esc(", ".join(svc)) or "-"}</dd></dl>"""
 
     if funds:
         frows = "".join(
@@ -656,13 +649,13 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     seg = d["seg"]
     seg_html = ""
     if seg:
-        seg_html = (f'<p class="why" style="margin-top:12px"><b>{esc(seg["segment"].capitalize())}</b>: '
+        seg_html = (f'<p class="sub-sec"><b>{esc(seg["segment"].capitalize())}</b>: '
                     f'{esc(seg["rationale"])} {caveat("archive_as_of", "archive")} as of '
                     f'{esc(seg["as_of_filing_date"])}</p>')
     h13 = sorted(d["h13f"].items(), key=lambda kv: -(kv[1]["value"] or 0))
     h13_html = ""
     if h13:
-        h13_html = ('<h3 style="margin-top:22px">13F holdings of interest</h3><div class="table-scroll"><table class="tight"><tbody>'
+        h13_html = ('<div class="table-scroll"><table class="tight"><tbody>'
                     + "".join(f'<tr><td><b>{esc(tk)}</b></td><td class="num">{money(h["value"])}</td>'
                               f'<td class="meta">{esc(h["quarter"])}</td></tr>' for tk, h in h13[:12])
                     + "</tbody></table></div>")
@@ -671,7 +664,18 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <dt>Primary custodian, archive</dt><dd>{esc(cust.get('primary_canonical') or '-')}{f", {cust.get('reported_custodians')} reported" if cust.get('reported_custodians') else ""}{f'<div class="meta">As of {esc(cust["as_of_filing_date"])}</div>' if cust.get('as_of_filing_date') else ''}</dd>
 <dt>Schwab share</dt><dd>{schwab}</dd>
 <dt>Files 13F</dt><dd>{"Yes" + (f' <span class="meta">CIK {esc(match["cik"])}, link confidence {match["confidence"]:.2f}</span>' if match else "") if d["files_13f"] else "No"}</dd>
-</dl><h3 style="margin-top:22px">Private funds</h3>{funds_html}{seg_html}{h13_html}"""
+</dl>"""
+    assets_html = (
+        ui.panel("Assets over time", aum_chart(history),
+                 sub="Regulatory assets on every Form ADV filing on record")
+        + ui.panel("Clients and services", clients_html,
+                   sub="Form ADV Item 5.D (clients by type) and Item 5.G (services)")
+        + ui.panel("Custody and 13F", invest_html,
+                   sub="Who holds the assets, and whether the firm files 13F")
+        + ui.panel("Private funds", funds_html + seg_html,
+                   sub="Schedule D of the latest Form ADV filing", count=len(funds) if funds else None)
+        + (ui.panel("13F holdings of interest", h13_html,
+                    sub="Positions that matter for our products, latest quarter") if h13_html else ""))
 
     tech_html = f"""<dl class="kv">
 <dt>Email platform</dt><dd>{esc(mail_s)}{f' <span class="meta">{esc(mail.get("evidence"))}</span>' if mail.get("evidence") else ""}</dd>
@@ -699,9 +703,9 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
             f'<td class="meta">{esc(o.get("street") or "Street not filed")}</td>'
             f'<td>{("<a href=" + chr(34) + "tel:" + esc(o["phone"]) + chr(34) + ">" + esc(o["phone"]) + "</a>") if o.get("phone") else "-"}</td></tr>'
             for o in offices)
-        office_html = (f'<div class="card" style="margin-top:16px"><div class="card-head"><h2>Offices '
-                       f'<span class="h-cnt">{len(offices)}</span></h2><span class="sub">From Form ADV '
-                       f'Schedule D</span></div><table class="tight"><tbody>{orows}</tbody></table></div>')
+        office_html = ui.panel("Offices", f'<div class="table-scroll"><table class="tight"><tbody>{orows}'
+                               f'</tbody></table></div>', sub="Form ADV Schedule D",
+                               count=len(offices))
 
     # ---- contacts: firm lines, sources, and the discovery engine's state
     fl_rows = "".join(_contact_line(cp) for cp in firm_level if cp["kind"] != "linkedin")
@@ -726,8 +730,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                                                  unmatched, stats, hunts, icp_products)
     c.close()
     from . import growth_view
-    growth_html = growth_view.section(crd, f, d, stats, mv, series, growth_hist,
-                                      results.get("ats"))
+    growth_html = growth_view.section(crd, f, d, stats, mv, series)
     hunting = max(0, pc["people"] - pc["email"])
     tried = (f'{attempts["n"]:,} candidate addresses checked with the mail server for '
              f'{attempts["p"]:,} people so far. ' if attempts and attempts["n"] else "")
@@ -843,17 +846,21 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <textarea id="firm-question" rows="1" maxlength="1500" placeholder="Ask anything about this firm" required></textarea>
 <div class="cfoot"><span class="model">Enter to send</span><button class="send" type="submit" aria-label="Send">{ICONS["send"]}</button></div></form>
 </div>"""
-    rail = f"""<div class="workspace-forms"><section><h2>Pipeline</h2>
-<form method="post" action="/firm/{esc(crd)}/status"><label>Status<select name="status">{status_opts}</select></label>
+    pipeline_form = f"""<form class="stack-form" method="post" action="/firm/{esc(crd)}/status"><label>Status<select name="status">{status_opts}</select></label>
 <label>Owner<input type="text" name="owner" value="{esc(fs['owner'] if fs else '')}" placeholder="Leave blank to assign yourself"></label>
-<button type="submit" class="sm primary">Save</button></form></section>
-<section><h2>Notes</h2><form method="post" action="/firm/{esc(crd)}/note">
+<div><button type="submit" class="sm primary">Save</button></div></form>"""
+    notes_form = f"""<form class="stack-form" method="post" action="/firm/{esc(crd)}/note">
 <textarea name="note" aria-label="Firm notes" placeholder="Notes and next steps">{esc(note[0]['note'] if note else '')}</textarea>
-<div class="row" style="margin-top:8px"><button class="sm primary" type="submit">Save note</button>
-{f'<span class="meta">Saved {esc(ui.ago(note[0]["updated_at"]))}</span>' if note else ''}</div></form></section>
-<section><h2>Saved lists</h2><div class="pills" style="margin-bottom:10px">{lists_chips or '<span class="muted small">No saved lists</span>'}</div>
+<div class="row"><button class="sm primary" type="submit">Save note</button>
+{f'<span class="meta">Saved {esc(ui.ago(note[0]["updated_at"]))}</span>' if note else ''}</div></form>"""
+    lists_form = f"""<div class="pills" style="margin-bottom:12px">{lists_chips or '<span class="muted">Not on any saved list</span>'}</div>
 <form method="post" action="/firms/addtolist"><input type="hidden" name="crd" value="{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}#workspace"><input type="hidden" name="new_name" value="">
-<select name="list_id" aria-label="Add to saved list" onchange="addToList(this)" style="width:100%"><option value="">Add to a list</option>{listopts}<option value="__new">New list...</option></select></form></section></div>"""
+<select name="list_id" aria-label="Add to saved list" onchange="addToList(this)" style="width:100%"><option value="">Add to a list</option>{listopts}<option value="__new">New list...</option></select></form>"""
+    rail = ui.panel_grid(
+        '<div class="dpanel-stack">'
+        + ui.panel("Pipeline", pipeline_form, sub="Where this firm stands with us, and who owns it")
+        + ui.panel("Saved lists", lists_form, sub="Your lists that include this firm") + "</div>",
+        ui.panel("Notes", notes_form, sub="Shared with everyone on the team"))
 
     subline = []
     if place:
@@ -890,6 +897,53 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     # The overview repeats the first cards; without their ids, so each id stays unique.
     overview_people = "".join(re.sub(r' id="(p-[^"]*|vs[0-9]+)"', "", x) for x in top_cards[:2]) or '<p class="empty">No people on record. <a href="#people">Find contacts</a></p>'
     recent = trow[:3]
+
+    def more(href: str, text: str) -> str:
+        return f'<a class="more" href="{href}">{text}</a>'
+
+    overview_html = (
+        ui.panel_grid(
+            ui.panel("Key people", f'<div class="people-preview">{overview_people}</div>',
+                     acts=more("#people", f"All {pc['people']:,} people"), cls="ov"),
+            ui.panel("Product fit", "".join(fit_cards), acts=more("#fit", "Score details"),
+                     cls="ov"))
+        + ui.panel_grid(
+            ui.panel("Recent signals",
+                     ('<div class="timeline">' + "".join(recent) + '</div>') if recent
+                     else '<p class="muted">No recorded signals.</p>',
+                     acts=more("#activity", "All activity"), cls="ov"),
+            ui.panel("Growth", growth_view.glance(d, stats), acts=more("#growth", "Details"),
+                     cls="ov"))
+        + (ui.panel("AI brief", brief_block, sub="A short read on this firm, written from its records")
+           if brief_block else ""))
+    people_tab = (ui.panel("Contact discovery", discovery_html,
+                           sub="How reachable the firm's people are, and the tools to find more")
+                  + ui.panel("People", people_html, count=pc["people"],
+                             sub="Everyone registered here; the people to call first are at the top"))
+    fit_tab = ui.panel("Product fit", _fit_section(crd, results, ranks, focus),
+                       sub="Each product's score with the evidence behind it. Missing factors score zero.")
+    activity_tab = (ui.panel("Signals", trig_html, count=signals_n, anchor="signals",
+                             sub="Changes Bellwether spotted in filings, people and assets")
+                    + ui.panel("Recent filings", filings_html, anchor="filings",
+                               sub="Form ADV amendments and how far reported assets moved"))
+    ftype_html = ""
+    if ftype and ftype.get("category"):
+        how = esc(str(ftype.get("source_label") or ftype.get("source") or "rules").lower())
+        conf = (", " + str(ftype.get("confidence")) + "% confidence"
+                if ftype.get("confidence") is not None else "")
+        ftype_html = ui.panel(
+            "Firm type", f'<p style="margin:0 0 10px"><span class="ftype">'
+            f'{esc(ftype.get("label") or ftype.get("category") or "")}</span> '
+            f'<span class="meta">Classified by {how}{conf}</span></p><ul class="evidence-list">'
+            + "".join("<li>" + esc(str(e)) + "</li>" for e in (ftype.get("evidence") or []))
+            + "</ul>", sub="How Bellwether classified this firm, and why")
+    profile_tab = (ui.panel_grid(ui.panel("Technology", tech_html,
+                                          sub="Email, reporting and CRM, website and marketing"),
+                                 ui.panel("Compliance and registration", comp_html, anchor="compliance",
+                                          sub="Who runs compliance, disclosures and registration"))
+                   + ui.panel("In their own words", tp_html,
+                              sub="What their brochure says that matters for our products")
+                   + ftype_html + office_html)
     body = f"""<div class="pg firm-page">
 <div class="firm-top"><div class="crumb"><a href="/firms">Firms</a><span class="sep">/</span><span>{esc(profile_name)}</span></div>
 <div class="acts"><form method="post" action="/watch/{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}"><button type="submit">{star}</button></form>
@@ -907,30 +961,13 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <a href="#growth">Growth</a><a href="#assets">Assets &amp; funds</a><a href="#profile">Firm profile</a>
 <a href="#workspace">Workspace</a></nav>
 <div class="dossier-tabs">
-<section class="anchor" id="overview">
-<div class="firm-overview-grid"><section class="overview-section"><div class="s-head"><h2>Key people</h2><a class="more" href="#people">All {pc['people']:,} people</a></div>
-<div class="people-preview">{overview_people}</div></section>
-<section class="overview-section"><div class="s-head"><h2>Product fit</h2><a class="more" href="#fit">Score details</a></div><div>{"".join(fit_cards)}</div></section></div>
-<div class="firm-overview-grid overview-secondary"><section class="overview-section"><div class="s-head"><h2>Recent signals</h2><a class="more" href="#activity">All activity</a></div>
-{('<div class="timeline">' + "".join(recent) + '</div>') if recent else '<p class="muted">No recorded signals.</p>'}</section>
-<section class="overview-section"><div class="s-head"><h2>Growth</h2><a class="more" href="#growth">Details</a></div>
-{growth_view.glance(d, stats)}</section></div>
-{('<details class="detail-section"><summary>AI brief</summary>' + brief_block + '</details>') if brief_block else ''}
-</section>
-<section class="anchor" id="people">
-<div class="dsec">{discovery_html}</div>
-<div class="dsec">{people_html}</div>
-</section>
-<section class="anchor" id="fit"><div class="s-head"><h2>Product fit</h2><span class="meta">Missing factors score zero.</span></div>{_fit_section(crd, results, ranks, focus)}</section>
-<section class="anchor" id="activity"><div class="card dsec" id="signals"><div class="card-head"><h2>Signals <span class="h-cnt">{signals_n}</span></h2><span class="sub">Changes Bellwether spotted in filings, people and assets</span></div>{trig_html}</div>
-<div class="card dsec" id="filings"><div class="card-head"><h2>Recent filings</h2><span class="sub">Form ADV amendments and what changed in assets</span></div>{filings_html}</div></section>
+<section class="anchor" id="overview">{overview_html}</section>
+<section class="anchor" id="people">{people_tab}</section>
+<section class="anchor" id="fit">{fit_tab}</section>
+<section class="anchor" id="activity">{activity_tab}</section>
 <section class="anchor" id="growth">{growth_html}</section>
-<section class="anchor" id="assets">{assets_html}<div class="card" style="margin-top:16px"><div class="card-head"><h2>Investments</h2></div>{invest_html}</div></section>
-<section class="anchor" id="profile"><div class="cols-2"><div class="card"><div class="card-head"><h2>Technology</h2></div>{tech_html}</div>
-<div class="card" id="compliance"><div class="card-head"><h2>Compliance and registration</h2></div>{comp_html}</div></div>
-<details class="detail-section"><summary>In their own words</summary>{tp_html}</details>
-{('<div class="card" style="margin-top:16px"><div class="card-head"><h2>Firm type</h2><span class="sub">How Bellwether classified this firm</span></div><p><span class="ftype">' + esc(ftype.get("label") or ftype.get("category") or "") + '</span> <span class="meta">Classified by ' + esc(str(ftype.get("source_label") or ftype.get("source") or "rules").lower()) + (", " + str(ftype.get("confidence")) + "% confidence" if ftype.get("confidence") is not None else "") + '</span></p><ul class="evidence-list">' + "".join("<li>" + esc(str(e)) + "</li>" for e in (ftype.get("evidence") or [])) + '</ul></div>') if ftype and ftype.get("category") else ''}
-{office_html}</section>
+<section class="anchor" id="assets">{assets_html}</section>
+<section class="anchor" id="profile">{profile_tab}</section>
 <section class="anchor" id="workspace">{rail}</section>
 </div></div>
 </div>

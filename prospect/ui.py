@@ -410,6 +410,26 @@ def histogram(values: list[float], bins: int = 20, w: int = 160, h: int = 34) ->
             f'aria-label="Score distribution">{"".join(bars)}</svg>')
 
 
+def panel(title: str, body: str, *, sub: str = "", acts: str = "", anchor: str = "",
+          count: int | None = None, cls: str = "") -> str:
+    """One clearly bounded section: a title bar (with an optional one-line
+    explanation and actions on the right) over the section's content. Every
+    section inside a firm page tab is one of these, so it is always plain
+    where one ends and the next begins. title and sub are trusted HTML."""
+    cnt = f' <span class="h-cnt">{count:,}</span>' if count is not None else ""
+    head = (f'<header class="dpanel-head"><div class="dpanel-title"><h2>{title}{cnt}</h2>'
+            + (f'<p class="dpanel-sub">{sub}</p>' if sub else "") + "</div>"
+            + (f'<div class="dpanel-acts">{acts}</div>' if acts else "") + "</header>")
+    ident = f' id="{esc(anchor)}"' if anchor else ""
+    return (f'<section class="dpanel{" " + cls if cls else ""}"{ident}>{head}'
+            f'<div class="dpanel-body">{body}</div></section>')
+
+
+def panel_grid(*panels: str) -> str:
+    """Panels side by side on a wide screen, stacked on a narrow one."""
+    return f'<div class="dpanel-grid">{"".join(p for p in panels if p)}</div>'
+
+
 def year_bars(series: list[dict], w: int = 640, h: int = 140) -> str:
     """Headcount by year as bars, with joins above and departures below the
     axis, for the hiring section of a firm page."""
