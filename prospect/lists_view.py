@@ -26,6 +26,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
@@ -145,6 +146,53 @@ def can_edit(key: str) -> bool:
     return users.can_edit_product(current_account(), products.product(key)["family"])
 
 
+# The counts over a list's header change only when scores or contacts do, and
+# on the ATS list (every firm in the country) they were most of the page's
+# time; each is kept for a few minutes per list and worker.
+KPI_TTL_S = 300
+_KPI_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _kpis(c, key: str, have_roles: bool) -> dict:
+    hit = _KPI_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < KPI_TTL_S:
+        return hit[1]
+    stats = dict(c.execute("""SELECT COUNT(*) n, AVG(coverage) cov,
+        COUNT(*) FILTER (WHERE score >= 60) hi,
+        COUNT(*) FILTER (WHERE coverage >= 90) full_n FROM product_score
+        WHERE product=? AND status='scored'""", (key,)).fetchone())
+    dq_n = c.execute("SELECT COUNT(*) n FROM product_score WHERE product=?"
+                     " AND status='disqualified'", (key,)).fetchone()["n"]
+    # EXISTS, not a join and COUNT(DISTINCT): one look per firm instead of a
+    # row per signal or contact, four times faster on the ATS list.
+    fresh_n = c.execute("""SELECT COUNT(*) n FROM product_score p
+        WHERE p.product=? AND p.status='scored' AND EXISTS (
+            SELECT 1 FROM trigger_event t LEFT JOIN trigger_action a ON a.trigger_id=t.id
+            WHERE t.crd=p.crd AND t.suppressed=0 AND a.state IS NULL AND t.detected_date >= ?)""",
+                        (key, signal_cutoff())).fetchone()["n"]
+    reach_n = 0
+    try:
+        reach_n = c.execute("""SELECT COUNT(*) n FROM product_score p
+            WHERE p.product=? AND p.status='scored' AND EXISTS (
+                SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'
+                AND x.person_key != '' AND x.is_role=0)""", (key,)).fetchone()["n"]
+    except Exception:
+        c.rollback()
+    hiring_n = 0
+    if have_roles:
+        try:
+            hiring_n = c.execute("""SELECT COUNT(*) n FROM product_score p
+                WHERE p.product=? AND p.status='scored' AND EXISTS (
+                    SELECT 1 FROM firm_job_posting j WHERE j.crd=p.crd AND j.active=1)""",
+                                 (key,)).fetchone()["n"]
+        except Exception:
+            c.rollback()
+    out = {"stats": stats, "dq_n": dq_n, "fresh_n": fresh_n, "reach_n": reach_n,
+           "hiring_n": hiring_n}
+    _KPI_CACHE[key] = (time.monotonic(), out)
+    return out
+
+
 @router.get("/lists/{key}", response_class=HTMLResponse)
 def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
                  st: str = Query(""), owner: str = Query(""), stat: str = Query(""),
@@ -159,34 +207,11 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
     if view == "rules":
         view = "scoring"
     c = conn()
-    stats = c.execute("""SELECT COUNT(*) n, AVG(coverage) cov,
-        COUNT(*) FILTER (WHERE score >= 60) hi,
-        COUNT(*) FILTER (WHERE coverage >= 90) full_n FROM product_score
-        WHERE product=? AND status='scored'""", (key,)).fetchone()
-    dq_n = c.execute("SELECT COUNT(*) n FROM product_score WHERE product=?"
-                     " AND status='disqualified'", (key,)).fetchone()["n"]
-    fresh_n = c.execute("""SELECT COUNT(DISTINCT p.crd) n FROM product_score p
-        JOIN trigger_event t ON t.crd=p.crd LEFT JOIN trigger_action a ON a.trigger_id=t.id
-        WHERE p.product=? AND p.status='scored' AND t.suppressed=0 AND a.state IS NULL
-          AND t.detected_date >= ?""", (key, signal_cutoff())).fetchone()["n"]
-    reach_n = 0
-    try:
-        reach_n = c.execute("""SELECT COUNT(DISTINCT p.crd) n FROM product_score p
-            JOIN usable_contact_point x ON x.crd=p.crd AND x.kind='email' AND x.person_key != ''
-             AND x.is_role=0 WHERE p.product=? AND p.status='scored'""", (key,)).fetchone()["n"]
-    except Exception:
-        c.rollback()
-
     have_roles = _has_table(c, "firm_job_posting")
     hiring = hiring if hiring == "1" and have_roles else ""
-    hiring_n = 0
-    if have_roles:
-        try:
-            hiring_n = c.execute("""SELECT COUNT(DISTINCT p.crd) n FROM product_score p
-                JOIN firm_job_posting j ON j.crd=p.crd AND j.active=1
-                WHERE p.product=? AND p.status='scored'""", (key,)).fetchone()["n"]
-        except Exception:
-            c.rollback()
+    k = _kpis(c, key, have_roles)
+    stats, dq_n, fresh_n, reach_n, hiring_n = (k["stats"], k["dq_n"], k["fresh_n"], k["reach_n"],
+                                               k["hiring_n"])
     qs = qs_join(q=q, st=st, owner=owner, stat=stat, sig=sig, reach=reach, cov=cov,
                  size=size, cat=cat, hiring=hiring, sort=sort if sort != "score" else "")
 
