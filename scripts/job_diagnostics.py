@@ -143,6 +143,11 @@ def _shapes(conn):
                         out[ch.tag] = {"attrs": sorted(ch.attrib),
                                        "children": sorted({g.tag for g in ch.iter() if g is not ch})[:20],
                                        "sample": [dict(g.attrib) for g in ch.iter() if g is not ch and g.attrib][:3]}
+                    p1 = el.find("./FormInfo/Part1A")
+                    if p1 is not None:
+                        for item in ("Item5A", "Item5B", "Item5C"):
+                            x = p1.find(item)
+                            out["Part1A/" + item] = dict(x.attrib) if x is not None else None
                     if any(k not in ("Info", "MainAddr", "MailingAddr", "Filing") for k in out):
                         print("Runtime feed shape:", key, json.dumps(out)[:1500])
                         break
