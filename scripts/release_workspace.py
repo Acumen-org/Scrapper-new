@@ -50,6 +50,21 @@ def main():
     # Addresses the firm itself published may show unconfirmed; a guess never may.
     visible_bad = c.execute("SELECT COUNT(*) n FROM usable_contact_point WHERE kind='email' AND source IN ('pattern','ai_web','public_research') AND verify_status!='valid'").fetchone()['n']
     evaluated = c.execute('SELECT evaluated_firms FROM app_release WHERE version=?', (RELEASE,)).fetchone()['evaluated_firms']
+    if evaluated != total:
+        # A weekly feed added or removed firms since this release was applied
+        # (57 new firms broke the 2026-10-12 deploy): score the universe as it
+        # is now, rather than fail a deploy that changed nothing about it.
+        audit = {}
+        started = time.monotonic()
+        products.score_all(c, progress=lambda done, n: audit.update(done=done, total=n))
+        assert audit.get('done') == audit.get('total'), 'Scoring did not finish the complete universe'
+        c.execute('UPDATE app_release SET evaluated_firms=? WHERE version=?', (audit['done'], RELEASE))
+        c.commit()
+        print('Universe changed since the release; rescored', audit['done'], 'firms in',
+              round(time.monotonic() - started, 1), 'seconds', flush=True)
+        evaluated = audit['done']
+        total = c.execute('SELECT COUNT(*) n FROM firm_current').fetchone()['n']
+        scored = c.execute('SELECT COUNT(DISTINCT crd) n FROM product_score').fetchone()['n']
     print('Firm universe:', total, 'evaluated on release:', evaluated, 'passing at least one product gate:', scored)
     print('Internal email candidates:', hidden, 'unverified guesses visible:', visible_bad)
     assert visible_bad == 0
