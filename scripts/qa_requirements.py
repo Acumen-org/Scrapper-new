@@ -235,6 +235,23 @@ class SeatsChecks(unittest.TestCase):
                 msauth.check({'tid':'22222222-2222-2222-2222-222222222222',
                               'email':'rahul.gopan@acumen-strategy.com'})
 
+    def test_microsoft_admits_both_acumen_domains_only(self):
+        tid = '11111111-1111-1111-1111-111111111111'
+        domains = ['acumen-strategy.com', 'acumen-talent.com']
+        with patch.object(msauth.settings,'get',return_value=tid),              patch.object(msauth.settings,'get_list',return_value=domains):
+            msauth.check({'tid':tid,'email':'jane.doe@acumen-talent.com'})
+            msauth.check({'tid':tid,'preferred_username':'Jane.Doe@Acumen-Strategy.com'})
+            with self.assertRaises(msauth.SignInError):
+                msauth.check({'tid':tid,'email':'jane.doe@gmail.com'})
+
+    def test_shipped_sign_in_domains_include_acumen_talent(self):
+        from prospect import settings as s
+        spec = next(x for x in s.SPECS if x.key == 'auth.allowed_domains')
+        self.assertIn('acumen-talent.com', [d.strip() for d in spec.default.split(',')])
+        from pathlib import Path
+        src = Path('scripts/configure_microsoft.py').read_text(encoding='utf-8')
+        self.assertIn('acumen-talent.com', src)
+
 
 class AITransportChecks(unittest.TestCase):
     def test_empty_provider_response_is_an_explicit_error(self):
