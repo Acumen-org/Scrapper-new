@@ -2172,8 +2172,20 @@ def _priority(r: Result) -> float:
     return r.score + r.coverage / 1000.0
 
 
+# The ATS list ranks every firm (it has no gates), so being on it does not put
+# a firm in the working scope that the brochure, mail-platform and signal jobs
+# follow; a strong ATS score does.
+ATS_SCOPE_MIN = 50.0
+
+
+def _in_scope(r: Result) -> bool:
+    if r.status != "scored":
+        return False
+    return product(r.product).get("family") != "ATS" or r.score >= ATS_SCOPE_MIN
+
+
 def _scope_row(crd: str, results: dict[str, Result]):
-    scored = [r for r in results.values() if r.status == "scored"]
+    scored = [r for r in results.values() if _in_scope(r)]
     if not scored:
         return None
     best = max(scored, key=_priority)
