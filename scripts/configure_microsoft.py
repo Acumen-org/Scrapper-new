@@ -19,8 +19,9 @@ def main():
     for key, value in {
         'ms.tenant_id': values['tenant_id'], 'ms.client_id': values['client_id'],
         'ms.client_secret': values['client_secret'], 'app.public_url': values['public_url'],
-        # Acumen Talent Solutions shares the Acumen Strategy Microsoft tenant.
-        'auth.allowed_domains': 'acumen-strategy.com, acumen-talent.com',
+        # Acumen Talent Solutions and Glynac share the Acumen Strategy
+        # Microsoft tenant.
+        'auth.allowed_domains': 'acumen-strategy.com, acumen-talent.com, glynac.ai',
         'auth.admins': 'rahul.gopan@acumen-strategy.com',
     }.items():
         settings.set(key, value, by='deployment')
