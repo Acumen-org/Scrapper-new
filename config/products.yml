@@ -42,10 +42,10 @@
 # (RIA Fit, 1031 Partner and JV Mandate Fit scores, plan points rescaled to
 # 100), and Glynac/02_GLYNAC_GTM_Plan_v2.1.
 
-config_version: 3
+config_version: 4
 
 # The order products appear in the sidebar and on the home page.
-order: [phh_fund, phh_1031, phh_jv, acubooth, glynac]
+order: [phh_fund, phh_1031, phh_jv, acubooth, glynac, ats]
 
 # Custodians PHH treats as able to hold private investments and K-1 reporting.
 major_custodians: [Charles Schwab, Fidelity, Pershing, BNY Mellon, TD Ameritrade]
@@ -546,3 +546,102 @@ products:
       - key: glynac_competitor
         label: Already uses Hadrius or COMPLY
         points: 10
+
+  # ------------------------------------------------------------------ ATS
+  # Acumen Talent Solutions: recruitment for firms that are growing and will
+  # need people. No fit gates by design (agreed 2026-10-12): every firm is
+  # ranked, and the growth evidence decides the order. Every figure behind
+  # these criteria is on the firm page's Growth tab, with its dates.
+  ats:
+    name: ATS
+    family: ATS
+    short: ATS
+    audience: Firms that are growing and will need to hire, by function
+    pitch: Recruiting for the roles a growing firm needs next.
+    gates: []
+    disqualifiers: []
+    criteria:
+      - key: team_growth
+        label: Team growth, 12 months
+        weight: 25
+        levels:
+          - [100, "Registered people up 25%+ (or 10+ net hires)"]
+          - [85, "Up 15%+ (or 5+ net hires)"]
+          - [65, "Up 8%+"]
+          - [45, "Up 3%+"]
+          - [30, "Up, under 3%"]
+          - [10, "Flat"]
+          - [0, "Shrinking"]
+      - key: asset_growth
+        label: Asset growth
+        weight: 15
+        levels:
+          - [100, "Up 30%+ a year"]
+          - [85, "Up 20%+ a year"]
+          - [65, "Up 10%+ a year"]
+          - [45, "Up 5%+ a year"]
+          - [25, "Up, under 5% a year"]
+          - [0, "Flat or down"]
+      - key: client_growth
+        label: Client growth
+        weight: 10
+        levels:
+          - [100, "Up 25%+ a year"]
+          - [85, "Up 15%+ a year"]
+          - [65, "Up 8%+ a year"]
+          - [45, "Up 3%+ a year"]
+          - [25, "Up, under 3% a year"]
+          - [0, "Flat or down"]
+      - key: capacity_strain
+        label: Assets growing faster than advisors
+        weight: 10
+        levels:
+          - [100, "Assets per advisor up 20%+ a year"]
+          - [75, "Up 10%+ a year"]
+          - [50, "Up 5%+ a year"]
+          - [25, "Up, under 5% a year"]
+          - [0, "Flat or down"]
+      - key: support_gap
+        label: Support staff per advisor against similar firms
+        weight: 10
+        levels:
+          - [100, "Half the usual support staff per advisor or less"]
+          - [75, "Under three quarters of the usual"]
+          - [45, "Below the usual"]
+          - [15, "At or above the usual"]
+      - key: backfill
+        label: Departures to backfill
+        weight: 5
+        levels:
+          - [100, "2+ senior or long-tenured people left in 12 months"]
+          - [70, "1 senior person left"]
+          - [50, "3+ people left"]
+          - [30, "1 or 2 people left"]
+          - [0, "Nobody left"]
+      - key: succession
+        label: Succession pressure
+        weight: 5
+        levels:
+          - [100, "40%+ of the team has 30+ years in the industry"]
+          - [70, "25%+"]
+          - [45, "15%+"]
+          - [25, "Under 15%"]
+          - [0, "Nobody with 30+ years"]
+      - key: expansion
+        label: Expansion
+        weight: 10
+        levels:
+          - [100, "Several at once: new offices, new states, a team hired from one firm, a recent registration, a first fund or a custodian change"]
+          - [0, "Nothing seen (new office 40, team hired from one firm 30, registered in the last 3 years 30, new states 20 to 30, first fund 20, custodian change 15)"]
+      - key: open_roles
+        label: Open roles
+        weight: 10
+        levels:
+          - [100, "3+ openings posted"]
+          - [80, "1 or 2 openings posted"]
+          - [20, "A careers page, nothing open"]
+          - [10, "Says it has no openings"]
+          - [0, "No careers page or postings found"]
+    signals:
+      - key: ats_hiring_now
+        label: Hiring now, the open roles by function, team and asset growth, senior departures, new offices and states

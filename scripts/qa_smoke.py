@@ -139,6 +139,10 @@ ROUTES: list[tuple[str, str]] = [
     ("/lists/glynac", "Glynac"),
     ("/lists/glynac?q=capital&owner=none", "Glynac"),
     ("/lists/glynac/export.csv", "rank"),
+    ("/lists/ats", "ATS"),
+    ("/lists/ats?hiring=1", "Hiring now"),
+    ("/signals?window=15", "Last 15 days"),
+    ("/signals?window=30", "Last 30 days"),
     ("/lists/acubooth/export.xlsx?cov=full", "PK"),
     ("/signals", "Signals"),
     ("/signals?state=", "Signals"),
@@ -314,7 +318,7 @@ def pass_roles(base: str) -> None:
 def pass_routes(base: str, detail_crd: str) -> None:
     print("\n[1] route matrix")
     routes = ROUTES + [(f"/firm/{detail_crd}", "Pipeline"),
-                       (f"/firm/{detail_crd}", "Hiring and departures"),
+                       (f"/firm/{detail_crd}", "Where they will need people"),
                        (f"/firm/{detail_crd}", "Discovery, sources and contact tools"),
                        (f"/firm/{detail_crd}", 'data-scope="firm:'),
                        (f"/firm/{detail_crd}?p=phh_fund", "Gates passed")]

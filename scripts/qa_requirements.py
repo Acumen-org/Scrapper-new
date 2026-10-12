@@ -467,5 +467,108 @@ class WorkerChecks(unittest.TestCase):
         self.assertIn('covered calls', ocr.tesseract_page(buf.getvalue()).lower())
 
 
+
+class GrowthChecks(unittest.TestCase):
+    """The Growth tab, the open-roles reader and the ATS list."""
+
+    def test_change_is_annualised_only_past_fifteen_months(self):
+        from prospect import growth
+        a_year = growth.change(120, 100, 365)
+        self.assertEqual((a_year['change'], a_year['annual']), (0.2, 0.2))
+        three = growth.change(175, 100, 1100)
+        self.assertEqual(three['change'], 0.75)
+        self.assertAlmostEqual(three['annual'], 0.204, places=3)
+        self.assertIsNone(growth.change(10, 0, 365))
+        self.assertIsNone(growth.change(None, 100, 365))
+        self.assertIsNone(growth.change(10, 100, 0))
+
+    def test_role_titles_skip_menus_people_and_calls_to_action(self):
+        from prospect import openroles
+        html = ("<html><body><header><nav><a href='/tax'>Tax Planning</a><a href='/careers'>Careers</a>"
+                "</nav></header><main><h1>Careers</h1><h2>Become a Financial Advisor</h2><ul>"
+                "<li><a href='/j/1'>Client Service Associate</a></li><li><a href='/j/2'>Paraplanner</a></li>"
+                "<li>Independent Advisors</li><li>Associate assistance fund</li></ul>"
+                "<p>Jane Smith, Client Service Associate</p><p>careers@acme.com</p></main></body></html>")
+        titles = [t for t, _ in openroles.role_titles(html, 'https://acme.com/careers')]
+        self.assertEqual(titles, ['Client Service Associate', 'Paraplanner'])
+        self.assertTrue(openroles.is_title('Tax Manager, Scottsdale, AZ'))
+        self.assertFalse(openroles.is_title('Internships at Hightower Home Offices'))
+
+    def test_wordpress_body_classes_are_not_page_chrome(self):
+        from prospect import openroles
+        html = ("<html><body class='mobile-header sticky-menu'><div class='career-item'>"
+                "<h3>Audit Manager</h3></div></body></html>")
+        self.assertEqual([t for t, _ in openroles.role_titles(html, 'https://x.com/careers')],
+                         ['Audit Manager'])
+
+    def test_functions_and_tracking_systems(self):
+        from prospect import openroles
+        self.assertEqual(openroles.function_of('Investment Operations Associate'),
+                         'Operations and client service')
+        self.assertEqual(openroles.function_of('Associate Wealth Advisor'), 'Advisory')
+        self.assertEqual(openroles.function_of('Chief Compliance Officer'), 'Compliance')
+        self.assertEqual(openroles.ats_of('https://acme.bamboohr.com/careers'), 'BambooHR')
+        self.assertIsNone(openroles.ats_of('https://acme.bamboohr.com/login'))
+        links = openroles.careers_links(
+            "<a href='/careers'>Careers</a><script src='https://boards.greenhouse.io/embed/job_board/js?for=acme'>"
+            "</script>", 'https://acme.com/')
+        self.assertEqual(links[0], 'https://boards.greenhouse.io/embed/job_board/js?for=acme')
+
+    def test_job_board_postings_name_the_firm_in_its_states(self):
+        from prospect import openroles
+        results = [
+            {'title': 'Acme Wealth hiring Paraplanner in Miami, FL | LinkedIn',
+             'href': 'https://www.linkedin.com/jobs/view/paraplanner-at-acme-wealth-1', 'body': ''},
+            {'title': 'Acme Wealth hiring Analyst in Chicago, IL | LinkedIn',
+             'href': 'https://www.linkedin.com/jobs/view/analyst-at-acme-wealth-2', 'body': ''},
+            {'title': 'Other Firm hiring Advisor in Miami, FL | LinkedIn',
+             'href': 'https://www.linkedin.com/jobs/view/advisor-at-other-3', 'body': ''},
+            {'title': '24 Acme Wealth jobs in United States | LinkedIn',
+             'href': 'https://www.linkedin.com/jobs/acme-wealth-jobs', 'body': ''}]
+        found = openroles.board_postings(results, ['ACME WEALTH MANAGEMENT LLC'], {'FL'})
+        self.assertEqual([t for t, _, _ in found], ['Paraplanner'])
+
+    def test_ats_scores_growth_and_says_what_is_missing(self):
+        d = {'overrides': {}, 'people': {'headcount': 8}, 'careers': {'status': 'roles'},
+             'postings': [{'title': 'Paraplanner', 'function': 'Advisory'},
+                          {'title': 'Client Service Associate', 'function': 'Operations and client service'},
+                          {'title': 'Chief Compliance Officer', 'function': 'Compliance'}],
+             'growth': {'departures_senior': 0, 'detail': {
+                 'period': {'from': '2025-09-02', 'to': '2026-09-02', 'days': 365},
+                 'aum': {'now': 1.2e9, 'prev': 9.5e8, 'change': 0.26, 'annual': 0.26},
+                 'team': {'now': 8, 'prev': 5, 'joined': 3, 'left': 0},
+                 'veterans': {'n30': 2, 'of': 8},
+                 'staff_mix': {'total': 30, 'advisory': 12, 'support': 18,
+                               'support_per_advisor': 1.5, 'peer': None},
+                 'locations': [{'city': 'DENVER', 'state': 'CO'}]}}}
+        r = products.evaluate('ats', d)
+        by = {c['key']: c for c in r.components}
+        self.assertEqual(r.status, 'scored')
+        self.assertEqual(by['team_growth']['points'], 100)
+        self.assertEqual(by['asset_growth']['points'], 85)
+        self.assertEqual(by['open_roles']['points'], 100)
+        self.assertFalse(by['client_growth']['known'])
+        self.assertFalse(by['support_gap']['known'])
+        self.assertIn('Denver, CO', by['expansion']['evidence'])
+        self.assertEqual(r.signals[0]['label'], 'Hiring now')
+        self.assertEqual(r.pitch, 'Lead with the roles they are hiring for now')
+        self.assertLess(r.coverage, 100)
+
+    def test_ats_with_nothing_known_scores_zero_not_an_error(self):
+        r = products.evaluate('ats', {'overrides': {}})
+        self.assertEqual((r.status, r.score, r.coverage), ('scored', 0.0, 0.0))
+
+    def test_signal_windows_include_fifteen_and_thirty_days(self):
+        from prospect import webapp  # noqa: F401  (the views import through the app)
+        from prospect import signals_view
+        self.assertEqual(list(signals_view.WINDOWS)[:2], ['15', '30'])
+
+    def test_growth_jobs_are_scheduled(self):
+        self.assertEqual(jobs.BY_KIND['growth'].lane, 'data')
+        self.assertEqual(jobs.BY_KIND['open_roles'].lane, 'web')
+        self.assertEqual(jobs.BY_KIND['job_boards'].lane, 'search')
+        filled = jobs._fill(jobs.BY_KIND['open_roles'].backlog_sql, 1)
+        self.assertNotIn('{ago:', filled)
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

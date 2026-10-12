@@ -26,7 +26,8 @@ tr.krow.sel td{background:var(--red-bg)}
 .act{display:flex;gap:5px;flex-wrap:wrap}
 """
 
-WINDOWS = {"60": "Last 60 days", "365": "Last 12 months", "": "Any time"}
+WINDOWS = {"15": "Last 15 days", "30": "Last 30 days", "60": "Last 60 days",
+           "365": "Last 12 months", "": "Any time"}
 
 
 @router.get("/signals", response_class=HTMLResponse)
@@ -57,7 +58,7 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
     elif state:
         where.append("a.state=?")
         args.append(state)
-    if window in ("60", "365"):
+    if window in WINDOWS and window:
         from .webapp import signal_cutoff
         where.append("t.detected_date >= ?")
         args.append(signal_cutoff(int(window)))

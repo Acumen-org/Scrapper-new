@@ -38,10 +38,18 @@ CREATE TABLE IF NOT EXISTS firm_history (
     raum        INTEGER,
     iar_count   INTEGER,
     source      TEXT NOT NULL,      -- archive | feed
+    employees   INTEGER,            -- Item 5.A total staff (scripts/build_growth.py)
+    clients     INTEGER,            -- Item 5.C(1) clients (scripts/build_growth.py)
     PRIMARY KEY (crd, filing_date)
 );
 CREATE INDEX IF NOT EXISTS ix_fh_crd ON firm_history (crd, filing_date);
 """
+
+# Written out rather than INSERT OR REPLACE, so a rebuild of assets and
+# advisors leaves the staff and client figures build_growth adds in place.
+UPSERT = ("INSERT INTO firm_history (crd, filing_date, raum, iar_count, source)"
+          " VALUES (?,?,?,?,?) ON CONFLICT (crd, filing_date) DO UPDATE SET"
+          " raum = EXCLUDED.raum, iar_count = EXCLUDED.iar_count, source = EXCLUDED.source")
 
 DATE_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y")
 
@@ -59,7 +67,10 @@ def pdate(s):
 def main() -> int:
     cfg = config.load()
     conn = db.connect()
-    conn.executescript(SCHEMA); conn.commit()
+    conn.executescript(SCHEMA)
+    db.add_column(conn, "firm_history", "employees", "INTEGER")
+    db.add_column(conn, "firm_history", "clients", "INTEGER")
+    conn.commit()
 
     have = conn.execute("SELECT COUNT(*) n FROM firm_history WHERE source='archive'"
                         ).fetchone()["n"]
@@ -89,13 +100,10 @@ def main() -> int:
                     batch.append((crd, d, num(rec.get("5F2c")),
                                   num(rec.get("5B1")), "archive"))
                     if len(batch) >= 20000:
-                        conn.executemany(
-                            "INSERT OR REPLACE INTO firm_history VALUES (?,?,?,?,?)",
-                            batch)
+                        conn.executemany(UPSERT, batch)
                         n += len(batch); batch.clear()
             if batch:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO firm_history VALUES (?,?,?,?,?)", batch)
+                conn.executemany(UPSERT, batch)
                 n += len(batch)
             conn.commit()
             print(f"  archive filings stored: {n:,}")
@@ -110,11 +118,14 @@ def main() -> int:
         # last one; Postgres rejects the whole command. Pick the newest
         # snapshot per key explicitly rather than relying on that.
         conn.execute("""
-            INSERT OR REPLACE INTO firm_history
+            INSERT INTO firm_history (crd, filing_date, raum, iar_count, source, employees)
             SELECT DISTINCT ON (f.crd, f.filing_date)
-                   f.crd, f.filing_date, f.raum, f.iar_count, 'feed'
+                   f.crd, f.filing_date, f.raum, f.iar_count, 'feed', f.total_employees
             FROM firm f WHERE f.filing_date IS NOT NULL
-            ORDER BY f.crd, f.filing_date, f.snapshot_id DESC""")
+            ORDER BY f.crd, f.filing_date, f.snapshot_id DESC
+            ON CONFLICT (crd, filing_date) DO UPDATE SET raum = EXCLUDED.raum,
+                iar_count = EXCLUDED.iar_count, source = EXCLUDED.source,
+                employees = EXCLUDED.employees""")
         conn.commit()
         pts = conn.execute("SELECT COUNT(*) n FROM firm_history").fetchone()["n"]
         firms = conn.execute("SELECT COUNT(DISTINCT crd) n FROM firm_history").fetchone()["n"]

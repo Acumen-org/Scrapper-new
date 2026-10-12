@@ -46,7 +46,8 @@ PAGES = [
     "/", "/ask", "/lists/phh_fund", "/lists/phh_fund?view=scoring",
     "/lists/phh_fund?view=disqualified", "/lists/phh_jv?cov=gaps",
     "/lists/acubooth", "/lists/acubooth?sig=1&cov=full", "/lists/glynac",
-    "/signals", "/firms", "/firms?view=contacts", "/firms?on=acubooth&sort=hires",
+    "/lists/ats", "/lists/ats?hiring=1", "/lists/ats?view=scoring",
+    "/signals", "/signals?window=15", "/signals?window=30", "/firms", "/firms?view=contacts", "/firms?on=acubooth&sort=hires",
     "/firms?q=WEALTH", "/people", "/people?joined=365", "/saved",
     "/enrichment", "/enrichment/websites", "/enrichment/verify",
     "/settings", "/settings/users", "/settings/signin", "/settings/ai",
@@ -60,7 +61,7 @@ def detail_pages() -> list[str]:
     c = db.connect()
     try:
         out = []
-        for key in ("phh_fund", "acubooth", "glynac"):
+        for key in ("phh_fund", "acubooth", "glynac", "ats"):
             r = c.execute("SELECT crd FROM product_score WHERE product=?"
                           " AND status='scored' ORDER BY rank LIMIT 1", (key,)).fetchone()
             if r:

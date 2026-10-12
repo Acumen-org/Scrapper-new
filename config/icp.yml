@@ -39,3 +39,14 @@ phh_jv:
     match: '\bCIO\b|chief investment|head of investments|director of investments|head of real estate|real assets'
   - label: Principal or managing partner
     match: 'founder|managing (partner|member|director|principal)|\bprincipal\b|\bCEO\b|chief executive|family office'
+
+# Acumen Talent Solutions: the person who feels the hiring need first runs
+# operations; the managing partner signs off; HR, where a firm has it, runs
+# the search.
+ats:
+  - label: COO or head of operations
+    match: '\bCOO\b|chief operating|head of operations|director of operations|operations (director|manager|lead|head)|\bVP,? (of )?operations'
+  - label: Managing partner or CEO
+    match: 'managing (partner|member|director|principal)|\bCEO\b|chief executive|(?<!vice )\bpresident\b|founder'
+  - label: HR or people lead
+    match: 'human resources|\bHR\b|chief people|people (operations|officer|director|lead)|head of people|talent (acquisition|director|manager|lead)|recruit'

@@ -14,7 +14,7 @@ Five kinds of item, one table (knowledge_item):
             every firm with that name or that owner is classified at the next
             run.
   glossary  industry terms (RIA, ERA, RAUM, Form ADV, 13F, TAMP, OCIO ...).
-  product   what Acumen sells and to whom (PHH, AcuBooth, Glynac).
+  product   what Acumen sells and to whom (PHH, AcuBooth, Glynac, ATS).
   fact      how Bellwether works, so Bellwether AI can explain itself.
 
 The shipped content is config/industry.yml. It is loaded into the table on

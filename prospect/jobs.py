@@ -19,6 +19,7 @@ watches all of it and repairs what it can.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -108,6 +109,43 @@ JOBS: list[Job] = [
         "scripts.build_people_index", (), every_hours=0.5, timeout_s=900,
         backlog_sql="SELECT CASE WHEN to_regclass('people_index') IS NULL THEN 1 ELSE 0 END n",
         group="contacts", min_gap_minutes=15),
+    Job("growth", "Growth and hiring",
+        "Builds every firm's Growth tab and the ATS list: registered people now and a year "
+        "ago, who joined and who left, assets, clients and staff against the filing a year "
+        "earlier, support staff per advisor against similar firms, senior departures, "
+        "advisors with 30 or more years, new offices and new states, and open roles. The "
+        "staff and client history is read from the filings once; state filings again "
+        "whenever a weekly feed arrives.",
+        "scripts.build_growth", (), every_hours=24, timeout_s=3600,
+        backlog_sql="SELECT CASE WHEN to_regclass('firm_growth') IS NULL OR NOT EXISTS (SELECT 1 FROM firm_growth) THEN 1 ELSE 0 END n",
+        done_sql="SELECT COUNT(*) n FROM firm_growth",
+        total_sql="SELECT COUNT(*) n FROM firm_current", group="filings", min_gap_minutes=60,
+        recent_sql="SELECT COUNT(*) n FROM firm_growth WHERE computed_at >= LEFT('{day_ago}', 10)",
+        recent_label="firms measured"),
+    Job("open_roles", "Open roles",
+        "Reads each firm's website for its careers page and the openings on it or on the "
+        "tracking system it uses (Greenhouse, Lever, BambooHR and others), and sorts each "
+        "opening by function. Firms never checked go first, then growing firms; every firm "
+        "is checked again after 21 days.",
+        "scripts.find_open_roles", ("--limit", "60", "--seconds", "540", "--workers", "4"),
+        every_hours=1, timeout_s=1200,
+        backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN firm_careers c ON c.crd=f.crd WHERE c.crd IS NULL OR c.checked_at < '{ago:21}' OR (c.status='unreachable' AND c.checked_at < '{ago:4}')",
+        done_sql="SELECT COUNT(*) n FROM firm_careers c JOIN firm_current f ON f.crd=c.crd",
+        total_sql="SELECT COUNT(*) n FROM firm_current", group="contacts", lane="web",
+        recent_sql="SELECT COUNT(*) n FROM firm_careers WHERE checked_at >= '{day_ago}'",
+        recent_label="careers pages checked"),
+    Job("job_boards", "Job boards",
+        "Searches the job boards (LinkedIn, Indeed, Glassdoor and others) for openings at "
+        "firms whose own site lists none, growing firms first, and keeps only postings that "
+        "name the firm. Each firm again after 30 days. Shares the search engines' pacing "
+        "with the contact search.",
+        "scripts.find_open_roles", ("--boards", "--limit", "12", "--seconds", "300"),
+        every_hours=1, timeout_s=900,
+        backlog_sql="SELECT COUNT(*) n FROM firm_careers c JOIN firm_current f ON f.crd=c.crd LEFT JOIN firm_growth g ON g.crd=c.crd WHERE c.status != 'roles' AND COALESCE(g.headcount, f.iar_count, 0) >= 3 AND (c.searched_at IS NULL OR c.searched_at < '{ago:30}')",
+        done_sql="SELECT COUNT(*) n FROM firm_careers WHERE searched_at IS NOT NULL",
+        group="contacts", lane="search", min_gap_minutes=45,
+        recent_sql="SELECT COUNT(*) n FROM firm_careers WHERE searched_at >= '{day_ago}'",
+        recent_label="firms searched"),
     Job("brochures", "Brochures",
         "Downloads each firm's Part 2A brochure and reads it for what the firm does, in "
         "its own words. Best-scored firms first; failed downloads retry after a day. Every "
@@ -301,6 +339,9 @@ def _fill(sql: str, tag_version: int) -> str:
         days = settings.get_int("crawl.recrawl_days", 90) or 90
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
         sql = sql.replace("{recrawl_cutoff}", cutoff)
+    if "{ago:" in sql:
+        sql = re.sub(r"\{ago:(\d+)\}", lambda m: (datetime.now(timezone.utc) - timedelta(
+            days=int(m.group(1)))).isoformat(timespec="seconds"), sql)
     return sql
 
 

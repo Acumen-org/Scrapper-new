@@ -11,6 +11,8 @@ rebuilt from the newest snapshot of each weekly feed:
              pension consultant (2A7), internet adviser (2A11), and so on
   Item 5.B   advisory staff, and how many are registered reps of a
              broker-dealer (5B2) or licensed insurance agents (5B5)
+  Item 5.C   how many clients (5C1), which the Growth tab compares with the
+             same answer in older filings
   Item 5.D   every client type with its count and assets: individuals, HNW,
              banks, registered funds, pooled vehicles, pension plans,
              charities, governments, other advisers, insurers, sovereigns,
@@ -61,7 +63,7 @@ CREATE TABLE IF NOT EXISTS firm_adv_profile (
 SOURCES = ("adv_feed", "adv_state_feed")
 
 # The Part 1A elements whose attributes are kept, whole.
-ITEMS = ("Item2A", "Item5A", "Item5B", "Item5D", "Item5E", "Item5G", "Item5I",
+ITEMS = ("Item2A", "Item5A", "Item5B", "Item5C", "Item5D", "Item5E", "Item5G", "Item5I",
          "Item6A", "Item6B", "Item7A", "Item7B", "Item9D")
 
 

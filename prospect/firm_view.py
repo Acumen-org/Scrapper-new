@@ -10,7 +10,10 @@ stays at the top:
   People       everyone registered there, officers first, with each person's
                role, tenure, prior firm, designations, and every email and
                direct line found, each with how sure we are of it
-  Hiring       who joined and who left, from where and to where, year by year
+  Growth       the team now and a year ago, who joined and who left, assets,
+               clients and staff against an earlier filing, where the firm will
+               need people, new offices and states, and its open roles
+               (prospect/growth_view.py)
   Contacts     the firm's own lines and inboxes, where every detail came from,
                and buttons to check emails or re-read the website now
   Signals      everything that changed, newest first
@@ -224,7 +227,8 @@ def _breakdown(crd: str, r) -> str:
                 f'<td class="num pts" style="font-size:16px">{r.score:.1f}</td></tr>')
     gates = "".join(
         f'<div class="gline"><b>Pass</b> {esc(g["label"])}: '
-        f'<span class="muted">{esc(g["evidence"])}</span></div>' for g in r.gates)
+        f'<span class="muted">{esc(g["evidence"])}</span></div>' for g in r.gates) or (
+        '<div class="gline muted">This list has no gates: every firm is ranked on it.</div>')
     sig = ""
     if r.signals:
         sig = ('<h3 style="margin-top:16px">Talking points and flags</h3>' + "".join(
@@ -430,88 +434,12 @@ def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: 
     return html, cards[:6], counts
 
 
-def _hiring_section(c, crd: str, stats, mv, series) -> str:
-    if not stats and not mv.get("joined") and not mv.get("left"):
-        return ('<p class="muted">Joins and departures come from the SEC individual feed and '
-                'appear once it has loaded.</p>')
-    out = ""
-    if stats:
-        out += _hiring_facts(stats, before=True)
-    if series:
-        out += f'<div style="margin:14px 0 6px">{ui.year_bars(series)}</div>'
-
-    def lst(items, kind):
-        if not items:
-            return '<p class="muted small">None in the last two years.</p>'
-        word = "from" if kind == "joined" else "now at"
-        return "".join(
-            f'<div class="it"><div class="ic {"in" if kind == "joined" else "out"}">'
-            f'{"+" if kind == "joined" else "-"}</div><div><b>{esc(m["name"])}</b>'
-            + (f' <span class="muted">{word} '
-               + (f'<a href="/firm/{esc(m["other_org_pk"])}">{escn(m["other_org_name"])}</a>'
-                  if m.get("other_org_pk") and str(m["other_org_pk"]).isdigit() else escn(m.get("other_org_name")))
-               + '</span>' if m.get("other_org_name") else "")
-            + f'</div><div class="tiny muted nowrap">{esc((m.get("date") or "")[:10])}</div></div>'
-            for m in items[:12])
-    out += (f'<div class="cols-2" style="margin-top:14px"><div><h3>Joined</h3><div class="feed">'
-            f'{lst(mv.get("joined"), "joined")}</div></div><div><h3>Left</h3><div class="feed">'
-            f'{lst(mv.get("left"), "left")}</div></div></div>')
-    if stats:
-        srcs = _json(stats.get("top_sources"))
-        dests = _json(stats.get("top_destinations"))
-        if srcs or dests:
-            def fl(items):
-                return ", ".join(f'{escn(x.get("org_name"))} ({x.get("n")})' for x in items[:5]) or "-"
-            bits = []
-            if srcs:
-                bits.append(f"<b>Hires came from</b> {fl(srcs)}.")
-            if dests:
-                bits.append(f"<b>Leavers went to</b> {fl(dests)}.")
-            out += f'<p class="small soft" style="margin-top:12px">{" ".join(bits)}</p>'
-    return out
-
-
 def _net_words(net: int) -> str:
     if net > 0:
         return f'<span class="ok">Grew by {net}</span>'
     if net < 0:
         return f'<span class="bad">Shrank by {-net}</span>'
     return "No change"
-
-
-def _hiring_facts(stats: dict, before: bool = False) -> str:
-    """The year's people moves as plain numbers: who joined, who left, and
-    what that did to the team, with no bare plus and minus signs to decode."""
-    j = int(stats.get("hires_12m") or 0)
-    left = int(stats.get("departures_12m") or 0)
-    cells = [("Joined in the past year", f'<span class="{"ok" if j else ""}">{j}</span>'),
-             ("Left in the past year", f'<span class="{"bad" if left else ""}">{left}</span>'),
-             ("Team size change", _net_words(j - left))]
-    if before:
-        cells.append(("Joined the year before", str(int(stats.get("hires_prev_12m") or 0))))
-    return ('<div class="facts" style="margin-bottom:14px">' + "".join(
-        f'<div><div class="l">{label}</div><div class="v">{value}</div></div>' for label, value in cells)
-        + '</div>')
-
-
-def _hiring_glance(stats, series) -> str:
-    """The overview's hiring card: the year's moves as three numbers, then the
-    last decade as bars."""
-    if not stats and not series:
-        return '<p class="muted">Joins and departures appear once the SEC roster loads.</p>'
-    out = ""
-    if stats:
-        out = _hiring_facts(stats)
-    if series:
-        out += ui.year_bars(series[-8:], w=420, h=130)
-    return out
-
-
-def _json(v):
-    try:
-        return json.loads(v) if isinstance(v, str) else (v or [])
-    except ValueError:
-        return []
 
 
 # ------------------------------------------------------------------ page
@@ -593,6 +521,12 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
         mv = people.movements(c, crd, days=730)
         series = people.headcount_series(c, crd, years=10)
         unmatched = people.officers_unmatched(c, crd)
+    except Exception:
+        c.rollback()
+    growth_hist = []
+    try:
+        from . import growth
+        growth_hist = growth.history(c, crd)
     except Exception:
         c.rollback()
     if not roster and not unmatched:
@@ -791,7 +725,9 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     people_html, top_cards, pc = _people_section(c, crd, roster, cps_by_person, web_people,
                                                  unmatched, stats, hunts, icp_products)
     c.close()
-    hiring_html = _hiring_section(None, crd, stats, mv, series)
+    from . import growth_view
+    growth_html = growth_view.section(crd, f, d, stats, mv, series, growth_hist,
+                                      results.get("ats"))
     hunting = max(0, pc["people"] - pc["email"])
     tried = (f'{attempts["n"]:,} candidate addresses checked with the mail server for '
              f'{attempts["p"]:,} people so far. ' if attempts and attempts["n"] else "")
@@ -968,7 +904,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <nav class="secnav" aria-label="Firm research"><a href="#overview">Overview</a>
 <a href="#people">People &amp; contacts <span class="cnt">{pc['people']:,}</span></a>
 <a href="#fit">Product fit</a><a href="#activity">Activity <span class="cnt">{signals_n}</span></a>
-<a href="#hiring">Hiring</a><a href="#assets">Assets &amp; funds</a><a href="#profile">Firm profile</a>
+<a href="#growth">Growth</a><a href="#assets">Assets &amp; funds</a><a href="#profile">Firm profile</a>
 <a href="#workspace">Workspace</a></nav>
 <div class="dossier-tabs">
 <section class="anchor" id="overview">
@@ -977,8 +913,8 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <section class="overview-section"><div class="s-head"><h2>Product fit</h2><a class="more" href="#fit">Score details</a></div><div>{"".join(fit_cards)}</div></section></div>
 <div class="firm-overview-grid overview-secondary"><section class="overview-section"><div class="s-head"><h2>Recent signals</h2><a class="more" href="#activity">All activity</a></div>
 {('<div class="timeline">' + "".join(recent) + '</div>') if recent else '<p class="muted">No recorded signals.</p>'}</section>
-<section class="overview-section"><div class="s-head"><h2>Hiring</h2><a class="more" href="#hiring">Details</a></div>
-{_hiring_glance(stats, [])}</section></div>
+<section class="overview-section"><div class="s-head"><h2>Growth</h2><a class="more" href="#growth">Details</a></div>
+{growth_view.glance(d, stats)}</section></div>
 {('<details class="detail-section"><summary>AI brief</summary>' + brief_block + '</details>') if brief_block else ''}
 </section>
 <section class="anchor" id="people">
@@ -988,7 +924,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <section class="anchor" id="fit"><div class="s-head"><h2>Product fit</h2><span class="meta">Missing factors score zero.</span></div>{_fit_section(crd, results, ranks, focus)}</section>
 <section class="anchor" id="activity"><div class="card dsec" id="signals"><div class="card-head"><h2>Signals <span class="h-cnt">{signals_n}</span></h2><span class="sub">Changes Bellwether spotted in filings, people and assets</span></div>{trig_html}</div>
 <div class="card dsec" id="filings"><div class="card-head"><h2>Recent filings</h2><span class="sub">Form ADV amendments and what changed in assets</span></div>{filings_html}</div></section>
-<section class="anchor" id="hiring"><div class="card dsec"><div class="card-head"><h2>Hiring and departures</h2><span class="sub">From the SEC record of every registered person</span></div>{hiring_html}</div></section>
+<section class="anchor" id="growth">{growth_html}</section>
 <section class="anchor" id="assets">{assets_html}<div class="card" style="margin-top:16px"><div class="card-head"><h2>Investments</h2></div>{invest_html}</div></section>
 <section class="anchor" id="profile"><div class="cols-2"><div class="card"><div class="card-head"><h2>Technology</h2></div>{tech_html}</div>
 <div class="card" id="compliance"><div class="card-head"><h2>Compliance and registration</h2></div>{comp_html}</div></div>

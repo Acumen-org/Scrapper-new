@@ -554,7 +554,7 @@ def load_features(conn, crds: list[str] | None = None) -> dict[str, dict]:
                  officers=[], owners=[], triggers=[], filings_12m=0, mail=None, web={},
                  status=None, overrides={}, extra=None, brochure=None, people=None,
                  reach={"personal": 0, "verified": 0}, web_scanned=False,
-                 firm_class=None)
+                 firm_class=None, growth=None, careers=None, postings=[])
         F[d["crd"]] = d
     if not F:
         return F
@@ -653,6 +653,34 @@ def load_features(conn, crds: list[str] | None = None) -> dict[str, dict]:
                            "source": r["source"], "evidence": ev}
     each(f"""SELECT crd, category, confidence, source, evidence FROM firm_class
              WHERE 1=1{only('crd')}""", firm_class)
+
+    # Growth and hiring (prospect/growth.py, prospect/openroles.py): the ATS
+    # list. Open roles are read live, so a posting found an hour ago counts.
+    def growth_row(d, r):
+        g = dict(r)
+        try:
+            g["detail"] = json.loads(g.get("detail") or "{}")
+        except ValueError:
+            g["detail"] = {}
+        if not one:
+            # Scoring every firm: keep what the scores and talking points read,
+            # so the full rescore stays small in memory. One firm's page gets all.
+            det = g["detail"]
+            (det.get("veterans") or {}).pop("names", None)
+            if det.get("departures"):
+                det["departures"] = det["departures"][:3]
+            for k in ("clients_per_advisor", "staff", "roles"):
+                det.pop(k, None)
+        d["growth"] = g
+    each(f"SELECT * FROM firm_growth WHERE 1=1{only('crd')}", growth_row)
+    each(f"""SELECT crd, status, careers_url, ats, checked_at, searched_at FROM firm_careers
+             WHERE 1=1{only('crd')}""", lambda d, r: d.__setitem__("careers", dict(r)))
+    each(f"""SELECT DISTINCT ON (crd, LOWER(title)) crd, title, function, source, url, host,
+                    first_seen
+             FROM firm_job_posting WHERE active=1{only('crd')}
+             ORDER BY crd, LOWER(title),
+                      CASE source WHEN 'ats' THEN 0 WHEN 'website' THEN 1 ELSE 2 END""",
+         lambda d, r: d["postings"].append(dict(r)))
     return F
 
 
@@ -1468,6 +1496,189 @@ def c_providers(d, c, key):
     return pts, (", ".join(bits) if bits else "None reported")
 
 
+# ATS (Acumen Talent Solutions): is the firm growing, and where will it need
+# people? Every figure comes from prospect/growth.py with the dates it
+# compares; a change over more than fifteen months is scored on its yearly
+# rate, so three years of growth never reads as one.
+
+def _gdetail(d) -> dict:
+    return ((d.get("growth") or {}).get("detail")) or {}
+
+
+def _signed(v: float) -> str:
+    return f"{'+' if v > 0 else ''}{v * 100:.0f}%"
+
+
+def _compared(ch: dict, period: dict, fmt) -> str:
+    """'$1.2B now against $950M on 2025-03-28: +26% in 12 months'."""
+    days = int(period.get("days") or 0)
+    from .growth import ANNUALISE_AFTER_DAYS
+    if days > ANNUALISE_AFTER_DAYS:
+        how = (f"{_signed(ch['change'])} over {days / 365:.1f} years, "
+               f"{_signed(ch['annual'])} a year")
+    else:
+        how = f"{_signed(ch['change'])} in {max(1, round(days / 30.4))} months"
+    return f"{fmt(ch['now'])} now against {fmt(ch['prev'])} on {period.get('from')}: {how}"
+
+
+def _count(v) -> str:
+    return f"{v:,.0f}"
+
+
+def _rate_points(v: float, steps) -> float:
+    for thr, pts in steps:
+        if v >= thr:
+            return pts
+    return 25 if v > 0 else 0
+
+
+def c_team_growth(d, c, key):
+    t = _gdetail(d).get("team") or {}
+    now, prev = t.get("now"), t.get("prev")
+    if now is None or prev is None:
+        return unknown(0, "Registered people a year ago not known yet")
+    net = now - prev
+    g = net / prev if prev > 0 else (1.0 if net > 0 else 0.0)
+    pts = (100 if g >= 0.25 or net >= 10 else 85 if g >= 0.15 or net >= 5 else
+           65 if g >= 0.08 else 45 if g >= 0.03 else 30 if net > 0 else 10 if net == 0 else 0)
+    return pts, (f"{now:,} registered people now, {prev:,} a year ago ({'+' if net >= 0 else ''}"
+                 f"{net}): {t.get('joined') or 0} joined, {t.get('left') or 0} left")
+
+
+def c_asset_growth(d, c, key):
+    gd = _gdetail(d)
+    ch = gd.get("aum")
+    if not ch:
+        return unknown(0, "No filing a year or more earlier to compare assets with")
+    pts = _rate_points(ch["annual"], ((0.30, 100), (0.20, 85), (0.10, 65), (0.05, 45)))
+    return pts, "Assets " + _compared(ch, gd.get("period") or {}, _money)
+
+
+def c_client_growth(d, c, key):
+    gd = _gdetail(d)
+    ch = gd.get("clients")
+    if not ch:
+        return unknown(0, "Clients (Item 5.C) not on both filings yet")
+    pts = _rate_points(ch["annual"], ((0.25, 100), (0.15, 85), (0.08, 65), (0.03, 45)))
+    return pts, "Clients " + _compared(ch, gd.get("period") or {}, _count)
+
+
+def c_capacity_strain(d, c, key):
+    gd = _gdetail(d)
+    ch = gd.get("aum_per_advisor")
+    if not ch:
+        return unknown(0, "Advisors not on both filings, so assets per advisor are not compared")
+    pts = _rate_points(ch["annual"], ((0.20, 100), (0.10, 75), (0.05, 50)))
+    adv = gd.get("advisors")
+    extra = (f"; advisors {adv['prev']:,.0f} to {adv['now']:,.0f}" if adv else "")
+    return pts, "Assets per advisor " + _compared(ch, gd.get("period") or {}, _money) + extra
+
+
+def c_support_gap(d, c, key):
+    sm = _gdetail(d).get("staff_mix") or {}
+    adv, spa, peer = sm.get("advisory"), sm.get("support_per_advisor"), sm.get("peer")
+    if not adv or sm.get("total") is None:
+        return unknown(0, "Total staff (Item 5.A) or advisory staff not reported")
+    if adv < 2:
+        return 0, "One advisor: support staff not compared with other firms"
+    if spa is None or not peer:
+        return unknown(0, "Not enough similar firms to compare support staff with")
+    ratio = spa / peer
+    pts = 100 if ratio <= 0.5 else 75 if ratio <= 0.75 else 45 if ratio < 1 else 15
+    return pts, (f"{sm.get('support') or 0:,} support staff for {adv:,} advisors ({spa:.1f} each);"
+                 f" firms with {sm.get('band')} usually have {peer:.1f}")
+
+
+def c_backfill(d, c, key):
+    g = d.get("growth") or {}
+    gd = _gdetail(d)
+    if not d.get("people") and not gd.get("departures"):
+        return unknown(0, "Who joined and left not loaded yet")
+    deps = gd.get("departures") or []
+    senior = int(g.get("departures_senior") or 0)
+    left = int((gd.get("team") or {}).get("left") or len(deps))
+    pts = 100 if senior >= 2 else 70 if senior == 1 else 50 if left >= 3 else 30 if left else 0
+    if not left and not deps:
+        return 0, "Nobody left in the last 12 months"
+    named = []
+    for x in deps[:3]:
+        bits = []
+        if x.get("tenure") is not None:
+            bits.append(f"{x['tenure']:.0f} years at the firm")
+        if x.get("industry") is not None:
+            bits.append(f"{x['industry']:.0f} in the industry")
+        named.append(f"{_nice(x['name'])}" + (f" ({', '.join(bits)})" if bits else ""))
+    return pts, (f"{left} left in 12 months, {senior} senior" + (": " + "; ".join(named) if named else ""))
+
+
+def c_succession(d, c, key):
+    v = _gdetail(d).get("veterans") or {}
+    of, n30 = v.get("of") or 0, v.get("n30") or 0
+    if not of:
+        return unknown(0, "Registered people not loaded yet")
+    share = n30 / of
+    pts = 100 if share >= 0.4 else 70 if share >= 0.25 else 45 if share >= 0.15 else 25 if n30 else 0
+    return pts, f"{n30} of {of} registered people have 30+ years in the industry ({share:.0%})"
+
+
+def c_expansion(d, c, key):
+    if not d.get("growth"):
+        return unknown(0, "Growth not measured yet")
+    gd = _gdetail(d)
+    pts, bits = 0, []
+    locs = gd.get("locations") or []
+    if locs:
+        pts += 40
+        bits.append(f"new office{'s' if len(locs) > 1 else ''} in "
+                    + ", ".join(f"{(x.get('city') or '').title()}, {x.get('state') or ''}"
+                                for x in locs[:3]))
+    new_states = (gd.get("states") or {}).get("new") or []
+    if new_states:
+        pts += 30 if len(new_states) >= 2 else 20
+        bits.append("new in " + ", ".join(sorted({x["state"] for x in new_states}))[:60])
+    lifts = gd.get("lift_outs") or []
+    if lifts:
+        pts += 30
+        top = max(lifts, key=lambda x: x.get("n") or 0)
+        bits.append(f"{top['n']} people hired from {_nice(top.get('org') or 'one firm')}")
+    reg = gd.get("registered") or {}
+    if reg.get("years") is not None and reg["years"] <= 3:
+        pts += 30
+        bits.append(f"registered {reg.get('date')}")
+    types = {e.get("type") for e in gd.get("events") or []}
+    if types & {"first_private_fund", "first_real_estate_fund"}:
+        pts += 20
+        bits.append("launched its first fund")
+    if any(t and t.startswith("custodian_change") for t in types):
+        pts += 15
+        bits.append("changed custodian")
+    if not bits:
+        return 0, "No new offices, states, team hires or launches seen in the last year"
+    return min(100, pts), "; ".join(bits)
+
+
+def c_open_roles(d, c, key):
+    cr = d.get("careers") or {}
+    posts = d.get("postings") or []
+    if not cr and not posts:
+        return unknown(0, "Careers page and job boards not checked yet")
+    n = len(posts)
+    if n:
+        by: dict[str, int] = {}
+        for x in posts:
+            by[x.get("function") or "Other"] = by.get(x.get("function") or "Other", 0) + 1
+        mix = ", ".join(f"{k} {v}" for k, v in sorted(by.items(), key=lambda kv: -kv[1]))
+        return (100 if n >= 3 else 80), f"{n} open role{'s' if n != 1 else ''}: {mix}"
+    status = cr.get("status")
+    if status == "page":
+        return 20, "A careers page, with no openings listed"
+    if status == "no_openings":
+        return 10, "Careers page says there are no openings"
+    if status in ("unreachable", "no_website") and not cr.get("searched_at"):
+        return unknown(0, "Website not reachable and job boards not searched yet")
+    return 0, "No careers page or job postings found"
+
+
 # Factors an admin can add from the Scoring screen without code: any number
 # in this catalogue scored by bands, or any yes/no below scored by two levels.
 # The function returns None when the value is not known, which the score
@@ -1516,6 +1727,15 @@ FIELDS: dict[str, tuple[str, str, object]] = {
     "hires_12m": ("Advisors hired in 12 months", "int", _ppl("hires_12m")),
     "departures_12m": ("Advisors who left in 12 months", "int", _ppl("departures_12m")),
     "headcount_growth": ("Headcount growth, 12 months", "pct", _growth),
+    "aum_growth": ("Asset growth a year (Form ADV)", "pct",
+                   lambda d: (d.get("growth") or {}).get("aum_growth")),
+    "clients_growth": ("Client growth a year (Form ADV)", "pct",
+                       lambda d: (d.get("growth") or {}).get("clients_growth")),
+    "open_roles": ("Open roles posted", "int",
+                   lambda d: len(d.get("postings") or []) if d.get("careers") or d.get("postings")
+                   else None),
+    "senior_departures": ("Senior people who left in 12 months", "int",
+                          lambda d: (d.get("growth") or {}).get("departures_senior")),
     "personal_emails": ("Named people with an email", "int",
                         lambda d: d["reach"]["personal"]),
     "verified_emails": ("Verified email addresses", "int", lambda d: d["reach"]["verified"]),
@@ -1627,6 +1847,10 @@ CRITERIA = {
     "hnw_assets": c_hnw_assets, "hnw_clients": c_hnw_clients,
     "schwab_share": c_schwab_share, "clients_per_advisor": c_clients_per_advisor,
     "advisors": c_advisors,
+    "team_growth": c_team_growth, "asset_growth": c_asset_growth,
+    "client_growth": c_client_growth, "capacity_strain": c_capacity_strain,
+    "support_gap": c_support_gap, "backfill": c_backfill, "succession": c_succession,
+    "expansion": c_expansion, "open_roles": c_open_roles,
     "m365": c_m365, "black_diamond": c_black_diamond, "best_trigger": c_best_trigger,
     "advisor_count": c_advisor_count, "marketing": c_marketing,
     "portfolio_complexity": c_portfolio_complexity,
@@ -1666,8 +1890,38 @@ def talking_points(d, family: str) -> list[dict]:
     return out
 
 
+def ats_signals(d) -> list[dict]:
+    """The hiring-now flag and the growth talking points for the ATS list."""
+    out = []
+    posts = d.get("postings") or []
+    if posts:
+        titles = ", ".join(x["title"] for x in posts[:4]) + (f" and {len(posts) - 4} more"
+                                                             if len(posts) > 4 else "")
+        out.append({"kind": "flag", "label": "Hiring now", "text": titles})
+    gd = _gdetail(d)
+    t = gd.get("team") or {}
+    if t.get("now") is not None and t.get("prev") and t["now"] > t["prev"]:
+        out.append({"kind": "growth", "label": "Team growing",
+                    "text": f"{t['prev']:,} to {t['now']:,} registered people in 12 months"})
+    if (gd.get("aum") or {}).get("annual", 0) >= 0.10:
+        out.append({"kind": "growth", "label": "Assets growing",
+                    "text": _compared(gd["aum"], gd.get("period") or {}, _money)})
+    seniors = [x for x in gd.get("departures") or [] if x.get("senior")]
+    if seniors:
+        out.append({"kind": "growth", "label": "Backfill",
+                    "text": "; ".join(_nice(x["name"]) + (f" left for {_nice(x['to'])}" if x.get("to")
+                                                         else " left") for x in seniors[:2])})
+    if gd.get("locations"):
+        out.append({"kind": "growth", "label": "New office",
+                    "text": ", ".join(f"{(x.get('city') or '').title()}, {x.get('state') or ''}"
+                                      for x in gd["locations"][:3])})
+    return out
+
+
 def signals_for(d, key: str) -> list[dict]:
     fam = product(key)["family"].lower()
+    if fam == "ats":
+        return ats_signals(d)
     fam = {"phh": "phh", "acubooth": "acubooth", "glynac": "glynac"}[fam]
     out = talking_points(d, fam)
     if key == "phh_fund" and (has(d, "owner_clients") or has(d, "exchange_1031")):
@@ -1715,6 +1969,18 @@ def pitch_for(key: str, d, comps) -> str:
         if by.get("black_diamond", {}).get("points") == 100:
             return "Lead with portfolio and disclosure checks"
         return "Lead with vendor risk"
+    if key == "ats":
+        by = {c["key"]: c for c in comps}
+        if by.get("open_roles", {}).get("points", 0) >= 80:
+            return "Lead with the roles they are hiring for now"
+        if by.get("team_growth", {}).get("points", 0) >= 65:
+            return "Lead with their team growth and the hires it needs next"
+        if by.get("backfill", {}).get("points", 0) >= 70:
+            return "Lead with backfilling the senior people who left"
+        if by.get("succession", {}).get("points", 0) >= 70:
+            return "Lead with succession: the next generation of advisors"
+        if by.get("support_gap", {}).get("points", 0) >= 75:
+            return "Lead with support staff: operations and client service hires"
     return product(key).get("pitch", "")
 
 

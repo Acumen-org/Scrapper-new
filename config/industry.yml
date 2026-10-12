@@ -483,7 +483,7 @@ glossary:
 products:
   - key: acumen
     title: Acumen Strategy
-    body: Acumen Strategy uses Bellwether to find and approach the US investment advisers most likely to buy its three product families, PHH, AcuBooth and Glynac. Buyers are almost always independent wealth managers; custodians, wirehouses, broker-dealers, banks, insurers and asset managers are not.
+    body: Acumen Strategy uses Bellwether to find and approach the US investment advisers most likely to buy its four product families, PHH, AcuBooth, Glynac and ATS. Buyers of PHH, AcuBooth and Glynac are almost always independent wealth managers; custodians, wirehouses, broker-dealers, banks, insurers and asset managers are not. ATS ranks every firm on its growth.
   - key: phh
     title: PHH (Prairie Hill)
     body: Private net-lease real estate sold through advisers. PHH Fund I is an evergreen fund for advisers' HNW clients (independent RIAs with $250M to $5B, individuals half or more of assets). PHH 1031 completes clients' property exchanges (RIAs whose clients own businesses or investment property; CPAs, attorneys and intermediaries refer too). PHH JV partners with family offices and institutions writing $5M+ checks.
@@ -493,6 +493,9 @@ products:
   - key: glynac
     title: Glynac
     body: Continuous cross-system compliance, portfolio and vendor intelligence for independent RIAs (SEC-registered, $100M+, not owned by a bank, insurer or wirehouse). Supports Microsoft and Black Diamond only. Salesforce and Redtail are not supported. Competes with Hadrius and COMPLY.
+  - key: ats
+    title: ATS (Acumen Talent Solutions)
+    body: Recruiting for advisory firms that are growing and need to hire. The ATS list has no gates and ranks every firm on team growth over 12 months, asset and client growth between filings, assets per advisor rising faster than headcount, support staff per advisor against similar firms, senior departures to backfill, advisors with 30+ years (succession), expansion (new offices, new states, a team hired from one firm, a recent registration, a first fund, a custodian change) and open roles on careers pages and job boards. First call is the COO or head of operations, then the managing partner or CEO, then HR.
 
 # ------------------------------------------------- how Bellwether works
 facts:
@@ -508,6 +511,9 @@ facts:
   - key: manual_levels
     title: Manual levels and status
     body: Some factors (warm introduction, manager search) can be set by hand on a firm page; the hand-set level replaces the computed one and says who set it. Status and owner track the sales process.
+  - key: growth_tab
+    title: Growth tab
+    body: Each firm page has a Growth tab with the team now and a year ago (who joined, who left, from and to where), assets, clients and staff against the filing about a year earlier with both dates (changes over more than fifteen months are also given as a yearly rate), support staff per advisor against firms of a similar size, senior departures, advisors with 30+ years in the industry, new offices and states, and open roles by function from the firm's careers page, its tracking system and the job boards.
   - key: signals
     title: Signals
     body: Changes worth a call (new registration, assets jump, advisors added, custodian change, first private fund), detected by comparing weekly filings.

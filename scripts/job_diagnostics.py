@@ -186,6 +186,50 @@ def _ai(conn):
         print('Runtime ai config:', json.dumps({'unavailable': type(exc).__name__}))
 
 
+def _growth(conn):
+    """Growth and open roles, as counts."""
+    def one(sql):
+        try:
+            r = conn.execute(sql).fetchone()
+            return dict(r) if r else {}
+        except Exception as exc:
+            conn.rollback()
+            return {'unavailable': type(exc).__name__}
+    print('Runtime growth:', json.dumps(one("""SELECT COUNT(*) AS firms,
+        COUNT(*) FILTER (WHERE period_from IS NOT NULL) AS compared,
+        COUNT(*) FILTER (WHERE team_growth > 0) AS growing_team,
+        COUNT(*) FILTER (WHERE aum_growth >= 0.1) AS assets_up_10,
+        COUNT(*) FILTER (WHERE clients_growth IS NOT NULL) AS with_clients,
+        COUNT(*) FILTER (WHERE peer_support IS NOT NULL) AS with_peer,
+        COUNT(*) FILTER (WHERE departures_senior > 0) AS senior_departures,
+        COUNT(*) FILTER (WHERE new_locations > 0) AS new_offices,
+        COUNT(*) FILTER (WHERE new_states > 0) AS new_states,
+        MAX(computed_at) AS computed_at FROM firm_growth"""), default=str))
+    print('Runtime history staff:', json.dumps(one("""SELECT COUNT(*) AS rows,
+        COUNT(employees) AS with_staff, COUNT(clients) AS with_clients FROM firm_history"""),
+        default=str))
+    try:
+        for r in conn.execute("""SELECT status, COUNT(*) AS n, MAX(checked_at) AS latest,
+                COUNT(searched_at) AS searched FROM firm_careers GROUP BY 1 ORDER BY 2 DESC"""):
+            print('Runtime careers:', json.dumps(dict(r), default=str))
+        for r in conn.execute("""SELECT source, function, COUNT(*) AS n FROM firm_job_posting
+                WHERE active=1 GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 20"""):
+            print('Runtime open roles:', json.dumps(dict(r), default=str))
+        for r in conn.execute("""SELECT ats, COUNT(*) AS n FROM firm_careers WHERE ats IS NOT NULL
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 12"""):
+            print('Runtime tracking systems:', json.dumps(dict(r), default=str))
+        for r in conn.execute("""SELECT title FROM firm_job_posting WHERE active=1
+                ORDER BY last_seen DESC LIMIT 25"""):
+            print('Runtime role sample:', _scrub(r['title']))
+    except Exception as exc:
+        conn.rollback()
+        print('Runtime careers:', json.dumps({'unavailable': type(exc).__name__}))
+    print('Runtime ats list:', json.dumps(one("""SELECT COUNT(*) AS scored,
+        COUNT(*) FILTER (WHERE score >= 60) AS strong, ROUND(AVG(coverage)) AS avg_coverage,
+        MAX(score) AS top FROM product_score WHERE product='ats' AND status='scored'"""),
+        default=str))
+
+
 def main():
     conn = db.connect()
     try:
@@ -201,6 +245,7 @@ def main():
         _health(conn)
         _shapes(conn)
         _ai(conn)
+        _growth(conn)
         ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='firm_refresh'
               AND column_name IN ('detail','last_success_at')""").fetchone()['n']

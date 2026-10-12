@@ -263,7 +263,8 @@ def _init_once() -> None:
     settings.init(c)
     users.init(c)
     for mod in ("contacts", "jobs", "ai", "roles", "people", "verify", "directory",
-                "websignals", "firmtype", "knowledge", "websearch", "health", "ocr"):
+                "websignals", "firmtype", "knowledge", "websearch", "health", "ocr",
+                "growth", "openroles"):
         _init_optional(c, mod)
     # A fresh start: a run left "running" from before it is a ghost of the
     # previous container, whatever its age.
@@ -687,7 +688,8 @@ ICONS = {
     "bolt": f'<svg viewBox="0 0 24 24" {I}><path d="M13 2.5L4.5 13.5H12l-1 8 8.5-11H12z"/></svg>',
     "chart": f'<svg viewBox="0 0 24 24" {I}><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
 }
-FAMILY_COLOUR = {"PHH": "#c65454", "AcuBooth": "#cfa95c", "Glynac": "#63aa7c"}
+FAMILY_COLOUR = {"PHH": "#c65454", "AcuBooth": "#cfa95c", "Glynac": "#63aa7c",
+                 "ATS": "#6f95c8"}
 
 _NAV_CACHE: dict = {"t": 0.0}
 

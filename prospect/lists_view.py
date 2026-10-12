@@ -66,7 +66,8 @@ def _categories() -> list[tuple[str, str]]:
         return []
 
 
-def _where(key, q, st, owner, stat, sig, reach, cov, status="scored", size="", cat=""):
+def _where(key, q, st, owner, stat, sig, reach, cov, status="scored", size="", cat="",
+           hiring=""):
     where = ["p.product=?", "p.status=?"]
     args: list = [key, status]
     if q:
@@ -121,6 +122,9 @@ def _where(key, q, st, owner, stat, sig, reach, cov, status="scored", size="", c
     if cat:
         where.append("EXISTS (SELECT 1 FROM firm_class fc WHERE fc.crd=p.crd AND fc.category=?)")
         args.append(cat)
+    if hiring == "1":
+        # Open roles on the firm's careers page, tracking system or a job board.
+        where.append("EXISTS (SELECT 1 FROM firm_job_posting j WHERE j.crd=p.crd AND j.active=1)")
     return " AND ".join(where), args
 
 
@@ -145,7 +149,7 @@ def can_edit(key: str) -> bool:
 def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
                  st: str = Query(""), owner: str = Query(""), stat: str = Query(""),
                  sig: str = Query(""), reach: str = Query(""), cov: str = Query(""),
-                 size: str = Query(""), cat: str = Query(""),
+                 size: str = Query(""), cat: str = Query(""), hiring: str = Query(""),
                  sort: str = Query("score"), page_n: int = Query(1, ge=1, alias="page"),
                  per: int = Query(50, ge=10, le=200), msg: str = Query(""),
                  err: str = Query("")):
@@ -173,8 +177,18 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
     except Exception:
         c.rollback()
 
+    have_roles = _has_table(c, "firm_job_posting")
+    hiring = hiring if hiring == "1" and have_roles else ""
+    hiring_n = 0
+    if have_roles:
+        try:
+            hiring_n = c.execute("""SELECT COUNT(DISTINCT p.crd) n FROM product_score p
+                JOIN firm_job_posting j ON j.crd=p.crd AND j.active=1
+                WHERE p.product=? AND p.status='scored'""", (key,)).fetchone()["n"]
+        except Exception:
+            c.rollback()
     qs = qs_join(q=q, st=st, owner=owner, stat=stat, sig=sig, reach=reach, cov=cov,
-                 size=size, cat=cat, sort=sort if sort != "score" else "")
+                 size=size, cat=cat, hiring=hiring, sort=sort if sort != "score" else "")
 
     def tab(v, label, n=None):
         cls = "on" if view == v else ""
@@ -183,14 +197,17 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
 
     kpis = (f'<div class="kpis" style="margin-bottom:22px">'
             f'<a class="kpi" href="/lists/{key}"><div class="l">Firms ranked</div><div class="n">{stats["n"] or 0:,}</div>'
-            f'<div class="d">passed every gate</div></a>'
+            f'<div class="d">{"passed every gate" if p.get("gates") else "every firm, no gates"}</div></a>'
             f'<a class="kpi{" accent" if sig else ""}" href="/lists/{key}?sig=1"><div class="l">New signal</div>'
             f'<div class="n">{fresh_n:,}</div><div class="d">in the last 60 days</div></a>'
             f'<a class="kpi" href="/lists/{key}?reach=email"><div class="l">Reachable</div><div class="n">{reach_n:,}</div>'
             f'<div class="d">a named person\'s email</div></a>'
-            f'<div class="kpi"><div class="l">Score 60 or more</div><div class="n">{stats["hi"] or 0:,}</div>'
-            f'<div class="d">strong fit</div></div>'
-            f'<a class="kpi{" accent" if cov == "full" else ""}" href="/lists/{key}?cov=full"><div class="l">Data coverage</div>'
+            + (f'<a class="kpi{" accent" if hiring else ""}" href="/lists/{key}?hiring=1"><div class="l">Hiring now</div>'
+               f'<div class="n">{hiring_n:,}</div><div class="d">open roles posted</div></a>'
+               if p.get("family") == "ATS" else
+               f'<div class="kpi"><div class="l">Score 60 or more</div><div class="n">{stats["hi"] or 0:,}</div>'
+               f'<div class="d">strong fit</div></div>')
+            + f'<a class="kpi{" accent" if cov == "full" else ""}" href="/lists/{key}?cov=full"><div class="l">Data coverage</div>'
             f'<div class="n">{stats["cov"] or 0:.0f}%</div><div class="d">{stats["full_n"] or 0:,} scored on 90%+ known data</div></a>'
             f'</div>')
 
@@ -200,7 +217,7 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
         body_main = _disq(c, key, q, page_n, per)
     else:
         body_main = _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n,
-                            per, qs, size, cat)
+                            per, qs, size, cat, hiring if have_roles else None)
     c.close()
 
     note = (f'<details class="source-help"><summary>How this list is built</summary><p>{esc(p["note"].strip())}</p></details>'
@@ -272,8 +289,11 @@ def _reach_cell(f: dict) -> str:
     return f'<div class="pills">{"".join(bits)}</div>'
 
 
-def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, qs, size="", cat=""):
-    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat)
+def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, qs, size="", cat="",
+            hiring=None):
+    """hiring is None when open roles have not been looked for yet (no table)."""
+    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat,
+                         hiring=hiring or "")
     base = BASE.format(where=where)
     total = c.execute(f"SELECT COUNT(*) n {base}", args).fetchone()["n"]
     have_people = _has_table(c, "firm_people_stats")
@@ -295,9 +315,16 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
                      [signal_cutoff()] + args + [per, (page_n - 1) * per]).fetchall()
     crds = [r["crd"] for r in rows]
     flags = ui.contact_flags(c, crds)
-    trig, ftypes = {}, {}
+    trig, ftypes, roles_n = {}, {}, {}
     if crds:
         ph = ",".join("?" * len(crds))
+        if hiring is not None:
+            try:
+                roles_n = {r["crd"]: r["n"] for r in c.execute(
+                    f"""SELECT crd, COUNT(DISTINCT LOWER(title)) n FROM firm_job_posting
+                        WHERE active=1 AND crd IN ({ph}) GROUP BY crd""", tuple(crds))}
+            except Exception:
+                c.rollback()
         for r in c.execute(f"""SELECT DISTINCT ON (crd) crd, trigger_type, detected_date
                 FROM trigger_event WHERE crd IN ({ph}) AND suppressed=0
                   AND detected_date >= ? ORDER BY crd, detected_date DESC""",
@@ -325,6 +352,10 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
         if low:
             tags.append(f'<span class="chip warn" title="{esc(low["evidence"])}. '
                         f'{esc(_num(low["points"]))} points off.">Not a usual buyer</span>')
+        if roles_n.get(r["crd"]):
+            n_roles = roles_n[r["crd"]]
+            tags.append(f'<a class="chip good" href="/firm/{esc(r["crd"])}#growth-roles">Hiring now'
+                        f' &middot; {n_roles} role{"s" if n_roles != 1 else ""}</a>')
         ft = ftypes.get(r["crd"]) if ftypes else None
         if ft and ft.get("category"):
             tags.append(f'<span class="ftype">{esc(ft.get("short") or ft.get("label") or ft["category"])}</span>')
@@ -359,7 +390,7 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
     prev = f'<a href="/lists/{key}?{qs}&page={page_n-1}">Previous</a>' if page_n > 1 else ""
     nxt = f'<a href="/lists/{key}?{qs}&page={page_n+1}">Next</a>' if page_n < pages else ""
     vals = dict(q=q, st=st, owner=owner, stat=stat, sig=sig, reach=reach, cov=cov, size=size,
-                cat=cat, sort=sort)
+                cat=cat, sort=sort, hiring=hiring or "")
     more = [("cov", "Data coverage", [("", "Any coverage"), ("full", "90%+ known"),
                                       ("most", "70%+ known"), ("gaps", "Big gaps")]),
             ("owner", "Owner", [("", "Anyone"), ("me", "Mine"), ("none", "Unclaimed")]),
@@ -376,7 +407,9 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
                                                    ("verified", "Verified email"),
                                                    ("phone", "Direct line"), ("linkedin", "LinkedIn"),
                                                    ("none", "No email yet")]),
-                               ("sig", "Signal", [("", "Any signal"), ("1", "New signal, 60 days")])],
+                               ("sig", "Signal", [("", "Any signal"), ("1", "New signal, 60 days")])]
+                        + ([("hiring", "Hiring", [("", "Hiring or not"), ("1", "Hiring now")])]
+                           if hiring is not None else []),
                         more=more, defaults={"sort": "score"})
     return f"""{bar}
 <div class="resbar"><span><b>{total:,}</b> firm{"s" if total != 1 else ""}</span>
@@ -643,7 +676,7 @@ other factors so the total stays 100.</p>
 
     return f"""<div class="rules editor">{flash}{intro}{who}
 <form method="post" action="/lists/{key}/scoring">
-<h3 style="margin-top:22px">Gates</h3>{"".join(gates) or '<p class="muted">None</p>'}
+<h3 style="margin-top:22px">Gates</h3>{"".join(gates) or '<p class="muted">No gates: every firm is ranked on this list.</p>'}
 {ftype_html}
 <h3 style="margin-top:22px">Scored factors</h3>
 <table><thead><tr><th>Factor</th><th>Weight</th><th>Points for each level</th></tr></thead>
@@ -823,12 +856,14 @@ def scoring_reset(key: str):
 @router.get("/lists/{key}/export.csv")
 def export_list(key: str, q: str = "", st: str = "", owner: str = "", stat: str = "",
                 sig: str = "", reach: str = "", cov: str = "",
-                size: str = "", cat: str = ""):
+                size: str = "", cat: str = "", hiring: str = ""):
     p = _key_or_none(key)
     if p is None:
         return RedirectResponse("/", status_code=303)
     c = conn()
-    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat)
+    hiring = hiring if hiring == "1" and _has_table(c, "firm_job_posting") else ""
+    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat,
+                         hiring=hiring)
     rows = c.execute(f"""
         SELECT p.rank, p.crd, f.legal_name, f.city, f.state, f.raum, f.website, f.phone,
                p.score, p.coverage, p.potential, p.missing, p.detail_json, s.owner, s.status
@@ -860,7 +895,7 @@ def export_list(key: str, q: str = "", st: str = "", owner: str = "", stat: str 
 @router.get("/lists/{key}/export.xlsx")
 def export_contacts(key: str, q: str = "", st: str = "", owner: str = "", stat: str = "",
                     sig: str = "", reach: str = "", cov: str = "",
-                size: str = "", cat: str = ""):
+                size: str = "", cat: str = "", hiring: str = ""):
     """The mail-merge sheet for exactly the firms on screen: one row per person
     and address, with where it came from and whether a mail server confirmed it."""
     from .firms_view import contacts_rows
@@ -868,7 +903,9 @@ def export_contacts(key: str, q: str = "", st: str = "", owner: str = "", stat: 
     if p is None:
         return RedirectResponse("/", status_code=303)
     c = conn()
-    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat)
+    hiring = hiring if hiring == "1" and _has_table(c, "firm_job_posting") else ""
+    where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat,
+                         hiring=hiring)
     crds = [r["crd"] for r in c.execute(
         f"SELECT p.crd {BASE.format(where=where)} ORDER BY p.rank LIMIT 5000", args)]
     ranks = {r["crd"]: (r["rank"], r["score"], r["coverage"]) for r in c.execute(

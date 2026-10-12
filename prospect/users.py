@@ -5,7 +5,7 @@ Three seats:
   admin          everything, including Settings, Enrichment sources, users and
                  every product's scoring
   owner          a product owner: edits the scoring of the products they own
-                 (PHH, AcuBooth or Glynac) and manages enrichment sources;
+                 (PHH, AcuBooth, Glynac or ATS) and manages enrichment sources;
                  no Settings
   user           works the lists: statuses, notes, manual levels on a firm,
                  saved lists, Bellwether AI; changes no configuration
@@ -30,7 +30,7 @@ from . import settings
 
 ROLES = ("admin", "owner", "user")
 ROLE_LABEL = {"admin": "Admin", "owner": "Product owner", "user": "User"}
-FAMILIES = ("PHH", "AcuBooth", "Glynac")
+FAMILIES = ("PHH", "AcuBooth", "Glynac", "ATS")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_user (

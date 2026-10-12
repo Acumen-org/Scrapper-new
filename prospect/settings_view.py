@@ -266,7 +266,7 @@ A password is only for someone without Microsoft sign-in.</p>
 <label>Password (optional)<input type="password" name="password" autocomplete="new-password"></label>
 <button class="primary" type="submit">Add</button></form></section>"""
     inner = (f'<p class="lede">Admins see Settings and can change everything. Product owners '
-             f'change the scoring of the products they own (PHH, AcuBooth, Glynac) and manage '
+             f'change the scoring of the products they own (PHH, AcuBooth, Glynac, ATS) and manage '
              f'enrichment sources. Users work the lists.</p>'
              f'<table><thead><tr><th>Person</th><th>Seat</th><th>Sign-in</th><th></th></tr></thead>'
              f'<tbody>{"".join(rows)}</tbody></table>{add}')

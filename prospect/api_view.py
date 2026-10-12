@@ -221,6 +221,17 @@ def api_crawl(crd: str, url: str = Form("")):
                             "here in a few minutes.")
 
 
+@router.post("/api/firm/{crd}/roles")
+def api_roles(crd: str):
+    """This firm's careers page, tracking system and job boards, now."""
+    if not CRD_RE.match(crd):
+        return _j(False, message="Not a firm")
+    _bg([sys.executable, "-m", "scripts.find_open_roles", "--crd", crd, "--also-boards"],
+        "open_roles.log")
+    return _j(True, message="Checking the careers page and the job boards now. Open roles "
+                            "appear in the Growth tab within a minute or two.")
+
+
 @router.post("/api/firm/{crd}/hunt")
 def api_hunt(crd: str):
     """Every contact discovery step for this one firm, now, in the background."""

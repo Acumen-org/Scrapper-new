@@ -45,6 +45,7 @@ PRODUCTS = [
     (r"\bphh\s*jv\b|\bphh joint ventures?\b", "phh_jv"),
     (r"\bacu\s*booth\b", "acubooth"),
     (r"\bglynac\b", "glynac"),
+    (r"\bats\b|\bacumen talent( solutions)?\b|\btalent solutions\b", "ats"),
 ]
 TAGS = [
     (r"\bcovered calls?\b", "covered_calls"),
