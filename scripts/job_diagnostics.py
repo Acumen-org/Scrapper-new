@@ -230,6 +230,58 @@ def _growth(conn):
         default=str))
 
 
+def _list_speed():
+    """Render each product list's first page as the app does and time every
+    statement it runs, slowest first. Reads only."""
+    import time
+    from prospect import webapp, lists_view
+    real_connect = db.connect
+    log = []
+
+    class Timed:
+        def __init__(self, c):
+            self._c = c
+
+        def execute(self, sql, args=()):
+            t = time.perf_counter()
+            try:
+                return self._c.execute(sql, args)
+            finally:
+                log.append((time.perf_counter() - t, " ".join(str(sql).split())[:150]))
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    def timed_connect(*a, **k):
+        return Timed(real_connect(*a, **k))
+
+    token = webapp.CURRENT_ACCOUNT.set({"login": "diagnostics", "role": "admin", "name": "Diagnostics",
+                                        "active": 1, "families": []})
+    db.connect = timed_connect
+    lists_view.conn = timed_connect
+    try:
+        for key in ("ats", "glynac", "phh_fund"):
+            log.clear()
+            t = time.perf_counter()
+            try:
+                lists_view.product_list(key, view="ranked", q="", st="", owner="", stat="", sig="",
+                                        reach="", cov="", size="", cat="", hiring="", sort="score",
+                                        page_n=1, per=50, msg="", err="")
+                status = "ok"
+            except Exception as exc:
+                status = type(exc).__name__ + ": " + str(exc)[:120]
+            total = time.perf_counter() - t
+            print("Runtime list speed:", json.dumps({"list": key, "seconds": round(total, 2),
+                  "sql_seconds": round(sum(x[0] for x in log), 2), "statements": len(log),
+                  "status": status}))
+            for secs, sql in sorted(log, reverse=True)[:6]:
+                print("Runtime list sql:", key, f"{secs:.2f}s", sql)
+    finally:
+        db.connect = real_connect
+        lists_view.conn = webapp.conn
+        webapp.CURRENT_ACCOUNT.reset(token)
+
+
 def main():
     conn = db.connect()
     try:
@@ -246,6 +298,7 @@ def main():
         _shapes(conn)
         _ai(conn)
         _growth(conn)
+        _list_speed()
         ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='firm_refresh'
               AND column_name IN ('detail','last_success_at')""").fetchone()['n']
