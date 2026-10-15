@@ -328,7 +328,6 @@ def _scoring(conn):
 def _consistency(conn):
     """The same quantity as each screen counts it, side by side, so figures
     that should agree can be checked against each other. Counts only."""
-    from datetime import date, timedelta
 
     def one(sql, args=()):
         try:
@@ -344,34 +343,13 @@ def _consistency(conn):
         (SELECT COUNT(*) FROM people_index WHERE has_email=1) AS index_email,
         (SELECT COUNT(*) FROM people_index WHERE email_status='valid') AS index_verified,
         (SELECT COUNT(*) FROM people_index WHERE title IS NOT NULL) AS index_titled,
-        (SELECT COUNT(DISTINCT (crd, person_key)) FROM contact_point WHERE person_key LIKE 'n:%') AS site_people,
-        (SELECT COUNT(DISTINCT (crd, person_key)) FROM contact_point WHERE person_key LIKE 'n:%'
-            AND title IS NOT NULL AND title != '') AS site_people_titled""")))
+        (SELECT COUNT(*) FROM people_index WHERE indvl_pk IS NULL) AS index_unregistered""")))
     print('Runtime counts firms:', json.dumps(one("""SELECT
         (SELECT COUNT(*) FROM firm_current WHERE is_era=0) AS firms,
         (SELECT COUNT(*) FROM firm_scope) AS scope,
         (SELECT COUNT(DISTINCT crd) FROM product_score WHERE status='scored') AS on_any_list,
         (SELECT COUNT(DISTINCT crd) FROM product_score WHERE status='scored' AND product != 'ats') AS on_non_ats,
         (SELECT COUNT(*) FROM product_score WHERE product='ats' AND status='scored' AND score >= 50) AS ats_50""")))
-    cutoff = (date.today() - timedelta(days=60)).isoformat()
-    for key in ('ats', 'glynac', 'phh_fund'):
-        print('Runtime counts list:', key, json.dumps(one("""SELECT
-            (SELECT COUNT(*) FROM product_score WHERE product=? AND status='scored') AS kpi_n,
-            (SELECT COUNT(*) FROM product_score p JOIN firm_current f ON f.crd=p.crd
-                WHERE p.product=? AND p.status='scored') AS table_n,
-            (SELECT COUNT(*) FROM product_score p WHERE p.product=? AND p.status='scored' AND EXISTS (
-                SELECT 1 FROM trigger_event t LEFT JOIN trigger_action a ON a.trigger_id=t.id
-                WHERE t.crd=p.crd AND t.suppressed=0 AND a.state IS NULL AND t.detected_date >= ?)) AS list_fresh,
-            (SELECT COUNT(DISTINCT t.crd) FROM trigger_event t JOIN product_score p ON p.crd=t.crd
-                AND p.product=? AND p.status='scored' WHERE t.suppressed=0 AND t.detected_date >= ?) AS home_fresh,
-            (SELECT COUNT(*) FROM product_score p WHERE p.product=? AND p.status='scored' AND EXISTS (
-                SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'
-                AND x.person_key != '' AND x.is_role=0)) AS list_reach,
-            (SELECT COUNT(*) FROM product_score p WHERE p.product=? AND p.status='scored' AND EXISTS (
-                SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'
-                AND x.person_key != '' AND x.is_role=0 AND x.source != 'pattern'
-                AND x.verify_status NOT IN ('invalid','no_mail_server'))) AS home_reach""",
-            (key, key, key, cutoff, key, cutoff, key, key)), default=str))
 
 
 def _page_speed():
@@ -450,12 +428,12 @@ def main():
         print('Runtime release:', json.dumps([dict(row) for row in releases]))
         _scoring(conn)
         _consistency(conn)
+        _page_speed()
         _health(conn)
         _shapes(conn)
         _ai(conn)
         _growth(conn)
         _list_speed()
-        _page_speed()
         ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='firm_refresh'
               AND column_name IN ('detail','last_success_at')""").fetchone()['n']
