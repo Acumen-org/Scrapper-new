@@ -344,6 +344,16 @@ def _consistency(conn):
         (SELECT COUNT(*) FROM people_index WHERE email_status='valid') AS index_verified,
         (SELECT COUNT(*) FROM people_index WHERE title IS NOT NULL) AS index_titled,
         (SELECT COUNT(*) FROM people_index WHERE indvl_pk IS NULL) AS index_unregistered""")))
+    try:
+        for r in conn.execute("""SELECT src, COUNT(*) AS n, COUNT(desig) AS tagged,
+                COUNT(title) AS titled FROM people_index GROUP BY src ORDER BY src"""):
+            print('Runtime people sources:', json.dumps(dict(r)))
+        print('Runtime ats designations:', json.dumps({r['d']: r['n'] for r in conn.execute(
+            """SELECT d, COUNT(*) AS n FROM people_index, unnest(desig) d
+               WHERE d LIKE 'ats:%' GROUP BY d ORDER BY 2 DESC""")}))
+    except Exception as exc:
+        conn.rollback()
+        print('Runtime people sources: unavailable', type(exc).__name__)
     print('Runtime counts firms:', json.dumps(one("""SELECT
         (SELECT COUNT(*) FROM firm_current WHERE is_era=0) AS firms,
         (SELECT COUNT(*) FROM firm_scope) AS scope,
