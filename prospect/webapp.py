@@ -264,7 +264,7 @@ def _init_once() -> None:
     users.init(c)
     for mod in ("contacts", "jobs", "ai", "roles", "people", "verify", "directory",
                 "websignals", "firmtype", "knowledge", "websearch", "health", "ocr",
-                "growth", "openroles", "designations"):
+                "growth", "openroles"):
         _init_optional(c, mod)
     # A fresh start: a run left "running" from before it is a ghost of the
     # previous container, whatever its age.

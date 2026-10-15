@@ -11,9 +11,9 @@ screen, so every filter is a single indexed read and the page answers in a
 blink however the list is cut.
 
 Designations are the job titles each product's sellers look for: pick a
-product list and its designations appear as one-click filters (Head of Talent
-Acquisition for ATS, Chief Compliance Officer for Glynac), or type any title.
-Admins and a product's owner edit the list from here.
+product list and the Designation filter offers its titles (Head of Talent
+Acquisition for ATS, Chief Compliance Officer for Glynac), any number at once,
+or any title typed by hand. They are defined in config/designations.yml.
 """
 
 from __future__ import annotations
@@ -24,13 +24,12 @@ import time
 from datetime import date, timedelta
 from functools import lru_cache
 
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi import APIRouter, Query
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from . import designations, people_index, products, roles, ui, users
+from . import designations, people_index, products, roles, ui
 from .names import first_name
-from .webapp import (conn, current_account, current_owner, esc, escn, is_admin, money, nice_name,
-                     page, qs_join)
+from .webapp import conn, esc, escn, money, nice_name, page, qs_join
 
 router = APIRouter()
 
@@ -197,15 +196,6 @@ def _vals(f: dict, **change) -> dict:
     return v
 
 
-def can_edit_designations(product: str) -> bool:
-    if product == designations.GENERAL:
-        return is_admin()
-    try:
-        return users.can_edit_product(current_account(), products.product(product)["family"])
-    except KeyError:
-        return False
-
-
 def _person_row(r, prod_tags: list, active: tuple = ()) -> str:
     title = roles.clean_title(r["title"]) or ("Officer" if r["is_officer"] else "Registered representative")
     src = r.get("src") or "sec"
@@ -256,51 +246,50 @@ def _person_row(r, prod_tags: list, active: tuple = ()) -> str:
             f'<td>{reach}</td><td>{joined}</td></tr>')
 
 
-def _designation_strip(f: dict, cols: set, minute: int) -> tuple[str, set]:
-    """The chosen product's designations as one-click filters with counts, and
-    a box to type any other title."""
+def _designation_menu(f: dict, cols: set, minute: int) -> tuple[str, list]:
+    """The Designation filter: the chosen product's job titles as a dropdown
+    of checkboxes with how many people hold each, and a box for any other
+    title. Applied with its own button, like More filters."""
     prod = _product(f["on"]) or designations.GENERAL
     items = designations.for_product(prod)
-    tags = tuple(designations.tag(prod, d["key"]) for d in items)
-    if "desig" not in cols:
-        return ('<div class="desig"><div class="desig-head"><b>Designation</b><span class="meta">'
-                'Designation filters arrive with the next rebuild of the people index, within '
-                'half an hour.</span></div></div>'), set(tags)
-    where, args = _where(f, cols, skip="des")
-    counts = _desig_counts(where, tuple(args), tags, minute)
-    chips = []
-    for d, t in zip(items, tags):
-        on = t in f["des"]
-        nxt = tuple(x for x in f["des"] if x != t) if on else f["des"] + (t,)
-        href = "/people?" + qs_join(**_vals(f, des=",".join(nxt)))
-        n = counts.get(t, 0)
-        chips.append(f'<a class="dchip{" on" if on else ""}{" zero" if not n and not on else ""}" '
-                     f'href="{esc(href)}" aria-pressed="{"true" if on else "false"}">{esc(d["label"])}'
-                     f'<span class="cnt">{n:,}</span></a>')
-    keep = "".join(f'<input type="hidden" name="{k}" value="{esc(v)}">'
-                   for k, v in _vals(f).items() if v and k != "title")
-    typed = (f'<form class="dtyped" method="get" action="/people">{keep}'
-             f'<input type="text" name="title" value="{esc(f["title"])}" placeholder="Type any title"'
-             f' aria-label="Type a title to find" autocomplete="off">'
-             f'<button type="submit" class="sm">Find</button></form>')
-    if prod == designations.GENERAL:
-        scope = "Common titles. Pick a product list above for its own."
-    else:
-        scope = f"For {esc(products.product(prod)['name'])}"
-    edit = (f'<a class="desig-edit" href="/people/designations/{esc(prod)}">Edit designations</a>'
-            if can_edit_designations(prod) else "")
-    html = (f'<div class="desig"><div class="desig-head"><b>Designation</b>'
-            f'<span class="meta">{scope}. Choose several to see anyone who holds one of them.</span>{edit}</div>'
-            f'<div class="desig-row"><div class="dchips">{"".join(chips)}</div>{typed}</div></div>')
+    tags = [designations.tag(prod, d["key"]) for d in items]
     # In the product's own order, most specific first, for the row badges.
-    return html, (list(tags) if prod != designations.GENERAL else [])
+    badge_tags = tags if prod != designations.GENERAL else []
+    if "desig" not in cols:
+        return "", badge_tags
+    where, args = _where(f, cols, skip="des")
+    counts = _desig_counts(where, tuple(args), tuple(tags), minute)
+    opts = "".join(
+        f'<label class="fdes-opt"><input type="checkbox" name="des" value="{esc(t)}"'
+        f'{" checked" if t in f["des"] else ""}><span>{esc(d["label"])}</span>'
+        f'<span class="cnt">{counts.get(t, 0):,}</span></label>'
+        for d, t in zip(items, tags))
+    # A title picked under another list stays in force until removed.
+    others = "".join(f'<input type="hidden" name="des" value="{esc(t)}">'
+                     for t in f["des"] if t not in tags)
+    if prod == designations.GENERAL:
+        head = ('<b>Common titles</b><span class="meta">Choose a product list to see the titles '
+                'it sells to.</span>')
+    else:
+        head = (f'<b>Titles {esc(products.product(prod)["name"])} sells to</b>'
+                f'<span class="meta">Choose any number to see anyone who holds one of them.</span>')
+    n = len(f["des"]) + (1 if f["title"] else 0)
+    clear = "/people?" + qs_join(**_vals(f, des="", title=""))
+    html = (f'<details class="fmore fdes{" set" if n else ""}"><summary>Designation'
+            f'{f"<b>{n}</b>" if n else ""}</summary><div class="fpanel">'
+            f'<div class="fdes-head">{head}</div><div class="fdes-list">{opts}</div>{others}'
+            f'<label class="fdes-typed">Or type any title<input type="text" name="title" '
+            f'value="{esc(f["title"])}" placeholder="For example, Chief of Staff" autocomplete="off"></label>'
+            f'<div class="fact"><a class="btn ghost" href="{esc(clear)}">Clear</a>'
+            f'<button class="primary" type="submit">Apply</button></div></div></details>')
+    return html, badge_tags
 
 
 @router.get("/people", response_class=HTMLResponse)
 def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
                 view: str = Query(""), role: str = Query(""), joined: str = Query(""),
                 cred: str = Query(""), disc: str = Query(""), size: str = Query(""),
-                cat: str = Query(""), src: str = Query(""), des: str = Query(""),
+                cat: str = Query(""), src: str = Query(""), des: list[str] = Query([]),
                 title: str = Query(""), sort: str = Query(""),
                 page_n: int = Query(1, ge=1, alias="page"),
                 per: int = Query(50, ge=10, le=200),
@@ -309,7 +298,9 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
                 desig: str = Query("")):
     # Called directly (the release check renders this page in Python), any
     # filter left out arrives as FastAPI's Query default rather than a string.
-    s = {k: (v if isinstance(v, str) else "") for k, v in dict(
+    # Designations come ticked in the filter (des=a&des=b) or in links (des=a,b).
+    s = {k: (v if isinstance(v, str) else ",".join(x for x in v if isinstance(x, str))
+             if isinstance(v, (list, tuple)) else "") for k, v in dict(
         q=q, st=st, on=on, view=view, role=role, joined=joined, cred=cred, disc=disc, size=size,
         cat=cat, src=src, des=des, title=title, sort=sort, reach=reach, officers=officers,
         cfp=cfp, desig=desig).items()}
@@ -376,12 +367,13 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
              for t in f["des"]]
     if f["title"]:
         extra.append((f'Title: {f["title"]}', "/people?" + qs_join(**_vals(f, title=""))))
+    menu, prod_tags = _designation_menu(f, cols, minute)
     bar = ui.filter_bar("/people", {k: v for k, v in vals.items() if k not in ("des", "title")},
                         search=("q", "Search people, firms or CRD"),
                         quick=[("on", "List", lists), ("st", "State", states)],
-                        more=more, hidden={"view": f["view"]},
-                        carry={"des": vals["des"], "title": f["title"]}, extra_chips=extra)
-    strip, prod_tags = _designation_strip(f, cols, minute)
+                        more=more, hidden={"view": f["view"]}, menus=[menu] if menu else [],
+                        carry={} if menu else {"des": vals["des"], "title": f["title"]},
+                        extra_chips=extra)
     pages = max(1, -(-total // per))
     prev = f'<a href="/people?{qs}&page={page_n - 1}">Previous</a>' if page_n > 1 else ""
     nxt = f'<a href="/people?{qs}&page={page_n + 1}">Next</a>' if page_n < pages else ""
@@ -398,7 +390,6 @@ staff firm websites name. Filter by the titles your product sells to.</p></div>
 <a class="btn" href="/people/export.csv?{qs}" data-noprefetch>Export</a></div></div>
 <nav class="tabs">{tabs}</nav>
 {bar}
-{strip}
 <div class="resbar"><span><b>{total:,}</b> {"person" if total == 1 else "people"}</span>
 <span class="muted small">Page {page_n} of {pages:,}</span></div>
 <div class="table-scroll"><table><thead><tr><th style="width:28%">Person</th><th>First name</th><th style="width:26%">Firm</th>
@@ -452,148 +443,3 @@ def people_export(q: str = "", st: str = "", on: str = "", view: str = "", role:
         w.writerow(out)
     return PlainTextResponse(buf.getvalue(), media_type="text/csv",
                              headers={"Content-Disposition": 'attachment; filename="people.csv"'})
-
-
-# ------------------------------------------------------------------ editing
-
-@lru_cache(maxsize=2)
-def _title_counts(ten_minutes: int) -> list[tuple[str, int]]:
-    """The commonest titles in the index, for the editor's preview."""
-    c = conn()
-    try:
-        return [(r["title"], r["n"]) for r in c.execute(
-            "SELECT title, COUNT(*) n FROM people_index WHERE title IS NOT NULL AND title != ''"
-            " GROUP BY title ORDER BY n DESC LIMIT 30000")]
-    except Exception:
-        c.rollback()
-        return []
-    finally:
-        c.close()
-
-
-def _preview(d: dict, titles: list[tuple[str, int]]) -> str:
-    anyp = [tuple(designations.words(p)) for p in d["any"]]
-    notp = [tuple(designations.words(p)) for p in d["not"]]
-    hits, n = [], 0
-    for t, k in titles:
-        tw = designations.words(t)
-        if any(designations._hit(tw, p) for p in anyp) and not any(designations._hit(tw, p) for p in notp):
-            n += k
-            if len(hits) < 4:
-                ct = roles.clean_title(t)
-                hits.append(f"{ct if len(ct) <= 48 else ct[:46].rstrip(' ,') + '…'} ({k:,})")
-    if not n:
-        return '<div class="meta warnc">No titles in the index match yet.</div>'
-    return (f'<div class="small"><b>{n:,}</b> people</div>'
-            f'<div class="meta">{esc(", ".join(hits))}</div>')
-
-
-@router.get("/people/designations/{prod}", response_class=HTMLResponse)
-def designations_page(prod: str, msg: str = Query(""), err: str = Query("")):
-    if prod != designations.GENERAL and prod not in products.product_keys():
-        return RedirectResponse("/people", status_code=303)
-    edit = can_edit_designations(prod)
-    name = "Common titles" if prod == designations.GENERAL else products.product(prod)["name"]
-    items = designations.for_product(prod)
-    titles = _title_counts(int(time.monotonic() // 600))
-    dis = "" if edit else " disabled"
-    rows = []
-    for i, d in enumerate(items + [{"key": "", "label": "", "any": [], "not": []}] * (2 if edit else 0)):
-        new = not d["label"]
-        phrases = ", ".join(d["any"])
-        # Tall enough to show every phrase without scrolling the box.
-        lines = max(2, min(7, -(-len(phrases) // 34)))
-        rows.append(
-            f'<tr><td><input type="hidden" name="k-{i}" value="{esc(d["key"])}">'
-            f'<textarea name="l-{i}" rows="2" class="dname" aria-label="Designation name"{dis}'
-            f' placeholder="{"Add a designation" if new else ""}">{esc(d["label"])}</textarea></td>'
-            f'<td><textarea name="a-{i}" rows="{lines}" aria-label="Titles that count"{dis}'
-            f' placeholder="{"e.g. head of talent, recruiting director" if new else ""}">{esc(phrases)}</textarea></td>'
-            f'<td><input type="text" name="n-{i}" value="{esc(", ".join(d["not"]))}" aria-label="Except titles with"{dis}></td>'
-            f'<td>{"" if new else _preview(d, titles)}</td>'
-            f'<td class="num">{"" if new or not edit else f"<label class=inline><input type=checkbox name=x-{i} value=1> Remove</label>"}</td></tr>')
-    ed = designations.edited(prod)
-    who = (f'Last changed by {esc(ed["by"] or "someone")} on {esc((ed["at"] or "")[:16].replace("T", " "))} UTC.'
-           if ed else "These are the shipped defaults from config/designations.yml.")
-    flash = (f'<div class="note good">{esc(msg)}</div>' if msg else "") + (
-        f'<div class="note bad">{esc(err)}</div>' if err else "")
-    actions = ""
-    if edit:
-        actions = (f'<div class="savebar"><span class="muted small">{len(items)} designations</span>'
-                   f'<span class="spacer"></span><button type="submit" class="primary">Save designations</button></div>')
-    reset = (f'<form method="post" action="/people/designations/{esc(prod)}/reset" style="margin-top:12px" '
-             f'onsubmit="return confirm(\'Put these designations back to the shipped defaults?\')">'
-             f'<button type="submit" class="ghost sm">Reset to the shipped defaults</button></form>'
-             if edit and ed else "")
-    back = "/people?" + qs_join(on="" if prod == designations.GENERAL else prod)
-    body = f"""<div class="pg">
-<div class="crumb"><a href="/people">People</a><span class="sep">/</span>Designations</div>
-<div class="head"><div><h1>{esc(name)} designations</h1>
-<p class="lede">The job titles sellers filter People by when {esc(name if prod != designations.GENERAL else "no list")} is
-chosen. A designation counts anyone whose title matches one of its phrases.</p></div>
-<div class="acts"><a class="btn" href="{esc(back)}">Back to People</a></div></div>
-{flash}
-<details class="source-help"><summary>How titles are matched</summary>
-<p>Case, punctuation and small words (of, the, and) are ignored, and short forms are spelled out:
-VP, HR, COO, CEO, CFO, CCO, CIO, Ops, Dir, Sr and others. A phrase matches when each of its words
-starts a word of the title, in any order, so <b>director human resources</b> finds HR Director and
-Director of Human Resources, and <b>recruit</b> finds Recruiter and Recruiting Manager. A title with
-one of the Except phrases is left out. Vice President never counts as President.</p></details>
-<p class="meta">{who} Changes reach the People list within a few minutes, once its index rebuilds.
-{"" if edit else "Only admins and this product&rsquo;s owner can change these."}</p>
-<form method="post" action="/people/designations/{esc(prod)}">
-<div class="table-scroll"><table class="desig-edit-table"><thead><tr><th style="width:21%">Designation</th>
-<th>Titles that count, separated by commas</th><th style="width:14%">Except</th><th style="width:24%">Matches now</th><th style="width:96px"></th></tr></thead>
-<tbody>{"".join(rows)}</tbody></table></div>
-{actions}</form>{reset}</div>"""
-    return page(f"{name} designations", "people", body)
-
-
-@router.post("/people/designations/{prod}")
-async def designations_save(prod: str, request: Request):
-    if (prod != designations.GENERAL and prod not in products.product_keys()) or not can_edit_designations(prod):
-        return RedirectResponse("/people", status_code=303)
-    form = await request.form()
-    items = []
-    i = 0
-    while f"l-{i}" in form:
-        if not form.get(f"x-{i}"):
-            label = " ".join((form.get(f"l-{i}") or "").split())
-            anyp = designations.parse_phrases(form.get(f"a-{i}") or "")
-            if label and anyp:
-                items.append({"key": form.get(f"k-{i}") or label.lower(), "label": label, "any": anyp,
-                              "not": designations.parse_phrases(form.get(f"n-{i}") or "")})
-            elif label or anyp:
-                return RedirectResponse(
-                    f"/people/designations/{prod}?{qs_join(err='Each designation needs a name and at least one title phrase.')}",
-                    status_code=303)
-        i += 1
-    try:
-        designations.save(prod, items, current_owner())
-    except ValueError as e:
-        return RedirectResponse(f"/people/designations/{prod}?{qs_join(err=str(e))}", status_code=303)
-    _rebuild_index()
-    return RedirectResponse(
-        f"/people/designations/{prod}?{qs_join(msg='Saved. The People list uses these within a few minutes.')}",
-        status_code=303)
-
-
-@router.post("/people/designations/{prod}/reset")
-def designations_reset(prod: str):
-    if (prod != designations.GENERAL and prod not in products.product_keys()) or not can_edit_designations(prod):
-        return RedirectResponse("/people", status_code=303)
-    designations.reset(prod)
-    _rebuild_index()
-    return RedirectResponse(f"/people/designations/{prod}?{qs_join(msg='Back to the shipped defaults.')}",
-                            status_code=303)
-
-
-def _rebuild_index() -> None:
-    from . import jobs
-    c = conn()
-    try:
-        jobs.request_run(c, "people_index")
-    except Exception:
-        c.rollback()
-    finally:
-        c.close()

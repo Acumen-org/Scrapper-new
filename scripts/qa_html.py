@@ -50,7 +50,7 @@ PAGES = [
     "/signals", "/signals?window=15", "/signals?window=30", "/firms", "/firms?view=contacts", "/firms?on=acubooth&sort=hires",
     "/firms?q=WEALTH", "/people", "/people?joined=365", "/people?on=ats",
     "/people?on=ats&des=ats:hr_leader,ats:coo", "/people?title=chief+of+staff&src=web",
-    "/people/designations/ats", "/people/designations/_all", "/saved",
+    "/saved",
     "/enrichment", "/enrichment/websites", "/enrichment/verify",
     "/settings", "/settings/users", "/settings/signin", "/settings/ai",
     "/settings/verify", "/settings/crawl", "/settings/jobs", "/settings/system",

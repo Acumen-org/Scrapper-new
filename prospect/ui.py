@@ -230,7 +230,7 @@ def _qs(values: dict, drop: str | None = None, **extra) -> str:
 def filter_bar(action: str, values: dict, *, search: tuple[str, str] | None = ("q", "Search"),
                quick: list | None = None, more: list | None = None, hidden: dict | None = None,
                defaults: dict | None = None, carry: dict | None = None,
-               extra_chips: list | None = None) -> str:
+               extra_chips: list | None = None, menus: list | None = None) -> str:
     """Search, a few filters as pills, every other filter one click away in
     More filters, and each active filter shown as a chip that removes it.
 
@@ -238,9 +238,10 @@ def filter_bar(action: str, values: dict, *, search: tuple[str, str] | None = ("
     options are (value, text) pairs and the first is the 'any' choice, or
     (name, label, "check") for a checkbox. values holds the current request.
     defaults names values that count as 'not filtering' (a default sort).
-    carry holds filters set outside the bar (a designation picked below it):
-    kept when the bar is submitted, dropped by Clear all; extra_chips shows
-    them as (text, link that removes it)."""
+    menus are dropdowns a page builds itself (the People designations), placed
+    after the quick filters and submitted with the bar. carry holds filters
+    kept when the bar is submitted and dropped by Clear all; extra_chips shows
+    filters the labels above cannot name, as (text, link that removes it)."""
     quick, more, hidden, defaults = quick or [], more or [], hidden or {}, defaults or {}
     carry, extra_chips = carry or {}, extra_chips or []
 
@@ -269,6 +270,7 @@ def filter_bar(action: str, values: dict, *, search: tuple[str, str] | None = ("
         parts.append(f'<input type="search" name="{esc(search[0])}" value="{esc(values.get(search[0]) or "")}"'
                      f' placeholder="{esc(search[1])}" aria-label="{esc(search[1])}">')
     parts += [field(f, True) for f in quick]
+    parts += menus or []
     n_more = sum(1 for f in more if is_set(f[0]))
     if more:
         panel = "".join(field(f, False) for f in more)

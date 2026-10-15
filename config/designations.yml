@@ -1,10 +1,9 @@
 # Designations: the job titles a seller filters People by, per product.
 #
-# The People screen shows the chosen product's designations as one-click
-# filters (Head of Talent Acquisition for ATS, Chief Compliance Officer for
-# Glynac), and anyone can also type a title by hand. Admins and a product's
-# owner can change these from the People screen; this file holds the shipped
-# defaults.
+# The People screen's Designation filter offers the chosen product's titles
+# (Head of Talent Acquisition for ATS, Chief Compliance Officer for Glynac),
+# any number at once, and anyone can also type a title by hand. Edit this file
+# to change them; the People index picks changes up on its next rebuild.
 #
 # How a title is matched:
 #   - Titles and phrases are read the same way: case and punctuation ignored,

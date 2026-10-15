@@ -248,30 +248,24 @@ background:var(--red-bg);border:1px solid var(--red-line);font-size:12px;color:v
 .fchip a:hover{background:rgba(255,255,255,.12);color:#fff}
 .fchips .clear{font-size:12px;color:var(--faint);margin-left:4px}
 .fchips .clear:hover{color:var(--ink)}
-/* Designations on People: the chosen product's job titles as one-click
-   filters, with a box to type any other title. */
-.desig{margin:0 0 16px;padding:12px 14px 14px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
-.desig-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;margin:0 0 10px}
-.desig-head b{font-size:13px;font-weight:600;color:var(--ink)}
-.desig-head .meta{margin:0;min-width:0}
-.desig-edit{margin-left:auto;font-size:12px;color:var(--soft);text-decoration:underline;text-decoration-color:var(--rule2);text-underline-offset:3px}
-.desig-row{display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px 16px}
-.dchips{display:flex;flex-wrap:wrap;gap:6px;flex:1 1 520px;min-width:0}
-.dchip{display:inline-flex;align-items:center;gap:8px;min-height:30px;padding:4px 10px 4px 12px;border:1px solid var(--rule2);
-border-radius:99px;background:var(--raise);color:var(--soft);font-size:12.5px;line-height:1.3;max-width:100%}
-.dchip:hover{border-color:var(--line3);color:var(--ink)}
-.dchip .cnt{font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums}
-.dchip.on{border-color:var(--red-line);background:var(--red-bg);color:var(--ink)}
-.dchip.on .cnt{color:var(--soft)}
-.dchip.zero{color:var(--dim);border-style:dashed}
-.dtyped{display:flex;gap:6px;align-items:center;flex:0 1 300px;min-width:220px}
-.dtyped input{height:30px;border-radius:99px;font-size:12.5px;min-width:0;flex:1 1 auto;width:auto}
-.dtyped button{height:30px;border-radius:99px;flex:none}
-.desig-edit-table td{vertical-align:top}
-.desig-edit-table input[type=text],.desig-edit-table textarea{width:100%}
-.desig-edit-table textarea{min-height:0;height:auto}
-.desig-edit-table textarea.dname{font-weight:550;resize:none}
-@media (max-width:700px){.dtyped{flex:1 1 100%;min-width:0}.desig-edit{margin-left:0}}
+/* Designations on People: a dropdown in the filter bar that reads like the
+   List and State pills, with the chosen product's titles as checkboxes. */
+.fdes>summary{padding-right:30px;background-repeat:no-repeat;background-position:right 12px center;
+background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2386868d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+.fdes.set>summary{border-color:var(--red-line);background-color:var(--red-bg);color:var(--ink)}
+.fdes .fpanel{display:block;width:min(560px,100%)}
+.fdes-head{display:flex;flex-direction:column;gap:2px;margin:0 0 12px}
+.fdes-head b{font-size:13px;font-weight:600;color:var(--ink)}
+.fdes-head .meta{margin:0}
+.fdes-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:2px 12px;margin:0 -8px}
+.fdes .fpanel label.fdes-opt{flex-direction:row;align-items:center;gap:10px;padding:7px 8px;border-radius:8px;
+font-size:13px;color:var(--soft);cursor:pointer;line-height:1.3}
+.fdes .fpanel label.fdes-opt:hover{background:var(--raise2);color:var(--ink)}
+.fdes .fpanel label.fdes-opt input{width:15px;height:15px;flex:none}
+.fdes-opt span:first-of-type{flex:1;min-width:0}
+.fdes-opt .cnt{font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+.fdes-opt:has(input:checked){color:var(--ink)}
+.fdes .fpanel label.fdes-typed{margin:14px 0 14px;font-size:12px;color:var(--soft)}
 .resbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;margin:0 0 10px;font-size:13px;color:var(--soft)}
 .resbar b{color:var(--ink)}
 .save-view>summary,.row-actions summary{height:30px;padding:0 12px;border:1px solid var(--rule2);border-radius:8px;

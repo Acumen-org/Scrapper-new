@@ -3,9 +3,7 @@
 An ATS seller looks for the head of talent acquisition, the HR director and
 the COO; a Glynac seller for the compliance officer. config/designations.yml
 holds a library of designations, each a label and a few plain phrases, and
-lists which ones each product shows. Admins and a product's owner can change a
-product's list from the People screen; edits are stored per product in
-designation_config, over the file.
+lists which ones each product shows.
 
 Titles arrive in every shape ("VP, HR", "Director of Human Resources", "Sr.
 Talent Acquisition Partner"), so titles and phrases are read the same way:
@@ -18,23 +16,12 @@ by hand is matched with the same rules in SQL.
 
 from __future__ import annotations
 
-import json
 import re
 import time
-from datetime import datetime, timezone
 
 import yaml
 
 from . import config
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS designation_config (
-    product    TEXT PRIMARY KEY,
-    body       TEXT NOT NULL,     -- JSON: [{key, label, any, not}]
-    updated_by TEXT,
-    updated_at TEXT NOT NULL
-);
-"""
 
 GENERAL = "_all"
 
@@ -108,49 +95,22 @@ def defaults() -> dict[str, list[dict]]:
     return out
 
 
-_CACHE: dict = {"t": 0.0, "lists": None, "edited": {}}
-CHECK_S = 15.0
+_CACHE: dict = {"t": 0.0, "lists": None}
+CHECK_S = 60.0
 
 
-def _load() -> tuple[dict, dict]:
+def _load() -> dict:
+    """The file's lists, read again at most once a minute."""
     if _CACHE["lists"] is not None and time.monotonic() - _CACHE["t"] < CHECK_S:
-        return _CACHE["lists"], _CACHE["edited"]
-    lists = defaults()
-    edited: dict = {}
-    try:
-        from . import db
-        c = db.connect()
-        try:
-            rows = c.execute("SELECT product, body, updated_by, updated_at"
-                             " FROM designation_config").fetchall()
-        finally:
-            c.close()
-        for r in rows:
-            try:
-                items = [it for it in (_item(d.get("key") or f"d{i}", d)
-                                       for i, d in enumerate(json.loads(r["body"]))) if it]
-            except (ValueError, TypeError, AttributeError):
-                continue
-            lists[r["product"]] = items
-            edited[r["product"]] = {"by": r["updated_by"], "at": r["updated_at"]}
-    except Exception:
-        pass
-    _CACHE.update(t=time.monotonic(), lists=lists, edited=edited)
-    return lists, edited
-
-
-def reload() -> None:
-    _CACHE["t"] = 0.0
+        return _CACHE["lists"]
+    _CACHE.update(t=time.monotonic(), lists=defaults())
+    return _CACHE["lists"]
 
 
 def for_product(product: str | None) -> list[dict]:
     """The designations shown for a product, or the general set."""
-    lists, _ = _load()
+    lists = _load()
     return lists.get(product or GENERAL) or lists.get(GENERAL) or []
-
-
-def edited(product: str) -> dict | None:
-    return _load()[1].get(product)
 
 
 def tag(product: str, key: str) -> str:
@@ -168,7 +128,7 @@ def matcher():
     """Every product's designations compiled once: [(tags, any, not)]. A
     designation several products share is one rule carrying all their tags,
     so each title is tested against it once."""
-    lists, _ = _load()
+    lists = _load()
     rules: dict[tuple, list[str]] = {}
     for prod, items in lists.items():
         for d in items:
@@ -211,59 +171,3 @@ def typed_sql(text: str, column: str = "title_norm") -> tuple[str, list]:
 def matches_typed(title: str | None, text: str) -> bool:
     tw = words(title)
     return any(_hit(tw, tuple(words(p))) for p in (text or "").split(",") if words(p))
-
-
-# ------------------------------------------------------------------ editing
-
-def init(conn) -> None:
-    conn.executescript(SCHEMA)
-    conn.commit()
-
-
-def parse_phrases(text: str) -> list[str]:
-    seen, out = set(), []
-    for p in re.split(r"[,\n;]", text or ""):
-        p = " ".join(p.split())[:60]
-        if p and words(p) and p.lower() not in seen:
-            seen.add(p.lower())
-            out.append(p)
-    return out[:40]
-
-
-def save(product: str, items: list[dict], who: str) -> None:
-    from . import db
-    clean, keys = [], set()
-    for i, d in enumerate(items):
-        key = re.sub(r"[^a-z0-9_]", "_", (d.get("key") or "").lower())[:40] or f"custom_{i}"
-        while key in keys:
-            key += "_2"
-        it = _item(key, d)
-        if it:
-            keys.add(key)
-            clean.append(it)
-    if not clean:
-        raise ValueError("Keep at least one designation, each with a name and a phrase.")
-    c = db.connect()
-    try:
-        c.executescript(SCHEMA)
-        c.execute("INSERT INTO designation_config (product, body, updated_by, updated_at)"
-                  " VALUES (?,?,?,?) ON CONFLICT(product) DO UPDATE SET body=excluded.body,"
-                  " updated_by=excluded.updated_by, updated_at=excluded.updated_at",
-                  (product, json.dumps(clean, separators=(",", ":")), who or None,
-                   datetime.now(timezone.utc).isoformat(timespec="seconds")))
-        c.commit()
-    finally:
-        c.close()
-    reload()
-
-
-def reset(product: str) -> None:
-    from . import db
-    c = db.connect()
-    try:
-        c.executescript(SCHEMA)
-        c.execute("DELETE FROM designation_config WHERE product=?", (product,))
-        c.commit()
-    finally:
-        c.close()
-    reload()
