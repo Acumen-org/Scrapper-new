@@ -448,12 +448,12 @@ def main():
         releases = conn.execute("""SELECT version, applied_at, evaluated_firms
             FROM app_release ORDER BY applied_at DESC LIMIT 1""").fetchall()
         print('Runtime release:', json.dumps([dict(row) for row in releases]))
+        _scoring(conn)
+        _consistency(conn)
         _health(conn)
         _shapes(conn)
         _ai(conn)
         _growth(conn)
-        _scoring(conn)
-        _consistency(conn)
         _list_speed()
         _page_speed()
         ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns

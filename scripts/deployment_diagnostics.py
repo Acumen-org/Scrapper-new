@@ -28,16 +28,22 @@ if running:
     latest = max(running, key=lambda row: row.get('CreateIndex', 0))
     # Use the checked-out read-only diagnostic, so observing a new job does not
     # require restarting the app or interrupting its current enrichment slice.
-    runtime = subprocess.run(['nomad', 'alloc', 'exec', '-i', '-t=false', '-task', 'app',
-                              latest['ID'], 'python', '-'],
-                             input=Path(__file__).with_name('job_diagnostics.py').read_text(),
-                             capture_output=True, text=True, timeout=240)
-    if runtime.returncode:
-        print('Runtime diagnostics unavailable; exit:', runtime.returncode)
-    else:
-        for line in runtime.stdout.splitlines():
-            if line.startswith('Runtime '):
-                print(line)
+    # Unbuffered, so a run cut short by the timeout still reports every line
+    # it printed before then.
+    try:
+        runtime = subprocess.run(['nomad', 'alloc', 'exec', '-i', '-t=false', '-task', 'app',
+                                  latest['ID'], 'python', '-u', '-'],
+                                 input=Path(__file__).with_name('job_diagnostics.py').read_text(),
+                                 capture_output=True, text=True, timeout=420)
+        out, code = runtime.stdout, runtime.returncode
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or '')
+        code = 'timeout'
+    for line in out.splitlines():
+        if line.startswith('Runtime '):
+            print(line)
+    if code:
+        print('Runtime diagnostics stopped early; exit:', code)
     if os.environ.get('AI_CHECK') == 'true':
         # Opt in only: this one calls the model (two calls at most).
         check = subprocess.run(['nomad', 'alloc', 'exec', '-i', '-t=false', '-task', 'app',
