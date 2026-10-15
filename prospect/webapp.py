@@ -343,10 +343,17 @@ def _init_once() -> None:
         except Exception:
             pass
         try:
-            from . import jobs
+            _nav_compute()
+        except Exception:
+            pass
+        try:
+            from . import jobs, lists_view
             w = db.connect()
             try:
                 jobs.job_counts(w)
+                have_roles = lists_view._has_table(w, "firm_job_posting")
+                for k in products.product_keys():
+                    lists_view._kpis(w, k, have_roles)
             finally:
                 w.close()
         except Exception:
@@ -707,13 +714,35 @@ FAMILY_COLOUR = {"PHH": "#c65454", "AcuBooth": "#cfa95c", "Glynac": "#63aa7c",
                  "ATS": "#6f95c8"}
 
 _NAV_CACHE: dict = {"t": 0.0}
+_NAV_BUSY = threading.Event()
 
 
 def _nav_counts() -> dict:
-    """Sidebar counts, cached for half a minute: they head every page."""
+    """Sidebar counts: they head every page. Once older than half a minute
+    they are still served at once while a background thread recounts them,
+    so no page waits on them after the first."""
     import time as _time
     if _time.monotonic() - _NAV_CACHE["t"] < 30.0:
         return _NAV_CACHE
+    if "lists" in _NAV_CACHE:
+        if not _NAV_BUSY.is_set():
+            _NAV_BUSY.set()
+            threading.Thread(target=_nav_refresh, daemon=True, name="nav-counts").start()
+        return _NAV_CACHE
+    return _nav_compute()
+
+
+def _nav_refresh() -> None:
+    try:
+        _nav_compute()
+    except Exception:
+        pass
+    finally:
+        _NAV_BUSY.clear()
+
+
+def _nav_compute() -> dict:
+    import time as _time
     c = conn()
 
     def one(sql, args=()):
@@ -754,7 +783,8 @@ def _nav_counts() -> dict:
         c.rollback()
     c.close()
     out["feed"] = feed["published_at"] if feed else None
-    _NAV_CACHE.clear()
+    # Swapped in whole: a page reading the cache mid-refresh sees the old
+    # counts or the new ones, never an empty dict.
     _NAV_CACHE.update(out)
     return out
 
