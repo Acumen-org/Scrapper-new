@@ -559,7 +559,13 @@ products:
     audience: Firms that are growing and will need to hire, by function
     pitch: Recruiting for the roles a growing firm needs next.
     gates: []
-    disqualifiers: []
+    # Every adviser firm is ranked. Exempt reporting advisers (private fund
+    # and venture managers) are left out: they file no staff, client or asset
+    # figures, and Bellwether's count of adviser firms excludes them too.
+    # Switch it off on the Scoring tab to rank them as well.
+    disqualifiers:
+      - key: exempt_reporting
+        label: Exempt reporting adviser
     criteria:
       - key: team_growth
         label: Team growth, 12 months

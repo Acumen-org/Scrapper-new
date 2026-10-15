@@ -589,5 +589,49 @@ class GrowthChecks(unittest.TestCase):
         filled = jobs._fill(jobs.BY_KIND['open_roles'].backlog_sql, 1)
         self.assertNotIn('{ago:', filled)
 
+class DesignationChecks(unittest.TestCase):
+    """Designations on People: titles in every shape land in the right one."""
+
+    def setUp(self):
+        from prospect import designations
+        self.d = designations
+        self.compiled = [([t], [tuple(designations.words(p)) for p in a], [tuple(designations.words(p)) for p in n])
+                         for t, a, n in ((designations.tag(prod, x['key']), x['any'], x['not'])
+                                         for prod, items in designations.defaults().items()
+                                         for x in items)]
+
+    def tags(self, title):
+        return {t for t in self.d.tags_for(title, self.compiled) if t.startswith('ats:')}
+
+    def test_short_forms_and_word_order(self):
+        self.assertIn('ats:hr_leader', self.tags('VP, HR'))
+        self.assertIn('ats:hr_leader', self.tags('Director of Human Resources'))
+        self.assertIn('ats:hr_leader', self.tags('HR Director'))
+        self.assertIn('ats:talent_acquisition', self.tags('Sr. Talent Acquisition Partner'))
+        self.assertIn('ats:talent_acquisition', self.tags('Recruiter'))
+        self.assertIn('ats:coo', self.tags('COO & CCO'))
+        self.assertIn('ats:coo', self.tags('V.P. Operations'))
+
+    def test_vice_president_is_not_president(self):
+        self.assertNotIn('ats:ceo', self.tags('Vice President'))
+        self.assertIn('ats:ceo', self.tags('President'))
+        self.assertNotIn('ats:ceo', self.tags('Assistant to the President'))
+
+    def test_every_product_has_designations(self):
+        lists = self.d.defaults()
+        for key in products.product_keys() + [self.d.GENERAL]:
+            self.assertTrue(lists.get(key), key)
+
+    def test_typed_title_is_parameterised(self):
+        sql, args = self.d.typed_sql("vp hr, chief of staff'; drop table x")
+        self.assertNotIn('drop', sql.lower())
+        self.assertIn('% vicepresident%', args)
+        self.assertTrue(self.d.matches_typed('Vice President of Human Resources', 'vp hr'))
+
+    def test_exempt_reporting_advisers_leave_ats_only(self):
+        r = products.evaluate('ats', {'overrides': {}, 'is_era': 1})
+        self.assertEqual(r.status, 'disqualified')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

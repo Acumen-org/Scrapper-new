@@ -1000,6 +1000,15 @@ def g_left_schwab(d, g, key):
     return False, ""
 
 
+def g_exempt_reporting(d, g, key):
+    """Disqualifier: an exempt reporting adviser (a private fund or venture
+    manager) files no staff, client or asset figures, so there is no growth to
+    judge, and Bellwether's count of adviser firms leaves them out."""
+    if d.get("is_era"):
+        return True, "it files no staff, client or asset figures to judge growth by"
+    return False, ""
+
+
 def g_firm_type(d, g, key):
     """Disqualifier: the firm is a type that can never buy this product
     (a custodian, a wirehouse, a bank or trust company, an insurer, or what
@@ -1059,6 +1068,7 @@ GATES = {
     "investment_property": g_investment_property, "family_office": g_family_office,
     "check_capacity": g_check_capacity, "bans_illiquid": g_bans_illiquid,
     "re_competitor": g_re_competitor, "left_schwab": g_left_schwab,
+    "exempt_reporting": g_exempt_reporting,
 }
 
 

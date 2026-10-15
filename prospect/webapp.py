@@ -264,7 +264,7 @@ def _init_once() -> None:
     users.init(c)
     for mod in ("contacts", "jobs", "ai", "roles", "people", "verify", "directory",
                 "websignals", "firmtype", "knowledge", "websearch", "health", "ocr",
-                "growth", "openroles"):
+                "growth", "openroles", "designations"):
         _init_optional(c, mod)
     # A fresh start: a run left "running" from before it is a ghost of the
     # previous container, whatever its age.
@@ -328,12 +328,27 @@ def _init_once() -> None:
     except OSError:
         pass
 
-    # Work out Home's numbers in the background now, so the first person to
-    # open it after a deploy does not wait for them.
+    # Work out Home's numbers, the job counts and the mail engine check in the
+    # background now, so the first person to open Home or Settings after a
+    # deploy does not wait for them.
     def _warm():
+        try:
+            from . import verify
+            verify.engine_status_cached()
+        except Exception:
+            pass
         try:
             from . import home_view
             home_view.data()
+        except Exception:
+            pass
+        try:
+            from . import jobs
+            w = db.connect()
+            try:
+                jobs.job_counts(w)
+            finally:
+                w.close()
         except Exception:
             pass
     threading.Thread(target=_warm, daemon=True, name="warm-home").start()

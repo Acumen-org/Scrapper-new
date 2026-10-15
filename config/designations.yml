@@ -1,0 +1,130 @@
+# Designations: the job titles a seller filters People by, per product.
+#
+# The People screen shows the chosen product's designations as one-click
+# filters (Head of Talent Acquisition for ATS, Chief Compliance Officer for
+# Glynac), and anyone can also type a title by hand. Admins and a product's
+# owner can change these from the People screen; this file holds the shipped
+# defaults.
+#
+# How a title is matched:
+#   - Titles and phrases are read the same way: case and punctuation ignored,
+#     small words (of, the, and, for) dropped, common short forms spelled out
+#     (VP, HR, COO, CEO, CFO, CCO, CIO, Ops, Dir, Sr and others), and
+#     "vice president" kept apart from "president".
+#   - A phrase matches when every word in it starts a word of the title, in
+#     any order: "director human resources" matches "HR Director" and
+#     "Director of Human Resources"; "recruit" matches "Recruiter" and
+#     "Recruiting Manager".
+#   - A designation matches when any of its phrases does, unless the title
+#     also has one of its "not" words.
+#
+# library holds each designation once; products lists which ones each
+# product's sellers see, in the order shown. _all is the set shown when no
+# product is chosen.
+
+library:
+  talent_acquisition:
+    label: Head of Talent Acquisition
+    any: [talent acquisition, head talent, director talent, talent director, talent manager,
+          talent lead, talent partner, recruit]
+  hr_leader:
+    label: VP or Director of HR
+    any: [chief human resources officer, chief people officer, vice president human resources,
+          director human resources, head human resources, human resources director,
+          human resources lead, vice president people, director people, head people,
+          people culture director]
+  hr_team:
+    label: Anyone in HR
+    any: [human resources, people operations, people culture, recruit, talent acquisition,
+          chief people officer]
+  coo:
+    label: COO or Head of Operations
+    any: [chief operating officer, head operations, director operations, operations director,
+          vice president operations, chief administrative officer]
+  operations:
+    label: Operations team
+    any: [operations, administrat, office manager, practice manager]
+  office_manager:
+    label: Office or Practice Manager
+    any: [office manager, practice manager, office administrator, business manager,
+          administrative manager, operations manager]
+    not: [family]
+  chief_of_staff:
+    label: Chief of Staff
+    any: [chief staff]
+  ceo:
+    label: Managing Partner, CEO or President
+    any: [chief executive officer, president, managing partner, managing member,
+          managing director, managing principal, founder]
+    not: [assistant]
+  owner:
+    label: Owner, partner or principal
+    any: [owner, partner, principal, shareholder, member]
+    not: [assistant, associate, committee, business partner, talent partner, board]
+  cfo:
+    label: CFO or Controller
+    any: [chief financial officer, controller, director finance, head finance, finance director]
+  cco:
+    label: Chief Compliance Officer
+    any: [chief compliance officer, head compliance, director compliance, compliance director]
+  compliance:
+    label: Anyone in compliance
+    any: [compliance, regulatory]
+  technology:
+    label: CTO or Head of Technology
+    any: [chief technology officer, chief information officer, head technology,
+          director technology, technology director, information technology, chief digital officer]
+  risk_legal:
+    label: Risk or Legal
+    any: [chief risk officer, head risk, director risk, risk manager, general counsel, legal,
+          attorney]
+  cio:
+    label: Chief Investment Officer
+    any: [chief investment officer, head investments, director investments, investment director,
+          head investment]
+  portfolio_manager:
+    label: Portfolio Manager
+    any: [portfolio manager, portfolio management]
+  trader:
+    label: Trader
+    any: [trader, trading]
+  research:
+    label: Research or Analyst
+    any: [research, analyst, investment strategist]
+  investment_committee:
+    label: Investment committee
+    any: [investment committee]
+  alternatives:
+    label: Head of Alternatives
+    any: [alternative, private markets, private investments, private equity, real assets]
+  real_estate:
+    label: Real estate lead
+    any: [real estate, real assets, 1031]
+  family_office:
+    label: Family office lead
+    any: [family office]
+  lead_advisor:
+    label: Lead or senior advisor
+    any: [senior wealth advis, lead advis, principal advis, senior financial advis,
+          senior advis, wealth advis, private wealth advis]
+    not: [associate, assistant]
+  advisor:
+    label: Advisor or planner
+    any: [advis, planner, wealth manager, relationship manager]
+    not: [assistant]
+  client_service:
+    label: Client service
+    any: [client service, client associate, client experience, service associate, paraplanner]
+  marketing:
+    label: Marketing or growth
+    any: [marketing, growth, business development, chief marketing officer]
+
+products:
+  ats: [talent_acquisition, hr_leader, hr_team, coo, ceo, chief_of_staff, office_manager, cfo]
+  glynac: [cco, compliance, coo, technology, risk_legal, ceo, operations]
+  acubooth: [cio, portfolio_manager, trader, research, investment_committee, ceo]
+  phh_fund: [cio, alternatives, ceo, owner, lead_advisor, investment_committee]
+  phh_1031: [ceo, owner, lead_advisor, advisor, real_estate]
+  phh_jv: [cio, real_estate, ceo, owner, family_office, cfo]
+  _all: [ceo, coo, cco, cio, cfo, hr_team, technology, operations, lead_advisor, advisor,
+         client_service, marketing]

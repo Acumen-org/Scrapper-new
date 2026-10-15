@@ -247,7 +247,7 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
            if view == "contacts" else
            f'<a class="btn" href="/firms/export.csv?{qs}" data-noprefetch>Export firms</a>')
     title = f"Saved list: {esc(list_name)}" if list_name else "Firms"
-    lists_opts = ([("", "Any list"), ("any", "On any product list"), ("none", "On no list")]
+    lists_opts = ([("", "Any list"), ("any", "Priority firms"), ("none", "Not a priority firm")]
                   + [(k, products.product(k)["name"]) for k in products.product_keys()])
     more = [("reg", "Registration", list(REGS.items())),
             ("hires", "Hiring", [("", "Any hiring"), ("1", "Hired in 12 months"), ("3", "Hired 3+"),
@@ -382,7 +382,7 @@ def _contacts(c, where, args, page_n, per):
             f'<div class="meta">CRD {esc(r["crd"])} &middot; {esc(r["state"] or "-")}</div></td>'
             f'<td>{who}<div class="meta">{esc(_clean_title(r["title"]))}</div></td>'
             f'<td>{esc(first_name(r["person"])) if r["person"] != "Shared inbox" else ""}</td>'
-            f'<td>{em}</td><td class="nowrap">{esc(r["phone"] or "-")}</td></tr>')
+            f'<td>{em}</td><td class="nowrap">{esc(ui.phone_text(r["phone"]) or "-")}</td></tr>')
     empty = ('<tr><td colspan="5" class="empty">No contacts for this set yet. The website, '
              'brochure and directory jobs fill them in by themselves.</td></tr>')
     return (f'<div class="table-scroll"><table class="wide"><thead><tr><th>Firm</th><th>Person</th><th>First name</th><th>Email</th>'

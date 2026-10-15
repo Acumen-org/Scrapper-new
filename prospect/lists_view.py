@@ -24,8 +24,10 @@ import copy
 import csv
 import io
 import json
+import re
 import subprocess
 import sys
+import threading
 import time
 
 from fastapi import APIRouter, Form, Query, Request
@@ -135,11 +137,40 @@ BASE = """FROM product_score p
     WHERE {where}"""
 
 
+_STATES: dict[str, tuple[float, list]] = {}
+
+
 def _states(c, key):
-    return [r["state"] for r in c.execute(
+    """The states a list's firms are in, for its State filter. They change
+    only with the weekly feed, so each list keeps them for half an hour."""
+    hit = _STATES.get(key)
+    if hit and time.monotonic() - hit[0] < 1800:
+        return hit[1]
+    out = [r["state"] for r in c.execute(
         "SELECT DISTINCT f.state FROM product_score p JOIN firm_current f ON f.crd=p.crd"
         " WHERE p.product=? AND p.status='scored' AND f.state IS NOT NULL"
         " ORDER BY f.state", (key,))]
+    _STATES[key] = (time.monotonic(), out)
+    return out
+
+
+def _count(c, where: str, args: list) -> int:
+    """Firms matching the filters, joining only the tables they name."""
+    joins = ""
+    if re.search(r"\bf\.", where):
+        joins += " JOIN firm_current f ON f.crd=p.crd"
+    if re.search(r"\bs\.", where):
+        joins += " LEFT JOIN firm_status s ON s.crd=p.crd"
+    return c.execute(f"SELECT COUNT(*) n FROM product_score p{joins} WHERE {where}",
+                     args).fetchone()["n"]
+
+
+def _ranked_note(p: dict) -> str:
+    if p.get("gates"):
+        return "passed every gate"
+    if any(not g.get("off") for g in p.get("disqualifiers") or []):
+        return "every adviser firm"
+    return "every firm, no gates"
 
 
 def can_edit(key: str) -> bool:
@@ -147,16 +178,49 @@ def can_edit(key: str) -> bool:
 
 
 # The counts over a list's header change only when scores or contacts do, and
-# on the ATS list (every firm in the country) they were most of the page's
-# time; each is kept for a few minutes per list and worker.
+# on the ATS list (every adviser firm) they were most of the page's time. Each
+# list keeps them per worker; once older than a few minutes they are still
+# served at once while a background thread works out fresh ones, so nobody
+# waits for them after the first visit.
 KPI_TTL_S = 300
 _KPI_CACHE: dict[str, tuple[float, dict]] = {}
+_KPI_BUSY: set[str] = set()
+_KPI_LOCK = threading.Lock()
 
 
 def _kpis(c, key: str, have_roles: bool) -> dict:
-    hit = _KPI_CACHE.get(key)
-    if hit and time.monotonic() - hit[0] < KPI_TTL_S:
+    with _KPI_LOCK:
+        hit = _KPI_CACHE.get(key)
+        stale = hit is not None and time.monotonic() - hit[0] >= KPI_TTL_S
+        if stale and key not in _KPI_BUSY:
+            _KPI_BUSY.add(key)
+            threading.Thread(target=_kpi_refresh, args=(key, have_roles), daemon=True,
+                             name=f"kpi-{key}").start()
+    if hit:
         return hit[1]
+    out = _kpi_compute(c, key, have_roles)
+    with _KPI_LOCK:
+        _KPI_CACHE[key] = (time.monotonic(), out)
+    return out
+
+
+def _kpi_refresh(key: str, have_roles: bool) -> None:
+    try:
+        c = conn()
+        try:
+            out = _kpi_compute(c, key, have_roles)
+        finally:
+            c.close()
+        with _KPI_LOCK:
+            _KPI_CACHE[key] = (time.monotonic(), out)
+    except Exception:
+        pass
+    finally:
+        with _KPI_LOCK:
+            _KPI_BUSY.discard(key)
+
+
+def _kpi_compute(c, key: str, have_roles: bool) -> dict:
     stats = dict(c.execute("""SELECT COUNT(*) n, AVG(coverage) cov,
         COUNT(*) FILTER (WHERE score >= 60) hi,
         COUNT(*) FILTER (WHERE coverage >= 90) full_n FROM product_score
@@ -187,10 +251,8 @@ def _kpis(c, key: str, have_roles: bool) -> dict:
                                  (key,)).fetchone()["n"]
         except Exception:
             c.rollback()
-    out = {"stats": stats, "dq_n": dq_n, "fresh_n": fresh_n, "reach_n": reach_n,
-           "hiring_n": hiring_n}
-    _KPI_CACHE[key] = (time.monotonic(), out)
-    return out
+    return {"stats": stats, "dq_n": dq_n, "fresh_n": fresh_n, "reach_n": reach_n,
+            "hiring_n": hiring_n}
 
 
 @router.get("/lists/{key}", response_class=HTMLResponse)
@@ -222,7 +284,7 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
 
     kpis = (f'<div class="kpis" style="margin-bottom:22px">'
             f'<a class="kpi" href="/lists/{key}"><div class="l">Firms ranked</div><div class="n">{stats["n"] or 0:,}</div>'
-            f'<div class="d">{"passed every gate" if p.get("gates") else "every firm, no gates"}</div></a>'
+            f'<div class="d">{_ranked_note(p)}</div></a>'
             f'<a class="kpi{" accent" if sig else ""}" href="/lists/{key}?sig=1"><div class="l">New signal</div>'
             f'<div class="n">{fresh_n:,}</div><div class="d">in the last 60 days</div></a>'
             f'<a class="kpi" href="/lists/{key}?reach=email"><div class="l">Reachable</div><div class="n">{reach_n:,}</div>'
@@ -241,8 +303,11 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
     elif view == "disqualified":
         body_main = _disq(c, key, q, page_n, per)
     else:
+        # An unfiltered list is exactly the ranked count already in the header.
+        unfiltered = not any((q, st, owner, stat, sig, reach, cov, size, cat, hiring))
         body_main = _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n,
-                            per, qs, size, cat, hiring if have_roles else None)
+                            per, qs, size, cat, hiring if have_roles else None,
+                            known_total=(stats["n"] or 0) if unfiltered else None)
     c.close()
 
     note = (f'<details class="source-help"><summary>How this list is built</summary><p>{esc(p["note"].strip())}</p></details>'
@@ -315,12 +380,12 @@ def _reach_cell(f: dict) -> str:
 
 
 def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, qs, size="", cat="",
-            hiring=None):
+            hiring=None, known_total=None):
     """hiring is None when open roles have not been looked for yet (no table)."""
     where, args = _where(key, q, st, owner, stat, sig, reach, cov, size=size, cat=cat,
                          hiring=hiring or "")
     base = BASE.format(where=where)
-    total = c.execute(f"SELECT COUNT(*) n {base}", args).fetchone()["n"]
+    total = known_total if known_total is not None else _count(c, where, args)
     have_people = _has_table(c, "firm_people_stats")
     have_cls = _has_table(c, "firm_class")
     order = {"signal": "fresh DESC NULLS LAST, p.rank",
@@ -370,7 +435,7 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
         t = trig.get(r["crd"])
         tcell = (f'<span class="chip lead">{esc(TYPE_LABEL.get(t["trigger_type"], t["trigger_type"]))}</span>'
                  f'<div class="meta">{esc(ui.ago(t["detected_date"]))}</div>' if t else
-                 '<span class="dim small">None new</span>')
+                 '<span class="dim small nowrap">Nothing new</span>')
         tags = []
         low = next((pe for pe in ui.detail(r["detail_json"]).get("penalties", [])
                     if pe.get("key") == "firm_type"), None)
@@ -391,7 +456,7 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
                f'<input type="hidden" name="crd" value="{esc(r["crd"])}">'
                f'<input type="hidden" name="back" value="{esc(back)}">'
                f'<input type="hidden" name="new_name" value="">'
-               f'<select name="list_id" class="listpick" style="height:28px;font-size:12px;min-width:0;width:92px" '
+               f'<select name="list_id" class="listpick" style="height:28px;font-size:12px;min-width:0;width:78px" '
                f'onchange="addToList(this)" title="Add to one of your saved lists" aria-label="Add to a saved list">'
                f'<option value="">+ List</option>{listopts}'
                f'<option value="__new">New list...</option></select></form>')

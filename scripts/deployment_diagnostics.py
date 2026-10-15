@@ -62,7 +62,9 @@ for row in sorted(allocations, key=lambda x:x.get('CreateIndex',0), reverse=True
     for task, state in allocation.get('TaskStates', {}).items():
         print('Task:', task, state.get('State'), 'failed:', state.get('Failed'))
         for event in state.get('Events', [])[-4:]:
-            print('Event:', task, event.get('Type'), safe(event.get('DisplayMessage') or event.get('Message')))
+            when = event.get('Time')
+            when = __import__('datetime').datetime.utcfromtimestamp(when / 1e9).isoformat(timespec='seconds') if when else ''
+            print('Event:', task, when, event.get('Type'), safe(event.get('DisplayMessage') or event.get('Message')))
 # How much memory and CPU the running tasks use right now.
 if running:
     try:

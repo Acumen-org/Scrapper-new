@@ -455,6 +455,44 @@ def _resolve(engine: str | None) -> tuple[str, bool]:
     return e, False
 
 
+_REFRESHING = threading.Event()
+
+
+def _refresh_probes() -> None:
+    try:
+        smtp_egress_ok(refresh=True)
+        _reacher_health(refresh=True)
+    finally:
+        _REFRESHING.clear()
+
+
+def engine_status_cached() -> dict | None:
+    """engine_status() without waiting on the network, for screens: the last
+    answers, refreshed in the background once they are old. None until the
+    first answers arrive (a few seconds after the first ask)."""
+    url = _reacher_url()
+    with _PROBE_LOCK:
+        eg, rh = _PROBES.get("egress"), _PROBES.get("reacher")
+    now = time.monotonic()
+    rh = rh if rh and rh[3] == url else None
+    stale = eg is None or now - eg[2] >= EGRESS_TTL_S or bool(
+        url and (rh is None or now - rh[2] >= REACHER_TTL_S))
+    if stale and not _REFRESHING.is_set():
+        _REFRESHING.set()
+        threading.Thread(target=_refresh_probes, daemon=True, name="verify-probes").start()
+    if eg is None or (url and rh is None):
+        return None
+    r_ok, r_detail = (rh[0], rh[1]) if url else (None, "no Reacher server is configured")
+    configured = _configured()
+    if configured == "auto":
+        resolved = "reacher" if (url and r_ok) else ("native" if eg[0] else "dns")
+    else:
+        resolved = configured
+    return {"configured": configured, "resolved": resolved, "reacher_url": url or None,
+            "reacher_ok": r_ok, "reacher_detail": r_detail,
+            "port25_ok": eg[0], "port25_detail": eg[1]}
+
+
 def engine_status(refresh: bool = False) -> dict:
     """What the Settings screen shows: the configured engine, the one that will
     actually run, and why."""

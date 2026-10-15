@@ -828,7 +828,9 @@ class Audit:
         enrich = [e for e in enrich if "/source/" not in e] + src
         pages = ["/", "/ask", "/people", "/people?view=email", "/people?view=verified", "/people?view=direct",
                  "/people?view=linkedin", "/people?view=hunting",
-                 "/people?st=CA&role=leader&desig=cfp&view=email", "/firms", "/firms?view=contacts",
+                 "/people?st=CA&role=leader&cred=cfp&view=email", "/people?on=ats",
+                 "/people?on=ats&des=ats:hr_leader,ats:coo", "/people?on=glynac&title=chief+of+staff",
+                 "/people/designations/ats", "/firms", "/firms?view=contacts",
                  "/firms?st=NY&stat=new&on=any", "/signals", "/saved"]
         for i, l in enumerate(lists):
             pages += [l, l + "?view=disqualified", l + "?view=scoring"]

@@ -269,7 +269,7 @@ def _contact_line(cp, show_verify=True) -> str:
                 f'{"Matched" if cp["verify_status"] == "matched" else "Likely match"}</span></div>')
     lab = {"direct": "Direct", "mobile": "Mobile", "office": "Office", "main": "Main line",
            "toll_free": "Toll free"}.get(cp["label"] or "", "Phone")
-    return (f'<div class="cline">{ICONS["phone"]}<a href="tel:{esc(cp["value"])}">{esc(cp["value"])}</a>'
+    return (f'<div class="cline">{ICONS["phone"]}<a href="tel:{esc(cp["value"])}">{esc(ui.phone_text(cp["value"]))}</a>'
             f'<span class="chip line" title="From {esc(src)}">{esc(lab)}</span></div>')
 
 
@@ -701,7 +701,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
         orows = "".join(
             f'<tr><td>{esc(nice_name(o.get("city") or ""))}{", " + esc(o["state"]) if o.get("state") else ""}</td>'
             f'<td class="meta">{esc(o.get("street") or "Street not filed")}</td>'
-            f'<td>{("<a href=" + chr(34) + "tel:" + esc(o["phone"]) + chr(34) + ">" + esc(o["phone"]) + "</a>") if o.get("phone") else "-"}</td></tr>'
+            f'<td>{("<a href=" + chr(34) + "tel:" + esc(o["phone"]) + chr(34) + ">" + esc(ui.phone_text(o["phone"])) + "</a>") if o.get("phone") else "-"}</td></tr>'
             for o in offices)
         office_html = ui.panel("Offices", f'<div class="table-scroll"><table class="tight"><tbody>{orows}'
                                f'</tbody></table></div>', sub="Form ADV Schedule D",
@@ -868,7 +868,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     if website:
         subline.append(f'<span>{ICONS["globe"]}{website}</span>')
     if f["phone"]:
-        subline.append(f'<span>{ICONS["phone"]}<a href="tel:{esc(f["phone"])}">{esc(f["phone"])}</a></span>')
+        subline.append(f'<span>{ICONS["phone"]}<a href="tel:{esc(f["phone"])}">{esc(ui.phone_text(f["phone"]))}</a></span>')
     if firm_li:
         subline.append(f'<span>{ICONS["linkedin"]}<a href="{esc(firm_li)}" target="_blank" rel="noopener" '
                        f'data-noprefetch>LinkedIn</a></span>')
@@ -919,7 +919,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     people_tab = (ui.panel("Contact discovery", discovery_html,
                            sub="How reachable the firm's people are, and the tools to find more")
                   + ui.panel("People", people_html, count=pc["people"],
-                             sub="Everyone registered here; the people to call first are at the top"))
+                             sub="Registered reps, Form ADV officers and the staff its website names; the people to call first are at the top"))
     fit_tab = ui.panel("Product fit", _fit_section(crd, results, ranks, focus),
                        sub="Each product's score with the evidence behind it. Missing factors score zero.")
     activity_tab = (ui.panel("Signals", trig_html, count=signals_n, anchor="signals",
@@ -945,7 +945,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                               sub="What their brochure says that matters for our products")
                    + ftype_html + office_html)
     body = f"""<div class="pg firm-page">
-<div class="firm-top"><div class="crumb"><a href="/firms">Firms</a><span class="sep">/</span><span>{esc(profile_name)}</span></div>
+<div class="firm-top"><div class="crumb"><a href="/firms">Firms</a><span class="sep">/</span><span class="cur" title="{esc(profile_name)}">{esc(profile_name)}</span></div>
 <div class="acts"><form method="post" action="/watch/{esc(crd)}"><input type="hidden" name="back" value="/firm/{esc(crd)}"><button type="submit">{star}</button></form>
 <button type="button" class="primary" data-focus-ai>{ICONS["spark"]}Ask Bellwether AI</button></div></div>
 {saved_note}

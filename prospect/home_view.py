@@ -81,8 +81,7 @@ def _gather() -> dict:
     d["hires_12m"] = _one(c, "SELECT COUNT(*) FROM people_event WHERE kind='joined'"
                              " AND event_date >= ?", ((date.today() - timedelta(days=365)).isoformat(),))
     d["named_email"] = _one(c, """SELECT COUNT(*) FROM (SELECT DISTINCT crd, person_key FROM
-        usable_contact_point WHERE kind='email' AND person_key != '' AND is_role=0 AND source != 'pattern'
-        AND verify_status NOT IN ('invalid','no_mail_server')) x""") or 0
+        usable_contact_point WHERE kind='email' AND person_key != '' AND is_role=0) x""") or 0
     d["verified"] = _one(c, "SELECT COUNT(*) FROM usable_contact_point WHERE kind='email'"
                             " AND verify_status='valid'") or 0
     d["candidates"] = _one(c, "SELECT COUNT(*) FROM contact_point WHERE kind='email'"
@@ -110,9 +109,13 @@ def _gather() -> dict:
                 AND cp.verify_status='valid') AS verified_contact FROM product_score p
             JOIN firm_current f ON f.crd=p.crd WHERE p.product=? AND p.status='scored'
             ORDER BY p.rank LIMIT 6""", (k,))
-        fresh = _one(c, """SELECT COUNT(DISTINCT t.crd) FROM trigger_event t
-            JOIN product_score p ON p.crd=t.crd AND p.product=? AND p.status='scored'
-            WHERE t.suppressed=0 AND t.detected_date >= ?""", (k, cutoff)) or 0
+        # As the list's own New signal count: firms with a signal nobody has
+        # acted on yet.
+        fresh = _one(c, """SELECT COUNT(*) FROM product_score p
+            WHERE p.product=? AND p.status='scored' AND EXISTS (
+                SELECT 1 FROM trigger_event t LEFT JOIN trigger_action a ON a.trigger_id=t.id
+                WHERE t.crd=p.crd AND t.suppressed=0 AND a.state IS NULL AND t.detected_date >= ?)""",
+                     (k, cutoff)) or 0
         lists.append({"key": k, "p": p, "n": st["n"] or 0, "cov": st["cov"] or 0,
                       "hi": st["hi"] or 0, "top": top, "fresh": fresh})
     d["lists"] = lists
@@ -152,8 +155,7 @@ def _gather() -> dict:
         ("People roster", _one(c, "SELECT COUNT(*) FROM firm_people_stats p JOIN firm_scope s ON s.crd=p.crd WHERE p.headcount > 0") or 0, sc),
         ("A named person's email", _one(c, """SELECT COUNT(DISTINCT c.crd) FROM usable_contact_point c
             JOIN firm_scope s ON s.crd=c.crd WHERE c.kind='email' AND c.person_key != ''
-            AND c.is_role=0 AND c.source != 'pattern'
-            AND c.verify_status NOT IN ('invalid','no_mail_server')""") or 0, sc),
+            AND c.is_role=0""") or 0, sc),
         ("A verified email", _one(c, """SELECT COUNT(DISTINCT c.crd) FROM usable_contact_point c
             JOIN firm_scope s ON s.crd=c.crd WHERE c.kind='email' AND c.verify_status='valid'""") or 0, sc),
         ("Email platform known", _one(c, """SELECT COUNT(*) FROM firm_mail_platform m
@@ -254,13 +256,16 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
     d = data()
     me = current_owner()
     focus = focus if focus in products.product_keys() else ''
+    # People means the same everywhere: everyone the People screen lists.
+    people_n = (d.get("reach") or {}).get("total") or d["people"]
 
     kpis = "".join([
         _kpi(_compact(d["firms"]), "Adviser firms",
              f'{money(d["aum"])} under management', "/firms"),
-        _kpi(f'{d["scope"]:,}', "Ranked for our products", "on at least one list", "/firms?on=any"),
-        _kpi(_compact(d["people"]), "People tracked",
-             f'{d["hires_12m"] or 0:,} job moves in 12 months', "/people"),
+        _kpi(f'{d["scope"]:,}', "Priority firms", "on a product list; ATS from a score of 50",
+             "/firms?on=any"),
+        _kpi(_compact(people_n), "People",
+             f'{d["hires_12m"] or 0:,} joined a new firm in 12 months', "/people"),
         _kpi(f'{(d.get("reach") or {}).get("email", d["named_email"]):,}', "People with email",
              f'{(d.get("reach") or {}).get("verified", 0):,} people with verified email', "/people?view=email", accent=True),
         _kpi(f'{(d.get("reach") or {}).get("phone", d["phones"]):,}', "People with a phone",
@@ -449,8 +454,8 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
 <button type="button" data-panel="home-coverage">Data coverage</button></nav>
 <section id="home-overview">
 <div class="dashboard-summary"><a href="/firms"><span>Adviser firms</span><strong>{d['firms']:,}</strong><small>{money(d['aum'])} in assets</small></a>
-<a href="/firms?on=any"><span>Ranked firms</span><strong>{d['scope']:,}</strong><small>Across all products</small></a>
-<a href="/people"><span>People</span><strong>{d['people']:,}</strong><small>{rc.get('verified', 0):,} with verified email</small></a>
+<a href="/firms?on=any" title="{esc(ui.PRIORITY_HELP)}"><span>Priority firms</span><strong>{d['scope']:,}</strong><small>On a product list; ATS from 50</small></a>
+<a href="/people"><span>People</span><strong>{people_n:,}</strong><small>{rc.get('verified', 0):,} with verified email</small></a>
 <a href="/signals"><span>Recent signals</span><strong>{d['signals_30']:,}</strong><small>Past 30 days</small></a></div>
 <div class="dashboard-main">
 <section class="dashboard-leading"><div class="s-head"><h2>Leading firms</h2><a class="more" href="{ranked_link}">Open ranking</a></div>
@@ -472,7 +477,7 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
 <section class="overview-section"><div class="s-head"><h2>Watching</h2><a href="/firms" class="more">Find firms</a></div>{watch_html}</section></div>
 <section class="overview-section"><h2>Team pipeline</h2><div class="funnel">{funnel}</div></section></div></section>
 <section id="home-coverage"><div class="kpis">{kpis}</div><div class="coverage-columns">
-<div>{discovery}</div><section class="overview-section"><div class="s-head"><h2>Data coverage</h2><span class="meta">{d['scope']:,} ranked firms</span></div>{cov_rows}
+<div>{discovery}</div><section class="overview-section"><div class="s-head"><h2>Data coverage</h2><span class="meta">Of {d['scope']:,} priority firms</span></div>{cov_rows}
 <details class="detail-section"><summary>Firms by state</summary>{_map(d['by_state'])}</details></section></div>
 <p class="meta freshness">{' · '.join(fresh)}</p></section>
 </div>"""

@@ -355,7 +355,11 @@ def _consistency(conn):
 def _page_speed():
     """Render Settings, People and Home as the app does and time each, with
     its slowest statements. Reads only (the settings overview asks the mail
-    engine and browser whether they are available, as the page does)."""
+    engine and browser whether they are available, as the page does).
+
+    Not run by default: it runs inside the app's container and shares its CPU
+    and memory, and on 2026-10-15 rendering Home this way starved the app
+    until its health check failed and Nomad restarted it."""
     import time
     from prospect import webapp, settings_view, people_view, home_view
     real_connect = db.connect
@@ -428,7 +432,6 @@ def main():
         print('Runtime release:', json.dumps([dict(row) for row in releases]))
         _scoring(conn)
         _consistency(conn)
-        _page_speed()
         _health(conn)
         _shapes(conn)
         _ai(conn)

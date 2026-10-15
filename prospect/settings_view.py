@@ -162,11 +162,16 @@ def overview(msg: str = Query("")):
          "Not connected. Bellwether AI works as a firm finder until one is."), "/settings/ai"))
     try:
         from . import verify
-        es = verify.engine_status()
-        good = es["resolved"] in ("reacher", "native")
-        txt = (f"Checking mailboxes with the {esc(es['resolved'])} engine."
-               if good else "Only domain checks: outbound port 25 is closed and no Reacher server is set.")
-        rows.append(_status_row("Email verification", good or None, txt, "/settings/verify"))
+        es = verify.engine_status_cached()
+        if es is None:
+            rows.append(_status_row("Email verification", None,
+                                    "Checking the mail engine now; refresh in a few seconds.",
+                                    "/settings/verify"))
+        else:
+            good = es["resolved"] in ("reacher", "native")
+            txt = (f"Checking mailboxes with the {esc(es['resolved'])} engine."
+                   if good else "Only domain checks: outbound port 25 is closed and no Reacher server is set.")
+            rows.append(_status_row("Email verification", good or None, txt, "/settings/verify"))
     except Exception:
         rows.append(_status_row("Email verification", False, "The verification module did not load.",
                                 "/settings/verify"))
@@ -182,20 +187,19 @@ def overview(msg: str = Query("")):
         rows.append(_status_row("Website reading", None, "Crawler module not loaded.", "/settings/crawl"))
     c = conn()
     try:
-        ov = jobs.overview(c)
+        sm = jobs.summary(c)
     except Exception:
         c.rollback()
-        ov = []
+        sm = {"jobs": 0, "running": 0, "paused": 0}
     from . import health
     open_alerts = health.alerts(c)
-    run = sum(1 for j in ov if j["state"] == "running")
-    paused = sum(1 for j in ov if j["state"] == "paused")
+    run, paused = sm["running"], sm["paused"]
     bad = [a for a in open_alerts if a["level"] == "bad"]
     if open_alerts:
         txt = (f"{len(open_alerts)} need{'s' if len(open_alerts) == 1 else ''} a person: "
                + esc("; ".join(a["title"] for a in open_alerts[:3])) + ".")
     else:
-        txt = (f"{len(ov)} jobs running by themselves, {run} working now"
+        txt = (f"{sm['jobs']} jobs running by themselves, {run} working now"
                f"{', ' + str(paused) + ' paused by an admin' if paused else ''}. Nothing needs you.")
     rows.append(_status_row("Background jobs", False if bad else (None if open_alerts else True),
                             txt, "/settings/jobs"))
@@ -538,7 +542,7 @@ def jobs_page(msg: str = Query("")):
             rows.append(
                 f'<tr><td style="width:30%"><b>{esc(job.label)}</b>'
                 f'<details class="source-help"><summary>Details</summary><p>{esc(job.blurb)}</p></details></td>'
-                f'<td>{state_chip}<div class="meta">{esc(lane)} lane</div>'
+                f'<td class="jstate">{state_chip}<div class="meta">{esc(lane)} lane</div>'
                 f'{"<div class=meta>Next run " + nxt + "</div>" if nxt else ""}</td>'
                 f'<td style="min-width:200px">{prog}</td><td style="width:22%">{last}</td>'
                 f'<td class="num nowrap"><form method="post" action="/settings/jobs/{esc(job.kind)}/run" style="display:inline">'
@@ -695,7 +699,7 @@ def firmtypes_page(q: str = Query(""), cat: str = Query(""), msg: str = Query(""
     for cdef in firmtype.categories():
         k = cdef["key"]
         n = counts.get(k, {})
-        lists = ("All lists" if k == "unknown" else ", ".join(reach.get(k, [])) or "None")
+        lists = ("All lists" if k == "unknown" else ", ".join(reach.get(k, [])) or "No list")
         rows.append(
             f'<tr><td style="width:28%"><b>{esc(cdef["label"])}</b>'
             f'<div class="meta" style="text-transform:none;letter-spacing:0">{esc(cdef["description"])}</div></td>'

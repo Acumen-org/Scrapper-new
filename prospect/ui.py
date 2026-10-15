@@ -22,6 +22,24 @@ SOURCE_LABEL = {"adv": "Form ADV", "adv_office": "Form ADV office list", "adv_so
                 "manual": "added by hand"}
 
 
+# The working set every background job follows, named the same on every
+# screen that counts or filters by it.
+PRIORITY_HELP = ("Firms on at least one product list. ATS ranks every adviser firm, so an ATS "
+                 "score counts here from 50. Background research reaches these firms first.")
+
+
+def phone_text(v: str | None) -> str:
+    """A phone number as people read it: (212) 555-1077 for a US number,
+    with any extension kept; anything else as it was found."""
+    import re as _re
+    s = (v or "").strip()
+    m = _re.match(r"^\+?1?[\s.\-]*\(?(\d{3})\)?[\s.\-]*(\d{3})[\s.\-]*(\d{4})(.*)$", s)
+    if not m:
+        return s
+    ext = _re.sub(r"\D", "", m.group(4))
+    return f"({m.group(1)}) {m.group(2)}-{m.group(3)}" + (f" ext. {ext}" if ext else "")
+
+
 def contact_flags(c, crds: list[str]) -> dict[str, dict]:
     """How reachable each firm is, in one pass over the unified contacts:
     named people with an address the firm published or a server confirmed,
@@ -192,7 +210,7 @@ def contact_pills(email: str | None = None, phone: str | None = None,
     if phone:
         lbl = {"direct": "Direct", "mobile": "Mobile", "office": "Office", "main": "Main line",
                "toll_free": "Toll free"}.get(phone_label or "", "Phone")
-        out.append(f'<a class="pill" href="tel:{esc(phone)}" title="{esc(lbl)}: {esc(phone)}">'
+        out.append(f'<a class="pill" href="tel:{esc(phone)}" title="{esc(lbl)}: {esc(phone_text(phone))}">'
                    f'{_icon("phone")}{esc(phone if not compact else lbl)}</a>')
     if linkedin:
         out.append(f'<a class="pill li" href="{esc(linkedin)}" target="_blank" rel="noopener" '
@@ -211,15 +229,20 @@ def _qs(values: dict, drop: str | None = None, **extra) -> str:
 
 def filter_bar(action: str, values: dict, *, search: tuple[str, str] | None = ("q", "Search"),
                quick: list | None = None, more: list | None = None, hidden: dict | None = None,
-               defaults: dict | None = None) -> str:
+               defaults: dict | None = None, carry: dict | None = None,
+               extra_chips: list | None = None) -> str:
     """Search, a few filters as pills, every other filter one click away in
     More filters, and each active filter shown as a chip that removes it.
 
     quick and more hold fields as (name, label, options) for a select, where
     options are (value, text) pairs and the first is the 'any' choice, or
     (name, label, "check") for a checkbox. values holds the current request.
-    defaults names values that count as 'not filtering' (a default sort)."""
+    defaults names values that count as 'not filtering' (a default sort).
+    carry holds filters set outside the bar (a designation picked below it):
+    kept when the bar is submitted, dropped by Clear all; extra_chips shows
+    them as (text, link that removes it)."""
     quick, more, hidden, defaults = quick or [], more or [], hidden or {}, defaults or {}
+    carry, extra_chips = carry or {}, extra_chips or []
 
     def is_set(name):
         v = values.get(name)
@@ -254,7 +277,8 @@ def filter_bar(action: str, values: dict, *, search: tuple[str, str] | None = ("
                      f'<div class="fpanel">{panel}<div class="fact">'
                      f'<a class="btn ghost" href="{esc(action)}?{_qs(hidden)}">Reset all</a>'
                      f'<button class="primary" type="submit">Apply</button></div></div></details>')
-    parts += [f'<input type="hidden" name="{esc(k)}" value="{esc(v)}">' for k, v in hidden.items() if v]
+    parts += [f'<input type="hidden" name="{esc(k)}" value="{esc(v)}">'
+              for k, v in {**hidden, **carry}.items() if v]
     parts.append('<button class="ghost go sr-only" type="submit">Search</button>')
     form = f'<form class="fbar" method="get" action="{esc(action)}">{"".join(parts)}</form>'
 
@@ -273,11 +297,13 @@ def filter_bar(action: str, values: dict, *, search: tuple[str, str] | None = ("
             val = str(values.get(name))
             text = opts.get(val, val)
             chips.append((name, text if options_is_self_describing(text, label) else f"{label}: {text}"))
-    if not chips:
+    if not chips and not extra_chips:
         return form
-    allv = dict(values, **hidden)
+    allv = dict(values, **hidden, **carry)
     links = "".join(f'<span class="fchip">{esc(t)}<a href="{esc(action)}?{_qs(allv, drop=n)}" '
                     f'aria-label="Remove {esc(t)}">&times;</a></span>' for n, t in chips)
+    links += "".join(f'<span class="fchip">{esc(t)}<a href="{esc(href)}" '
+                     f'aria-label="Remove {esc(t)}">&times;</a></span>' for t, href in extra_chips)
     return (form + f'<div class="fchips">{links}<a class="clear" href="{esc(action)}?{_qs(hidden)}">'
             f'Clear all</a></div>')
 

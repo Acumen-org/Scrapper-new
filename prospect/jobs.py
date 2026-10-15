@@ -20,6 +20,8 @@ watches all of it and repairs what it can.
 from __future__ import annotations
 
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -480,17 +482,73 @@ def set_paused(conn, kind: str, paused: bool) -> None:
     conn.commit()
 
 
+# Each job's done, total, backlog and last-day figures are about a hundred
+# counts over the largest tables, and took Settings many seconds to open. They
+# move slowly, so they are kept for two minutes and, once older, served as
+# they are while a background thread works out fresh ones. Job states (running,
+# paused, last run) are always read live.
+COUNTS_TTL_S = 120
+_COUNTS: dict = {"t": 0.0, "v": None, "busy": False}
+_COUNTS_LOCK = threading.Lock()
+
+
+def _all_counts(conn) -> dict[str, tuple]:
+    tv = tag_version()
+    return {j.kind: (count(conn, j.done_sql, tv), count(conn, j.total_sql, tv),
+                     count(conn, j.backlog_sql, tv), count(conn, j.recent_sql, tv))
+            for j in JOBS}
+
+
+def _refresh_counts() -> None:
+    from . import db
+    try:
+        c = db.connect()
+        try:
+            v = _all_counts(c)
+        finally:
+            c.close()
+        with _COUNTS_LOCK:
+            _COUNTS.update(t=time.monotonic(), v=v)
+    except Exception:
+        pass
+    finally:
+        with _COUNTS_LOCK:
+            _COUNTS["busy"] = False
+
+
+def job_counts(conn) -> dict[str, tuple]:
+    with _COUNTS_LOCK:
+        have, age = _COUNTS["v"], time.monotonic() - _COUNTS["t"]
+        if have is not None and age >= COUNTS_TTL_S and not _COUNTS["busy"]:
+            _COUNTS["busy"] = True
+            threading.Thread(target=_refresh_counts, daemon=True, name="job-counts").start()
+    if have is not None:
+        return have
+    v = _all_counts(conn)
+    with _COUNTS_LOCK:
+        _COUNTS.update(t=time.monotonic(), v=v)
+    return v
+
+
+def summary(conn) -> dict:
+    """How many jobs are working and paused, from their states alone: what
+    the Settings overview says, without counting anyone's backlog."""
+    st = states(conn)
+    run = sum(1 for j in JOBS if st.get(j.kind, {}).get("running_since"))
+    paused = sum(1 for j in JOBS if st.get(j.kind, {}).get("desired_state") == "paused"
+                 and not st.get(j.kind, {}).get("running_since"))
+    return {"jobs": len(JOBS), "running": run, "paused": paused}
+
+
 def overview(conn) -> list[dict]:
     """Every job with its live state, for Settings and the dashboard."""
-    tv = tag_version()
     st = states(conn)
+    counts = job_counts(conn)
     out = []
     for j in JOBS:
         s = st.get(j.kind, {})
         ok, why = requirement(j)
-        done = count(conn, j.done_sql, tv)
-        total = count(conn, j.total_sql, tv)
-        backlog = count(conn, j.backlog_sql, tv)
+        done, total, backlog, recent = counts.get(j.kind, (None, None, None, None))
         if s.get("running_since"):
             state = "running"
         elif s.get("desired_state") == "paused":
@@ -501,7 +559,6 @@ def overview(conn) -> list[dict]:
             state = "queued"
         else:
             state = "scheduled"
-        recent = count(conn, j.recent_sql, tv)
         out.append({"job": j, "state": state, "why": why, "done": done, "total": total,
                     "backlog": backlog, "recent": recent, "last_run_at": s.get("last_run_at"),
                     "fails": s.get("fails") or 0, "ok_at": s.get("ok_at"),
