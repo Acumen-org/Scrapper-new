@@ -178,7 +178,9 @@ def _categories() -> list[tuple[str, str]]:
 
 
 def _filters(**kw) -> dict:
-    f = {k: (kw.get(k) or "") for k in FIELDS}
+    # A filter left out of a direct call (the release check renders this page
+    # in Python) arrives as FastAPI's Query default, not a string.
+    f = {k: (kw.get(k) if isinstance(kw.get(k), str) else "") for k in FIELDS}
     f["view"] = f["view"] if f["view"] in VIEWS else ""
     f["sort"] = f["sort"] if f["sort"] in ORDER else ""
     f["title"] = " ".join(f["title"].split())[:120]
@@ -305,6 +307,18 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
                 # Old links used these; they still work.
                 reach: str = Query(""), officers: str = Query(""), cfp: str = Query(""),
                 desig: str = Query("")):
+    # Called directly (the release check renders this page in Python), any
+    # filter left out arrives as FastAPI's Query default rather than a string.
+    s = {k: (v if isinstance(v, str) else "") for k, v in dict(
+        q=q, st=st, on=on, view=view, role=role, joined=joined, cred=cred, disc=disc, size=size,
+        cat=cat, src=src, des=des, title=title, sort=sort, reach=reach, officers=officers,
+        cfp=cfp, desig=desig).items()}
+    q, st, on, view, role, joined, cred, disc, size, cat, src, des, title, sort = (
+        s[k] for k in ("q", "st", "on", "view", "role", "joined", "cred", "disc", "size", "cat",
+                       "src", "des", "title", "sort"))
+    reach, officers, cfp, desig = s["reach"], s["officers"], s["cfp"], s["desig"]
+    page_n = page_n if isinstance(page_n, int) else 1
+    per = per if isinstance(per, int) else 50
     if reach and not view:
         view = {"email": "email", "verified": "verified", "phone": "direct", "none": "hunting",
                 "ready": "email"}.get(reach, "")
