@@ -31,7 +31,7 @@ if running:
     runtime = subprocess.run(['nomad', 'alloc', 'exec', '-i', '-t=false', '-task', 'app',
                               latest['ID'], 'python', '-'],
                              input=Path(__file__).with_name('job_diagnostics.py').read_text(),
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=240)
     if runtime.returncode:
         print('Runtime diagnostics unavailable; exit:', runtime.returncode)
     else:

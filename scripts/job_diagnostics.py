@@ -282,6 +282,160 @@ def _list_speed():
         webapp.CURRENT_ACCOUNT.reset(token)
 
 
+def _scoring(conn):
+    """The scoring rules each list runs on, and whether every stored score was
+    computed under them: the weights in force against the saved edit, and the
+    config stamp on the score rows against the current one."""
+    from prospect import products
+
+    def q(sql, args=()):
+        try:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+        except Exception as exc:
+            conn.rollback()
+            return [{'unavailable': type(exc).__name__}]
+    products.reload()
+    print('Runtime scoring stamp:', products.stamp())
+    print('Runtime scoring edits:', json.dumps(q(
+        "SELECT product, updated_at FROM scoring_config ORDER BY product"), default=str))
+    stored = {r['product']: json.loads(r['body']) for r in conn.execute(
+        "SELECT product, body FROM scoring_config").fetchall()}
+    for key in products.product_keys():
+        live = products.product(key)
+        weights = {cr['key']: cr.get('weight') for cr in live['criteria']}
+        saved = {cr['key']: cr.get('weight') for cr in (stored.get(key) or {}).get('criteria', [])}
+        print('Runtime scoring weights:', key, json.dumps(
+            [[cr['label'], cr.get('weight')] for cr in live['criteria']]))
+        if saved and saved != weights:
+            print('Runtime scoring mismatch:', key, json.dumps({'saved': saved, 'in_force': weights}))
+    for row in q("""SELECT product, status, COUNT(*) n, MIN(computed_at) oldest, MAX(computed_at) newest,
+            COUNT(DISTINCT config_stamp) stamps FROM product_score GROUP BY 1, 2 ORDER BY 1, 2"""):
+        print('Runtime scoring rows:', json.dumps(row, default=str))
+    for row in q("""SELECT product, config_stamp, COUNT(*) n FROM product_score
+            GROUP BY 1, 2 ORDER BY 1, 3 DESC"""):
+        print('Runtime scoring row stamps:', json.dumps(row, default=str))
+    for row in q("""SELECT id, product, note, updated_at, body FROM scoring_history
+            WHERE product='ats' ORDER BY id DESC LIMIT 8"""):
+        body = json.loads(row.pop('body') or '{}')
+        row['weights'] = [[cr.get('key'), cr.get('weight')] for cr in body.get('criteria', [])]
+        print('Runtime scoring history:', json.dumps(row, default=str))
+    for row in q("""SELECT started_at, finished_at, status, message FROM run_log
+            WHERE source_key IN ('rescore', 'score_products') ORDER BY started_at DESC LIMIT 5"""):
+        print('Runtime scoring runs:', json.dumps({k: (_scrub(v) if k == 'message' else v)
+                                                   for k, v in row.items()}, default=str))
+
+
+def _consistency(conn):
+    """The same quantity as each screen counts it, side by side, so figures
+    that should agree can be checked against each other. Counts only."""
+    from datetime import date, timedelta
+
+    def one(sql, args=()):
+        try:
+            r = conn.execute(sql, args).fetchone()
+            return dict(r) if r else {}
+        except Exception as exc:
+            conn.rollback()
+            return {'unavailable': type(exc).__name__}
+    print('Runtime counts people:', json.dumps(one("""SELECT
+        (SELECT COUNT(*) FROM person) AS person_rows,
+        (SELECT COUNT(*) FROM people_index) AS index_rows,
+        (SELECT COUNT(DISTINCT indvl_pk) FROM people_index) AS index_people,
+        (SELECT COUNT(*) FROM people_index WHERE has_email=1) AS index_email,
+        (SELECT COUNT(*) FROM people_index WHERE email_status='valid') AS index_verified,
+        (SELECT COUNT(*) FROM people_index WHERE title IS NOT NULL) AS index_titled,
+        (SELECT COUNT(DISTINCT (crd, person_key)) FROM contact_point WHERE person_key LIKE 'n:%') AS site_people,
+        (SELECT COUNT(DISTINCT (crd, person_key)) FROM contact_point WHERE person_key LIKE 'n:%'
+            AND title IS NOT NULL AND title != '') AS site_people_titled""")))
+    print('Runtime counts firms:', json.dumps(one("""SELECT
+        (SELECT COUNT(*) FROM firm_current WHERE is_era=0) AS firms,
+        (SELECT COUNT(*) FROM firm_scope) AS scope,
+        (SELECT COUNT(DISTINCT crd) FROM product_score WHERE status='scored') AS on_any_list,
+        (SELECT COUNT(DISTINCT crd) FROM product_score WHERE status='scored' AND product != 'ats') AS on_non_ats,
+        (SELECT COUNT(*) FROM product_score WHERE product='ats' AND status='scored' AND score >= 50) AS ats_50""")))
+    cutoff = (date.today() - timedelta(days=60)).isoformat()
+    for key in ('ats', 'glynac', 'phh_fund'):
+        print('Runtime counts list:', key, json.dumps(one("""SELECT
+            (SELECT COUNT(*) FROM product_score WHERE product=? AND status='scored') AS kpi_n,
+            (SELECT COUNT(*) FROM product_score p JOIN firm_current f ON f.crd=p.crd
+                WHERE p.product=? AND p.status='scored') AS table_n,
+            (SELECT COUNT(*) FROM product_score p WHERE p.product=? AND p.status='scored' AND EXISTS (
+                SELECT 1 FROM trigger_event t LEFT JOIN trigger_action a ON a.trigger_id=t.id
+                WHERE t.crd=p.crd AND t.suppressed=0 AND a.state IS NULL AND t.detected_date >= ?)) AS list_fresh,
+            (SELECT COUNT(DISTINCT t.crd) FROM trigger_event t JOIN product_score p ON p.crd=t.crd
+                AND p.product=? AND p.status='scored' WHERE t.suppressed=0 AND t.detected_date >= ?) AS home_fresh,
+            (SELECT COUNT(*) FROM product_score p WHERE p.product=? AND p.status='scored' AND EXISTS (
+                SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'
+                AND x.person_key != '' AND x.is_role=0)) AS list_reach,
+            (SELECT COUNT(*) FROM product_score p WHERE p.product=? AND p.status='scored' AND EXISTS (
+                SELECT 1 FROM usable_contact_point x WHERE x.crd=p.crd AND x.kind='email'
+                AND x.person_key != '' AND x.is_role=0 AND x.source != 'pattern'
+                AND x.verify_status NOT IN ('invalid','no_mail_server'))) AS home_reach""",
+            (key, key, key, cutoff, key, cutoff, key, key)), default=str))
+
+
+def _page_speed():
+    """Render Settings, People and Home as the app does and time each, with
+    its slowest statements. Reads only (the settings overview asks the mail
+    engine and browser whether they are available, as the page does)."""
+    import time
+    from prospect import webapp, settings_view, people_view, home_view
+    real_connect = db.connect
+    log = []
+
+    class Timed:
+        def __init__(self, c):
+            self._c = c
+
+        def execute(self, sql, args=()):
+            t = time.perf_counter()
+            try:
+                return self._c.execute(sql, args)
+            finally:
+                log.append((time.perf_counter() - t, " ".join(str(sql).split())[:150]))
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    def timed_connect(*a, **k):
+        return Timed(real_connect(*a, **k))
+
+    mods = (settings_view, people_view, home_view)
+    token = webapp.CURRENT_ACCOUNT.set({"login": "diagnostics", "role": "admin", "name": "Diagnostics",
+                                        "active": 1, "families": []})
+    db.connect = timed_connect
+    for m in mods:
+        m.conn = timed_connect
+    pages = [
+        ("settings", lambda: settings_view.overview(msg="")),
+        ("settings_jobs", lambda: settings_view.jobs_page(msg="")),
+        ("people", lambda: people_view.people_page(q="", st="", on="", view="", role="", joined="",
+                                                   desig="", disc="", size="", cat="", sort="",
+                                                   page_n=1, per=50, reach="", officers="", cfp="")),
+        ("home_data", home_view._gather),
+    ]
+    try:
+        for name, fn in pages:
+            log.clear()
+            t = time.perf_counter()
+            try:
+                fn()
+                status = "ok"
+            except Exception as exc:
+                status = type(exc).__name__ + ": " + str(exc)[:120]
+            total = time.perf_counter() - t
+            print("Runtime page speed:", json.dumps({"page": name, "seconds": round(total, 2),
+                  "sql_seconds": round(sum(x[0] for x in log), 2), "statements": len(log),
+                  "status": status}))
+            for secs, sql in sorted(log, reverse=True)[:6]:
+                print("Runtime page sql:", name, f"{secs:.2f}s", sql)
+    finally:
+        db.connect = real_connect
+        for m in mods:
+            m.conn = webapp.conn
+        webapp.CURRENT_ACCOUNT.reset(token)
+
+
 def main():
     conn = db.connect()
     try:
@@ -298,7 +452,10 @@ def main():
         _shapes(conn)
         _ai(conn)
         _growth(conn)
+        _scoring(conn)
+        _consistency(conn)
         _list_speed()
+        _page_speed()
         ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='firm_refresh'
               AND column_name IN ('detail','last_success_at')""").fetchone()['n']
