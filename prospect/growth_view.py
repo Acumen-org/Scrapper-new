@@ -28,7 +28,8 @@ from __future__ import annotations
 from datetime import date
 
 from . import ui
-from .growth import ANNUALISE_AFTER_DAYS, VETERAN_YEARS
+from .growth import (ANNUALISE_AFTER_DAYS, SENIOR_INDUSTRY_YEARS, SENIOR_TENURE_YEARS,
+                     VETERAN_YEARS)
 from .webapp import esc, escn, money, nice_name
 
 SOURCE_WORDS = {"website": "Careers page", "ats": "Tracking system", "job_board": "Job board"}
@@ -39,7 +40,10 @@ FUNCTION_ORDER = ("Advisory", "Operations and client service", "Compliance", "Fi
 # ------------------------------------------------------------- formatting
 
 def _pct(v: float, signed: bool = True) -> str:
-    return f"{'+' if signed and v > 0 else ''}{v * 100:.0f}%"
+    r = round(v * 100)
+    if r == 0:
+        return "0%"
+    return f"{'+' if signed and r > 0 else ''}{r:.0f}%"
 
 
 def _tone(v: float | None) -> str:
@@ -81,7 +85,7 @@ def _change(ch: dict | None, days: int | None) -> str:
         return '<span class="muted">-</span>'
     out = f'<span class="{_tone(ch["change"])}">{_pct(ch["change"])}</span>'
     if (days or 0) > ANNUALISE_AFTER_DAYS:
-        out += f'<div class="meta">{_pct(ch["annual"])} a year</div>'
+        out += f'<div class="meta nowrap">{_pct(ch["annual"])} a year</div>'
     return out
 
 
@@ -102,19 +106,46 @@ def _missing(text: str) -> str:
     return f'<p class="muted small">{text}</p>'
 
 
-def _team_change(t: dict) -> tuple[str, str]:
-    now, prev = t.get("now"), t.get("prev")
-    if now is None or prev is None:
-        return "-", ""
-    net = now - prev
-    if net > 0:
-        word = f'<span class="ok">Grew by {net}</span>'
-    elif net < 0:
-        word = f'<span class="bad">Shrank by {-net}</span>'
-    else:
-        word = "No change"
-    sub = f"{_pct(net / prev)} on {prev:,} a year ago" if prev else ""
-    return word, sub
+def _not_measured_term(text: str = "Not measured yet") -> str:
+    return '<span class="tterm"' + ui.tip_attr(
+        "Not measured yet", "The Growth job compares each firm's Form ADV filings once a "
+        "day; this firm has not had its turn yet. Team moves and open roles are already "
+        "current.") + f'>{text}</span>'
+
+
+def _team_now(gd: dict, stats: dict | None) -> dict:
+    """The registered team now and a year ago, with the year's moves, from the
+    Growth job's figures or, before it has run, from the roster stats."""
+    t = dict(gd.get("team") or {})
+    if stats:
+        j, left = int(stats.get("hires_12m") or 0), int(stats.get("departures_12m") or 0)
+        head = stats.get("headcount")
+        if t.get("now") is None:
+            t["now"] = head
+        if t.get("prev") is None and head is not None:
+            t["prev"] = head - (j - left)
+        if t.get("joined") is None:
+            t["joined"] = j
+        if t.get("left") is None:
+            t["left"] = left
+    return t
+
+
+def _team_cell(t: dict, label: str = "Team, past 12 months") -> str:
+    """Who joined and who left as two labelled figures (ui.moves_html), with
+    the headcount now and a year ago under them. Never one sentence."""
+    if t.get("now") is None:
+        return _fact(label, "-", "roster not loaded yet")
+    under = f"{t['now']:,} registered now"
+    if t.get("prev") is not None:
+        under += f", {t['prev']:,} a year ago"
+    return (f'<div><div class="l">{label}</div><div class="v">'
+            f'{ui.moves_html(t.get("joined"), t.get("left"), "")}</div>'
+            f'<div class="meta">{under}</div></div>')
+
+
+def _not_measured(label: str) -> str:
+    return _fact(label, "-", _not_measured_term("not measured yet"))
 
 
 # ----------------------------------------------------------------- glance
@@ -123,12 +154,7 @@ def glance(d: dict, stats: dict | None) -> str:
     """The overview's Growth card: the team, assets and open roles."""
     g = d.get("growth") or {}
     gd = g.get("detail") or {}
-    t = gd.get("team") or {}
-    if not t and stats:
-        j, left = int(stats.get("hires_12m") or 0), int(stats.get("departures_12m") or 0)
-        t = {"now": stats.get("headcount"), "prev": (stats.get("headcount") or 0) - (j - left)}
-    word, sub = _team_change(t)
-    cells = [_fact("Team in the past year", word, sub)]
+    cells = [_team_cell(_team_now(gd, stats))]
     aum = gd.get("aum")
     period = gd.get("period") or {}
     if aum:
@@ -136,6 +162,8 @@ def glance(d: dict, stats: dict | None) -> str:
         unit = " a year" if (period.get("days") or 0) > ANNUALISE_AFTER_DAYS else ""
         cells.append(_fact("Assets", f'<span class="{_tone(rate)}">{_pct(rate)}{unit}</span>',
                            f"since the {_when(period.get('from'))} filing"))
+    elif not g:
+        cells.append(_not_measured("Assets"))
     else:
         cells.append(_fact("Assets", "-", "no earlier filing to compare"))
     posts = d.get("postings") or []
@@ -169,21 +197,16 @@ def section(crd: str, f, d: dict, stats: dict | None, mv: dict, series: list) ->
     """The whole Growth tab: one panel per question, most direct first."""
     g = d.get("growth") or {}
     gd = g.get("detail") or {}
-    building = ("" if g else
-                '<p class="note plain small" style="margin:14px 0 0">This firm\'s growth figures '
-                'are being built; the Growth job measures every firm once a day. Team moves and '
-                'open roles are already current.</p>')
     return "".join((
-        ui.panel("At a glance", _summary(d, gd, stats) + building,
-                 sub="The team, assets, clients and openings, against a year ago"),
+        ui.panel("At a glance", _summary(d, gd, stats, bool(g)), sub="Against a year ago"),
         ui.panel("Open roles", _roles(d), anchor="growth-roles",
-                 sub="From the firm's careers page, its applicant-tracking system and LinkedIn",
+                 sub="From their careers page, applicant-tracking system and LinkedIn",
                  acts=(f'<button class="sm ghost" data-post="/api/firm/{esc(crd)}/roles" '
                        f'data-busy="Starting">Check for openings now</button>')),
         ui.panel("Team", _team(gd, stats, mv, series), anchor="hiring",
-                 sub="Who joined and who left, from the SEC record of every registered person"),
+                 sub="Joins and departures, from SEC registration records"),
         ui.panel("Assets, clients and staff", _business(f, gd), anchor="growth-business",
-                 sub="The latest Form ADV filing against the one about a year before it"),
+                 sub=_business_sub(gd)),
         ui.panel("Hiring needs", _needs(gd), anchor="growth-needs",
                  sub="Where the firm is likely to need people next, by function"),
         ui.panel("Expansion", _expansion(gd), anchor="growth-expansion",
@@ -191,24 +214,15 @@ def section(crd: str, f, d: dict, stats: dict | None, mv: dict, series: list) ->
     ))
 
 
-def _summary(d: dict, gd: dict, stats) -> str:
-    t = gd.get("team") or {}
-    if not t and stats:
-        j, left = int(stats.get("hires_12m") or 0), int(stats.get("departures_12m") or 0)
-        t = {"now": stats.get("headcount"), "prev": (stats.get("headcount") or 0) - (j - left),
-             "joined": j, "left": left}
-    word, _ = _team_change(t)
-    if t.get("now") is not None:
-        team = _fact("Registered team", f"{t['now']:,}",
-                     f"{word} in a year &middot; {t.get('joined') or 0} joined, "
-                     f"{t.get('left') or 0} left")
-    else:
-        team = _fact("Registered team", "-", "roster not loaded yet")
+def _summary(d: dict, gd: dict, stats, measured: bool = True) -> str:
+    team = _team_cell(_team_now(gd, stats))
     period = gd.get("period") or {}
     long_gap = (period.get("days") or 0) > ANNUALISE_AFTER_DAYS
 
     def rate(key: str, label: str) -> str:
         ch = gd.get(key)
+        if not ch and not measured:
+            return _not_measured(label)
         if not ch:
             return _fact(label, "-", "no earlier filing to compare")
         v = ch["annual"] if long_gap else ch["change"]
@@ -238,33 +252,36 @@ def _team(gd: dict, stats, mv: dict, series: list) -> str:
                         "once it has loaded.")
     out = ""
     if stats:
-        t = gd.get("team") or {}
-        j, left = int(stats.get("hires_12m") or 0), int(stats.get("departures_12m") or 0)
-        head = stats.get("headcount")
-        prev = t.get("prev") if t.get("prev") is not None else (
-            head - (j - left) if head is not None else None)
-        out += ('<div class="facts four">'
-                + _fact("Registered now", f"{head:,}" if head is not None else "-",
-                        f"{prev:,} a year ago" if prev is not None else "")
-                + _fact("Joined in the past year", f'<span class="{"ok" if j else ""}">{j}</span>')
-                + _fact("Left in the past year", f'<span class="{"bad" if left else ""}">{left}</span>')
-                + _fact("The year before", f"{int(stats.get('hires_prev_12m') or 0)} joined, "
-                                           f"{int(stats.get('departures_prev_12m') or 0)} left")
+        t = _team_now(gd, stats)
+        head, prev = t.get("now"), t.get("prev")
+
+        def moves(j, left, label):
+            return (f'<div><div class="l">{label}</div><div class="v">'
+                    f'{ui.moves_html(j, left, "")}</div></div>')
+        out += ('<div class="facts three">'
+                + f'<div><div class="l">Registered now</div><div class="v">'
+                  f'{f"{head:,}" if head is not None else "-"}</div>'
+                + (f'<div class="meta">{prev:,} a year ago</div>' if prev is not None else "")
+                + '</div>'
+                + moves(t.get("joined"), t.get("left"), "Past 12 months")
+                + moves(stats.get("hires_prev_12m"), stats.get("departures_prev_12m"),
+                        "The 12 months before")
                 + '</div>')
     if series:
         out += (f'<div class="sub-sec"><h3>Joined and left, year by year</h3>'
                 f'{ui.year_bars(series)}</div>')
     lifts = gd.get("lift_outs") or []
     if lifts:
-        out += ('<p class="note plain" style="margin:16px 0 0">'
-                + "; ".join(f'<b>{int(x["n"])} people joined from '
-                            f'{_firm_link(x.get("org"), x.get("org_crd"))}</b>'
-                            for x in sorted(lifts, key=lambda x: -(x.get("n") or 0))[:3])
-                + ' in the past year, a team hired together.</p>')
+        out += ('<div class="sub-sec"><h3>Teams hired together, past 12 months</h3>'
+                '<ul class="evidence-list">'
+                + "".join(f'<li>{int(x["n"])} people joined from '
+                          f'{_firm_link(x.get("org"), x.get("org_crd"))}</li>'
+                          for x in sorted(lifts, key=lambda x: -(x.get("n") or 0))[:3])
+                + '</ul></div>')
 
     def lst(items, kind):
         if not items:
-            return '<p class="muted">Nobody in the last two years.</p>'
+            return '<p class="muted">Nobody in the past two years.</p>'
         word = "from" if kind == "joined" else "now at"
         rows = []
         for m in items[:LIST_MAX]:
@@ -278,21 +295,19 @@ def _team(gd: dict, stats, mv: dict, series: list) -> str:
                 if len(items) > LIST_MAX else "")
         return f'<div class="feed">{"".join(rows)}</div>{more}'
 
-    moves = (f'<div class="cols-2"><div><h3>Joined</h3>{lst(mv.get("joined"), "joined")}</div>'
-             f'<div><h3>Left</h3>{lst(mv.get("left"), "left")}</div></div>')
-    if stats:
-        srcs, dests = stats.get("top_sources") or [], stats.get("top_destinations") or []
+    # Where hires came from sits under the joiners, where leavers went under
+    # the leavers: never one sentence about both.
+    srcs = (stats or {}).get("top_sources") or []
+    dests = (stats or {}).get("top_destinations") or []
 
-        def fl(items):
-            return ", ".join(f'{_firm_link(x.get("org_name"), x.get("org_pk"))} ({x.get("n")})'
-                             for x in items[:5] if x.get("org_name")) or "-"
-        bits = []
-        if srcs:
-            bits.append(f"<b>Hires came from</b> {fl(srcs)}.")
-        if dests:
-            bits.append(f"<b>Leavers went to</b> {fl(dests)}.")
-        if bits:
-            moves += f'<p style="margin:14px 0 0">{" ".join(bits)}</p>'
+    def fl(items, label):
+        firms = ", ".join(f'{_firm_link(x.get("org_name"), x.get("org_pk"))} ({x.get("n")})'
+                          for x in items[:5] if x.get("org_name"))
+        return f'<p class="moves-from"><span class="l">{label}</span> {firms}</p>' if firms else ""
+    moves = (f'<div class="cols-2"><div><h3>Joined, past two years</h3>{lst(mv.get("joined"), "joined")}'
+             f'{fl(srcs, "Hires in the past three years came from")}</div>'
+             f'<div><h3>Left, past two years</h3>{lst(mv.get("left"), "left")}'
+             f'{fl(dests, "Leavers in the past three years went to")}</div></div>')
     out += f'<div class="sub-sec">{moves}</div>'
     return out
 
@@ -305,35 +320,46 @@ ROWS = (("Assets under management", "aum", "money"), ("Clients", "clients", "int
         ("Clients per advisor", "clients_per_advisor", "dec"))
 
 
+def _business_sub(gd: dict) -> str:
+    """Which two filings the table compares, said once in the panel's subtitle."""
+    period = gd.get("period") or {}
+    if period.get("from"):
+        return (f"Form ADV filed {esc(_when(period.get('to')))} against "
+                f"{esc(_when(period['from']))}, {_months(period.get('days'))} earlier")
+    return "The latest Form ADV filing; no earlier one on record to compare"
+
+
 def _business(f, gd: dict) -> str:
     period = gd.get("period") or {}
     days = period.get("days")
+    compared = bool(period.get("from"))
     sm = gd.get("staff_mix") or {}
     current = {"aum": f["raum"], "clients": f["clients_total"],
                "staff": sm.get("total") if sm else f["total_employees"],
                "advisors": sm.get("advisory") if sm else f["iar_count"]}
     if current["aum"] and current["advisors"]:
         current["aum_per_advisor"] = current["aum"] / current["advisors"]
-    if period.get("from"):
-        note = (f"Filed {esc(period.get('to') or '?')}, compared with {esc(period['from'])}, "
-                f"{_months(days)} earlier.")
-        if (days or 0) > ANNUALISE_AFTER_DAYS:
-            note += " That is more than fifteen months, so each change is also shown per year."
-        out = f'<p style="margin:0 0 14px">{note}</p>'
-    else:
-        out = ('<p style="margin:0 0 14px">No filing a year or more before the latest one is on '
-               'record, so nothing is compared yet. These are the latest filing\'s figures.</p>')
+    if current["clients"] is not None and current["advisors"]:
+        current["clients_per_advisor"] = current["clients"] / current["advisors"]
     rows = []
     for label, key, kind in ROWS:
         ch = gd.get(key)
         now = ch["now"] if ch else current.get(key)
         prev = ch["prev"] if ch else None
         rows.append(f'<tr><td>{label}</td><td class="num">{_num(now, kind)}</td>'
-                    f'<td class="num">{_num(prev, kind)}</td><td class="num">{_change(ch, days)}</td></tr>')
-    earlier = esc(_when(period.get("from"))) if period.get("from") else "Earlier"
-    return (out + '<div class="table-scroll"><table class="tight"><thead><tr><th>Measure</th>'
-            f'<th class="num">Now</th><th class="num">{earlier}</th><th class="num">Change</th>'
-            '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>')
+                    + (f'<td class="num">{_num(prev, kind)}</td><td class="num">{_change(ch, days)}</td>'
+                       if compared else "") + '</tr>')
+    head = '<th>Measure</th><th class="num">Latest filing</th>'
+    if compared:
+        change = "Change"
+        if (days or 0) > ANNUALISE_AFTER_DAYS:
+            change = ('<span class="tterm"' + ui.tip_attr(
+                "Change, and per year", f"These filings are {_months(days)} apart, so each "
+                "change is also shown as a yearly rate.") + '>Change</span>')
+        head = (f'<th>Measure</th><th class="num">{esc(_when(period.get("to")))}</th>'
+                f'<th class="num">{esc(_when(period["from"]))}</th><th class="num">{change}</th>')
+    return ('<div class="table-scroll"><table class="tight"><thead><tr>' + head
+            + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>')
 
 
 # ------------------------------------------------------------------ needs
@@ -344,7 +370,7 @@ def _need(title: str, verdict: str, body: str) -> str:
 
 def _needs(gd: dict) -> str:
     if not gd:
-        return _missing("Shown once the Growth job has measured this firm.")
+        return _missing(_not_measured_term())
     days = (gd.get("period") or {}).get("days")
     blocks = []
 
@@ -408,7 +434,10 @@ def _needs(gd: dict) -> str:
             if x.get("industry") is not None:
                 bits.append(f"{x['industry']:.0f} in the industry")
             to = _firm_link(nice_name(x.get("to")) if x.get("to") else None, x.get("to_crd"))
-            tag = ' <span class="chip warn">Senior</span>' if x.get("senior") else ""
+            tag = (' <span class="chip warn"' + ui.tip_attr(
+                "Senior departure", f"{SENIOR_TENURE_YEARS}+ years at the firm or "
+                f"{SENIOR_INDUSTRY_YEARS}+ in the industry: likely to need a replacement.")
+                   + '>Senior</span>') if x.get("senior") else ""
             rows.append(f'<div class="kvline"><span><b>{escn(x["name"])}</b>{tag}'
                         f'<div class="meta">{", ".join(bits) or "Tenure not on record"}'
                         f'{" &middot; now at " + to if to else ""}</div></span>'
@@ -438,7 +467,7 @@ def _needs(gd: dict) -> str:
 
 def _expansion(gd: dict) -> str:
     if not gd:
-        return _missing("Shown once the Growth job has measured this firm.")
+        return _missing(_not_measured_term())
     locs = gd.get("locations") or []
     st = gd.get("states") or {}
     new_states = st.get("new") or []
@@ -495,7 +524,7 @@ def _roles(d: dict) -> str:
         line.append(f"website checked {esc(ui.ago(cr['checked_at']))}")
     if cr.get("searched_at"):
         line.append(f"LinkedIn searched {esc(ui.ago(cr['searched_at']))}")
-    status_line = f'<p style="margin:0 0 14px">{" &middot; ".join(line)}</p>' if line else ""
+    status_line = f'<p class="meta roles-status">{" &middot; ".join(line)}</p>' if line else ""
     if not posts:
         status = cr.get("status")
         msg = {
@@ -504,8 +533,10 @@ def _roles(d: dict) -> str:
             "no_page": "No careers page found on the firm's website.",
             "unreachable": "The firm's website did not answer; it is tried again in a few days.",
             "no_website": "No website on file.",
-        }.get(status or "", "Not checked yet. Every firm's website is read in turn, growing "
-                            "firms first, and LinkedIn is searched after it.")
+        }.get(status or "", '<span class="tterm"' + ui.tip_attr(
+            "Not checked yet", "Every firm's website is read in turn, growing firms first, "
+            "then LinkedIn is searched. Check for openings now reads this one straight away.")
+            + '>Not checked yet.</span>')
         if status and cr.get("searched_at"):
             msg += " No LinkedIn posting names the firm either."
         elif status and status != "no_website":
@@ -523,10 +554,10 @@ def _roles(d: dict) -> str:
             else:
                 where = SOURCE_WORDS.get(x.get("source"), "")
             rows.append(f'<tr><td><a href="{esc(x.get("url") or "")}" target="_blank" rel="noopener" '
-                        f'data-noprefetch>{esc(x["title"])}</a></td><td>{esc(fn)}</td>'
-                        f'<td class="muted">{esc(where)}</td>'
-                        f'<td class="muted">{esc(ui.ago(x.get("first_seen")))}</td></tr>')
-    return (status_line + f'<div class="pills" style="margin-bottom:14px">{chips}</div>'
-            '<div class="table-scroll"><table class="tight"><thead><tr><th>Role</th><th>Function</th>'
+                        f'data-noprefetch>{esc(x["title"])}</a></td><td data-l="Function">{esc(fn)}</td>'
+                        f'<td class="muted" data-l="Found on">{esc(where)}</td>'
+                        f'<td class="muted" data-l="First seen">{esc(ui.ago(x.get("first_seen")))}</td></tr>')
+    return (status_line + f'<div class="pills roles-chips">{chips}</div>'
+            '<div class="table-scroll"><table class="tight roles-table"><thead><tr><th>Role</th><th>Function</th>'
             '<th>Found on</th><th>First seen</th></tr></thead><tbody>' + "".join(rows)
             + '</tbody></table></div>')

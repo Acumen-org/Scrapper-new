@@ -34,7 +34,7 @@ from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 from . import config, procs, products, ui, users, xlsx
-from .webapp import (TYPE_LABEL, conn, current_account, current_owner, esc, escn,
+from .webapp import (PRODUCTS, TYPE_LABEL, conn, current_account, current_owner, esc, escn,
                      missing_chip, money, page, qs_join, score_cell, signal_cutoff)
 
 router = APIRouter()
@@ -173,6 +173,30 @@ def _ranked_note(p: dict) -> str:
     return "every firm, no gates"
 
 
+def _ranked_help(p: dict) -> str:
+    if p.get("gates"):
+        return (f"Firms that pass every Must pass rule on the Scoring tab and were not removed, "
+                f"ranked by their {p['name']} score.")
+    return (f"{p['name']} ranks every adviser firm; only firms that fail a Removed if rule "
+            f"are taken off.")
+
+
+# The header tiles, explained where they stand rather than in fine print.
+KPI_HELP = {
+    "signal": ("New signal", "Firms with a signal in the last 60 days that nobody has marked "
+               "done, snoozed or dismissed. Click to show only them."),
+    "reach": ("Reachable", "Firms where Bellwether holds at least one named person's email. "
+              "Shared inboxes such as info@ do not count. Click to show only them."),
+    "hiring": ("Hiring now", "Firms with open roles posted on their careers page, hiring system "
+               "or a job board. Click to show only them."),
+    "hi": ("Score 60 or more", "Firms scoring 60 or more out of 100: a strong fit on the data "
+           "Bellwether holds."),
+    "cov": ("Data coverage", "On average, the share of each firm's scoring weight that rests on "
+            "data Bellwether holds. A factor with no data yet scores zero, so scores can rise "
+            "as data arrives. Click to show firms scored on 90% or more known data."),
+}
+
+
 def can_edit(key: str) -> bool:
     return users.can_edit_product(current_account(), products.product(key)["family"])
 
@@ -282,19 +306,23 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
         cnt = f'<span class="cnt">{n:,}</span>' if n is not None else ""
         return f'<a class="{cls}" href="/lists/{key}?view={v}">{label}{cnt}</a>'
 
-    kpis = (f'<div class="kpis" style="margin-bottom:22px">'
-            f'<a class="kpi" href="/lists/{key}"><div class="l">Firms ranked</div><div class="n">{stats["n"] or 0:,}</div>'
+    def tip(k, focus=False):
+        return ui.tip_attr(*KPI_HELP[k], focus=focus)
+
+    kpis = (f'<div class="kpis list-kpis">'
+            f'<a class="kpi" href="/lists/{key}"{ui.tip_attr("Firms ranked", _ranked_help(p), focus=False)}>'
+            f'<div class="l">Firms ranked</div><div class="n">{stats["n"] or 0:,}</div>'
             f'<div class="d">{_ranked_note(p)}</div></a>'
-            f'<a class="kpi{" accent" if sig else ""}" href="/lists/{key}?sig=1"><div class="l">New signal</div>'
+            f'<a class="kpi{" accent" if sig else ""}" href="/lists/{key}?sig=1"{tip("signal")}><div class="l">New signal</div>'
             f'<div class="n">{fresh_n:,}</div><div class="d">in the last 60 days</div></a>'
-            f'<a class="kpi" href="/lists/{key}?reach=email"><div class="l">Reachable</div><div class="n">{reach_n:,}</div>'
+            f'<a class="kpi" href="/lists/{key}?reach=email"{tip("reach")}><div class="l">Reachable</div><div class="n">{reach_n:,}</div>'
             f'<div class="d">a named person\'s email</div></a>'
-            + (f'<a class="kpi{" accent" if hiring else ""}" href="/lists/{key}?hiring=1"><div class="l">Hiring now</div>'
+            + (f'<a class="kpi{" accent" if hiring else ""}" href="/lists/{key}?hiring=1"{tip("hiring")}><div class="l">Hiring now</div>'
                f'<div class="n">{hiring_n:,}</div><div class="d">open roles posted</div></a>'
                if p.get("family") == "ATS" else
-               f'<div class="kpi"><div class="l">Score 60 or more</div><div class="n">{stats["hi"] or 0:,}</div>'
+               f'<div class="kpi"{tip("hi", True)}><div class="l">Score 60 or more</div><div class="n">{stats["hi"] or 0:,}</div>'
                f'<div class="d">strong fit</div></div>')
-            + f'<a class="kpi{" accent" if cov == "full" else ""}" href="/lists/{key}?cov=full"><div class="l">Data coverage</div>'
+            + f'<a class="kpi{" accent" if cov == "full" else ""}" href="/lists/{key}?cov=full"{tip("cov")}><div class="l">Data coverage</div>'
             f'<div class="n">{stats["cov"] or 0:.0f}%</div><div class="d">{stats["full_n"] or 0:,} scored on 90%+ known data</div></a>'
             f'</div>')
 
@@ -310,8 +338,10 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
                             known_total=(stats["n"] or 0) if unfiltered else None)
     c.close()
 
-    note = (f'<details class="source-help"><summary>How this list is built</summary><p>{esc(p["note"].strip())}</p></details>'
-            if p.get("note") and view == "ranked" else "")
+    # A list's own caveat (who the filings cannot show) sits by its audience,
+    # on hover, rather than as another row above the filters.
+    note = (f' <span class="lede-tip"{ui.tip_attr("How this list is built", p["note"].strip())}>'
+            f'How this list is built</span>' if p.get("note") else "")
     exp = ""
     if view == "ranked":
         exp = (f'<a class="btn" href="/lists/{key}/export.csv?{qs}" data-noprefetch>Export list</a>'
@@ -320,11 +350,10 @@ def product_list(key: str, view: str = Query("ranked"), q: str = Query(""),
     body = f"""<div class="pg wide">
 <div class="crumb"><a href="/">Home</a><span class="sep">/</span>Product lists</div>
 <div class="head"><div><h1>{esc(p["name"])}</h1>
-<div class="lede">{esc(p["audience"])}</div></div>
+<div class="lede">{esc(p["audience"])}{note}</div></div>
 <div class="acts">{exp}</div></div>
 {kpis}
 <nav class="tabs">{tab("ranked", "Ranked", stats["n"] or 0)}{tab("disqualified", "Removed", dq_n)}{tab("scoring", scoring_tab)}</nav>
-{note}
 {body_main}
 </div>"""
     return page(p["name"], f"list:{key}", body, js=ADD_JS)
@@ -359,24 +388,26 @@ document.addEventListener('DOMContentLoaded',wsum);
 
 
 def _reach_cell(f: dict) -> str:
-    """How reachable the firm is, as pills: verified addresses, named people
-    with an address, direct lines; otherwise, that Bellwether is still looking."""
-    bits = []
-    if f["verified"]:
-        bits.append(f'<span class="pill ok" title="Addresses a mail server confirmed">'
-                    f'{f["verified"]} verified</span>')
-    elif f["personal"]:
-        bits.append(f'<span class="pill" title="Named people with an address the firm published">'
-                    f'{f["personal"]} named</span>')
-    if f["direct"]:
-        bits.append(f'<span class="pill" title="Direct or mobile lines tied to a person">'
-                    f'{f["direct"]:,} direct line{"s" if f["direct"] != 1 else ""}</span>')
-    elif f["phone"] and not bits:
-        bits.append('<span class="pill" title="The main line the firm filed">Main line</span>')
-    if not f["verified"] and not f["personal"]:
-        bits.append('<span class="hunt" title="Website, web search, verified patterns and AI research '
-                    'are working on this firm">Hunting</span>')
-    return f'<div class="pills">{"".join(bits)}</div>'
+    """How reachable the firm is: the same pills the Firms screen shows, in
+    the compact form the ranked row has room for."""
+    return ui.reach_cell(f, compact=True)
+
+
+# Column headings that need a word of explanation, given on hover.
+TH_HELP = {
+    "score": ("Score", "Out of 100 on this product's scoring. The bar's solid part is earned on "
+              "known data, the hatched part is weight with no data yet. % known is the share of "
+              "the scoring weight that rests on data Bellwether holds; amber when under 80%."),
+    "why": ("Why it scores", "The factor bar and the strongest reason in the firm's own evidence. "
+            "Hover a bar to see every factor's points."),
+    "reach": ui.REACH_COLUMN_HELP,
+    "signal": ("New signal", "The newest change at the firm in the last 60 days that nobody has "
+               "acted on: a filing, people or assets change."),
+}
+
+
+def _th(key: str, label: str) -> str:
+    return f'<th><span class="th-tip"{ui.tip_attr(*TH_HELP[key])}>{label}</span></th>'
 
 
 def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, qs, size="", cat="",
@@ -433,22 +464,25 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
     body = []
     for r in rows:
         t = trig.get(r["crd"])
-        tcell = (f'<span class="chip lead">{esc(TYPE_LABEL.get(t["trigger_type"], t["trigger_type"]))}</span>'
-                 f'<div class="meta">{esc(ui.ago(t["detected_date"]))}</div>' if t else
+        tcell = (ui.signal_chip(t["trigger_type"], TYPE_LABEL.get(t["trigger_type"], t["trigger_type"]),
+                                PRODUCTS.get(t["trigger_type"], {}).get("kind") == "disqualifier")
+                 + f'<div class="meta">{esc(ui.ago(t["detected_date"]))}</div>' if t else
                  '<span class="dim small nowrap">Nothing new</span>')
         tags = []
         low = next((pe for pe in ui.detail(r["detail_json"]).get("penalties", [])
                     if pe.get("key") == "firm_type"), None)
         if low:
-            tags.append(f'<span class="chip warn" title="{esc(low["evidence"])}. '
-                        f'{esc(_num(low["points"]))} points off.">Not a usual buyer</span>')
+            why = ui.tip_attr("Not a usual buyer",
+                              f"Firms of this type rarely buy {p['name']}. It stays on the list, "
+                              f"{_num(low['points'])} points lower.", [low["evidence"]], "Why this firm")
+            tags.append(f'<span class="chip warn"{why}>Not a usual buyer</span>')
         if roles_n.get(r["crd"]):
             n_roles = roles_n[r["crd"]]
             tags.append(f'<a class="chip good" href="/firm/{esc(r["crd"])}#growth-roles">Hiring now'
                         f' &middot; {n_roles} role{"s" if n_roles != 1 else ""}</a>')
         ft = ftypes.get(r["crd"]) if ftypes else None
         if ft and ft.get("category"):
-            tags.append(f'<span class="ftype">{esc(ft.get("short") or ft.get("label") or ft["category"])}</span>')
+            tags.append(ui.ftype_chip(ft))
         if r["status"] or r["owner"]:
             tags.append(f'<span class="chip lead">{esc((r["status"] or "claimed").capitalize())}'
                         f'{" &middot; " + esc(r["owner"]) if r["owner"] else ""}</span>')
@@ -509,8 +543,8 @@ def _ranked(c, key, p, q, st, owner, stat, sig, reach, cov, sort, page_n, per, q
 <details class="save-view"><summary>Save view</summary><form method="post" action="/views/save">
 <input type="hidden" name="page" value="list:{key}"><input type="hidden" name="qs" value="{esc(qs)}">
 <input type="text" name="name" placeholder="Name this view" required><button type="submit" class="primary sm">Save</button></form></details></span></div>
-<div class="table-scroll"><table class="ranked-table wide"><thead><tr><th>#</th><th>Firm</th><th>Score</th><th>Why it scores</th>
-<th>Reach</th><th>New signal</th><th></th></tr></thead>
+<div class="table-scroll"><table class="ranked-table wide"><thead><tr><th>#</th><th>Firm</th>{_th("score", "Score")}{_th("why", "Why it scores")}
+{_th("reach", "Reach")}{_th("signal", "New signal")}<th></th></tr></thead>
 <tbody>{"".join(body) or empty}</tbody></table></div>
 <div class="pager"><span>Page {page_n} of {pages:,}</span><span class="acts">{prev}{nxt}</span></div>"""
 
@@ -557,12 +591,16 @@ def _disq(c, key, q, page_n, per):
             f'<td><div class="why" style="color:var(--ink)">{esc(r["reason"])}</div>{fix}</td></tr>')
     summary = "".join(f'<span class="pill">{esc(g)}<b style="margin-left:4px">{n:,}</b></span>'
                       for g, n in sorted(groups.items(), key=lambda kv: -kv[1]))
-    lede = (f'<p class="lede" style="margin:4px 0 12px">A firm is removed from {esc(p["name"])} only '
-            f'when Bellwether is very sure it fails a required rule: a kind of firm that can never '
-            f'buy it (a custodian, a wirehouse, a bank or trust company, an insurer) or a hard rule '
-            f'on the Scoring tab. Firms that are only a likely poor fit stay on the ranked list, '
-            f'lower down and marked <span class="chip warn">Not a usual buyer</span>.</p>')
-    return (lede + (f'<div class="pills" style="margin:0 0 14px">{summary}</div>' if summary else "")
+    how = ui.tip_attr(
+        "When a firm is removed",
+        f"Only when Bellwether is very sure it fails a required rule: a kind of firm that can "
+        f"never buy {p['name']} (a custodian, a wirehouse, a bank or trust company, an insurer), "
+        f"or a Removed if rule on the Scoring tab.",
+        foot="A firm that is only a likely poor fit stays on the ranked list, lower down and "
+             "marked Not a usual buyer.")
+    lede = (f'<p class="lede tab-lede">Firms Bellwether is sure fail a required rule, each with '
+            f'the reason. <span class="lede-tip"{how}>When is a firm removed?</span></p>')
+    return (lede + (f'<div class="pills dq-groups">{summary}</div>' if summary else "")
             + f'<div class="table-scroll"><table><thead><tr><th style="width:38%">Firm</th>'
               f'<th>Why it was removed</th></tr></thead><tbody>'
             + ("".join(body) or '<tr><td colspan="2"><div class="empty"><b>Nothing removed</b>'
@@ -595,19 +633,21 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
     edit = can_edit(key)
     ed = products.edited(key)
     who = (f'<p class="meta">Last changed by {esc(ed["updated_by"] or "someone")} on '
-           f'{esc((ed["updated_at"] or "")[:16].replace("T", " "))} UTC. The shipped defaults '
-           f'are in config/products.yml.</p>' if ed else
-           '<p class="meta">These are the shipped defaults from config/products.yml.</p>')
+           f'{esc((ed["updated_at"] or "")[:16].replace("T", " "))} UTC.</p>' if ed else
+           '<p class="meta">The shipped default rules, not changed yet.</p>')
     flash = ""
     if msg:
         flash = f'<div class="note good">{esc(msg)}</div>'
     if err:
         flash = f'<div class="note bad">{esc(err)}</div>'
-    intro = ('<p class="lede" style="margin-top:16px">Every factor earns 0 to 100 points, then counts '
-             'for its weight. A firm&rsquo;s score is the sum, out of 100. A factor Bellwether '
-             'has no data for yet earns nothing and is shown as missing, with the share of '
-             'the weight it represents, so a score never rises because something is '
-             'unknown. Firms are ranked by score, then by how much of it rests on known data.</p>')
+    how = ui.tip_attr(
+        "How scoring works",
+        "Every factor earns 0 to 100 points, then counts for its weight; a firm's score is the "
+        "sum, out of 100. A factor Bellwether has no data for yet earns nothing and shows as "
+        "missing, so a score never rises because something is unknown.",
+        foot="Firms are ranked by score, then by how much of it rests on known data.")
+    intro = (f'<p class="lede tab-lede">Each factor earns 0 to 100 points and counts for its '
+             f'weight; the score is the sum. <span class="lede-tip"{how}>How scoring works</span></p>')
 
     dis = "" if edit else " disabled"
     gates = []
@@ -639,14 +679,20 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
             opts = "".join(f'<option value="{v}"{" selected" if c["choice"] == v else ""}>{t}</option>'
                            for v, t in (("allow", "Sells to"), ("lower", "Lower in the list"),
                                         ("remove", "Remove")))
-            return (f'<label class="ftbox ft-{esc(c["choice"])}" title="{esc(c.get("treatment") or c.get("description") or "")}">'
+            what = ui.tip_attr(c["label"], c.get("description") or "",
+                               foot=c.get("treatment") or "", focus=False)
+            return (f'<label class="ftbox ft-{esc(c["choice"])}"{what}>'
                     f'<span>{esc(c["label"])}</span><select name="ft-{esc(c["key"])}"{dis}>{opts}</select></label>')
         boxes = "".join(choice(c) for c in ft["categories"])
-        ftype_html = (f'<h3 style="margin-top:22px">Firm types for {esc(p["name"])}</h3>'
-                      f'<p class="meta" style="margin:-4px 0 10px">Sells to: scored normally. '
-                      f'Lower in the list: stays on the list, marked Not a usual buyer, with points off. '
-                      f'Remove: taken off the list, with the reason, only when Bellwether is very sure '
-                      f'of the type or a person set it. Firms not classified yet always stay.</p>'
+        ft_tip = ui.tip_attr(
+            "Firm types", "", ["Sells to: scored normally.",
+                               "Lower in the list: stays on the list, marked Not a usual buyer, "
+                               "with points off.",
+                               "Remove: taken off the list with the reason, only when Bellwether "
+                               "is very sure of the type or a person set it."],
+            "Each choice", foot="Firms not classified yet always stay.")
+        ftype_html = (f'<h3 style="margin-top:22px"><span class="th-tip"{ft_tip}>Firm types for '
+                      f'{esc(p["name"])}</span></h3>'
                       f'<input type="hidden" name="ft-present" value="1">'
                       f'<div class="ftgrid">{boxes}</div>'
                       f'<div class="row" style="margin-top:12px;gap:18px">'
@@ -681,8 +727,11 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
                 f'<input type="text" name="c-{i}-l-{j}-label" value="{esc(label)}"{dis}></div>'
                 for j, (pts, label) in enumerate(cr["levels"]))
         elif cr.get("levels"):
-            levels = "".join(f'<div class="lv muted small"><b style="width:30px;color:var(--ink)">'
-                             f'{int(pts)}</b> {esc(label)}</div>' for pts, label in cr["levels"])
+            # The bands above already hold the numbers; how each level reads on
+            # a firm page is one hover away instead of a second list under them.
+            wording = ui.tip_attr("How each level reads", "As a firm page words this factor.",
+                                  [f"{int(pts)} points: {label}" for pts, label in cr["levels"]])
+            levels = f'<span class="lede-tip lv-tip"{wording}>How each level reads</span>'
         source = ""
         if kind == "field":
             source = f'<div class="meta">Data field: {esc(products.FIELDS[cr["field"]][0])}</div>'
@@ -705,8 +754,9 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
             f'{"<div class=meta>off</div>" if off else ""}</td>'
             f'<td><div class="lvls">{lv_html}{levels}</div></td></tr>')
     pens = "".join(
-        f'<div class="gline"><b class="x">Minus</b> <input type="number" step="any" name="p-{i}-points" '
-        f'value="{esc(_num(pe["points"]))}"{dis} style="width:70px"> {esc(pe["label"])}</div>'
+        f'<div class="gline pen"><b class="x">Minus</b><input type="number" step="any" name="p-{i}-points" '
+        f'value="{esc(_num(pe["points"]))}"{dis} style="width:70px" aria-label="Points off">'
+        f'<span>points: {esc(pe["label"])}</span></div>'
         for i, pe in enumerate(p.get("penalties", [])))
 
     glob = ""
@@ -730,11 +780,10 @@ def scoring_html(key: str, msg: str = "", err: str = "") -> str:
         products._load_vocab()
         fopts += "".join(f'<option value="flag:tag:{k}">{esc(products.flag_label("tag:" + k))}</option>'
                          for k, v in sorted(products.TAG_LABELS.items(), key=lambda x: x[1]))
-        add = f"""<section class="s"><h2>Add a factor</h2>
-<p class="lede">Any number Bellwether holds about a firm can become a factor scored by bands, and
-any yes or no as two levels. It starts with weight 0; give it a weight and take that weight from
-other factors so the total stays 100.</p>
-<form method="post" action="/lists/{key}/scoring/add" class="row" style="margin-top:10px">
+        add = f"""<section class="s add-factor"><h2>Add a factor</h2>
+<p class="meta">Any number or yes or no Bellwether holds about a firm. It starts at weight 0: give it
+a weight, taken from other factors so the total stays 100.</p>
+<form method="post" action="/lists/{key}/scoring/add" class="row" style="margin-top:12px">
 <select name="field" style="max-width:420px">{fopts}</select>
 <input type="text" name="label" placeholder="Name it (optional)" style="min-width:240px">
 <button type="submit">Add factor</button></form></section>"""
@@ -746,31 +795,35 @@ other factors so the total stays 100.</p>
                 f'<td class="small soft">{esc(x["note"] or "")}</td></tr>' for x in h)
                 + '</tbody></table></section>')
         actions = f"""<div class="savebar">
-<span class="muted small">Weights total</span><span id="wsum" class="wsum">100%</span>
-<button type="button" class="ghost sm" onclick="spread()">Scale to 100</button>
-<span class="spacer"></span>
-<input type="text" name="note" placeholder="What changed and why" style="min-width:300px">
+<input type="text" name="note" placeholder="What changed and why" aria-label="What changed and why">
 <label class="small"><input type="checkbox" name="refresh_all" value="1"> Refresh all firm websites and email platforms</label>
+<span class="spacer"></span>
 <button type="submit" class="primary">Save and rescore all firms</button></div>"""
-        reset = (f'<form method="post" action="/lists/{key}/scoring/reset" style="margin-top:10px" '
+        reset = (f'<form method="post" action="/lists/{key}/scoring/reset" '
                  f'onsubmit="return confirm(\'Put this product back to the shipped defaults?\')">'
                  f'<button type="submit" class="ghost sm">Reset to the shipped defaults</button></form>'
                  if ed else "")
-        extra_actions = reset
-        extra_actions += (f'<form method="post" action="/lists/{key}/rescore" class="rescore-all">'
-                    '<p class="meta">Recheck every firm against every product, including firms currently outside the lists.</p>'
-                    '<label class="small"><input type="checkbox" name="refresh_all" value="1"> Refresh all firm websites and email platforms</label>'
-                    '<button type="submit">Rescore all firms now</button></form>')
+        extra_actions = (f'<div class="rescore-row"><div class="rr-l"><b>Rescore without changing the rules</b>'
+                         f'<span class="meta">Rechecks every firm against every product, including '
+                         f'firms outside the lists today.</span>{reset}</div>'
+                         f'<form method="post" action="/lists/{key}/rescore" class="rescore-all">'
+                         f'<label class="small"><input type="checkbox" name="refresh_all" value="1"> '
+                         f'Refresh all firm websites and email platforms</label>'
+                         f'<button type="submit">Rescore all firms now</button></form></div>')
     else:
         who += ('<p class="meta">Only admins and this product&rsquo;s owner can change these rules.</p>')
 
+    # The running total sits under the weights it adds up, where the edits are.
+    total = (f'<tfoot><tr><td class="wtot-l">Weights total</td><td><span id="wsum" class="wsum">100%</span></td>'
+             f'<td><button type="button" class="ghost sm" onclick="spread()">Scale to 100</button></td></tr></tfoot>'
+             if edit else "")
     return f"""<div class="rules editor">{flash}{intro}{who}
 <form method="post" action="/lists/{key}/scoring">
 <h3 style="margin-top:22px">Gates</h3>{"".join(gates) or '<p class="muted">No gates: every firm is ranked on this list.</p>'}
 {ftype_html}
 <h3 style="margin-top:22px">Scored factors</h3>
-<table><thead><tr><th>Factor</th><th>Weight</th><th>Points for each level</th></tr></thead>
-<tbody>{"".join(rows)}</tbody></table>
+<table class="factors"><thead><tr><th>Factor</th><th>Weight</th><th>Points for each level</th></tr></thead>
+<tbody>{"".join(rows)}</tbody>{total}</table>
 {f"<h3 style='margin-top:22px'>Penalties</h3>{pens}" if pens else ""}
 {glob}
 {actions}

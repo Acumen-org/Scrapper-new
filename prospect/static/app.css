@@ -914,6 +914,22 @@ border-radius:10px;padding:8px 11px;font-size:12px;line-height:1.45;color:var(--
 max-width:280px;display:flex;flex-direction:column;gap:1px}
 .bw-tip[hidden]{display:none}
 .bw-tip b{color:var(--ink);font-size:14px;font-weight:650;font-variant-numeric:tabular-nums}
+/* Explanations (ui.tip_attr): a heading, plain sentences, a short list. */
+.bw-tip .tip-h{color:var(--ink);font-size:13px;font-weight:600;margin-bottom:2px}
+.bw-tip .tip-p{color:var(--soft)}
+.bw-tip .tip-s{color:var(--faint);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-top:8px}
+.bw-tip .tip-ul{display:flex;flex-direction:column;gap:3px;margin-top:2px}
+.bw-tip .tip-li{padding-left:12px;position:relative}
+.bw-tip .tip-li::before{content:"";position:absolute;left:2px;top:.62em;width:4px;height:4px;border-radius:99px;background:var(--faint)}
+.bw-tip .tip-f{color:var(--faint);font-size:11.5px;margin-top:8px}
+.bw-tip:has(.tip-h){max-width:340px;padding:11px 13px}
+[data-tip][tabindex]{cursor:help}
+[data-tip][tabindex]:focus-visible{outline-offset:2px}
+/* People moves (ui.moves_html): two labelled figures, never one sentence. */
+.mv{display:flex;gap:14px;align-items:baseline}
+.mv>span{display:inline-flex;align-items:baseline;gap:5px;white-space:nowrap}
+.mv b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.mv .mv-l{color:var(--faint);font-size:12px}
 
 /* Sign-in: the dotted map of the US behind the card (prospect/static/signin.js). */
 #signin-map{position:fixed;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none}
@@ -1096,3 +1112,247 @@ border-top:1px solid var(--rule2);font-size:13.5px;min-width:0}
 @media(max-width:600px){.dpanel-head{padding:12px 16px}.dpanel-body{padding:16px}
  .kvline{flex-direction:column;gap:2px}.kvline>span:last-child{text-align:left}
  .dpanel.ov .timeline .ev{grid-template-columns:minmax(0,1fr)}.dpanel.ov .timeline .ev>.why{grid-column:1}}
+
+/* ---------------------------------------------------------------- 2026-10-15 cleanup: Settings, Enrichment, Review */
+/* Settings, Enrichment and Review share one rhythm: every bounded box (note,
+   table, form, pill row) has clear space before whatever follows it. Pages put
+   their content in .set-body, under the tabs. */
+.set-tabs{margin:4px 0 22px;row-gap:8px}
+.set-tabs a[data-tip]{cursor:pointer}
+.set-subtabs{margin:0}
+/* A section that follows other content (a table, a form) is a new block, even
+   when it is the first section on the page. */
+.set-body>section.s:first-of-type:not(:first-child){margin-top:32px;padding-top:28px;border-top:1px solid var(--line)}
+.set-body section.s>h2{margin-bottom:14px}
+.set-body>p.lede,.set-body section.s>p.lede{margin:0 0 14px}
+.set-body .note{margin:0 0 18px}
+.set-body>.kpis{margin:0 0 4px}
+.set-body .set-after,.set-body .table-scroll+p.meta{margin:12px 0 0}
+.set-body .set-h3{margin:22px 0 10px}
+.set-body .cols-2>div>h3{margin:0 0 10px}
+.set-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0 0}
+.set-body>.set-actions:not(:last-child){margin-bottom:22px}
+/* Explanations live in hovers: a quiet "How it works" after a lede, and a
+   dotted underline on any word that explains itself. */
+.set-how{margin-left:6px;font-size:12.5px;font-weight:400;color:var(--faint);border-bottom:1px dotted var(--faint);
+white-space:nowrap;letter-spacing:0}
+.set-how:hover,.set-how:focus-visible{color:var(--ink);border-bottom-color:var(--soft)}
+.set-tipped{border-bottom:1px dotted var(--faint);cursor:help}
+.set-tipped:hover{border-bottom-color:var(--soft)}
+.set-lede-meta{display:block;margin-top:4px;font-size:12.5px;color:var(--faint)}
+.set-clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* A status line with its one action on the right. */
+.set-status{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap}
+/* Overview: a short status table. */
+.set-ov td.set-ov-name{width:200px}
+/* Jobs: the all-clear (or what needs a person), then what each lane runs now. */
+.set-jobs-top .all-clear{margin:0}
+.set-lanes{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;margin:16px 0 0}
+.set-lanes-l{font-size:12.5px;color:var(--faint);flex:none}
+.jobs-table td.set-job-name{width:24%}
+.jobs-table td.set-job-prog{width:24%;min-width:180px}
+.jobs-table td.set-job-prog .meter{margin-bottom:2px}
+.jobs-table td.set-job-last{width:24%}
+.jobs-table td.set-job-last .chip{margin-left:6px;height:20px}
+/* Forms: each field clear of the next. */
+.set-form>label{margin-bottom:14px;max-width:640px}
+.set-form>.row{margin-bottom:16px;align-items:flex-end}
+.set-form textarea{width:100%}
+.set-form>textarea{display:block;margin-bottom:14px}
+.set-edit{margin-top:12px}
+.set-feats{border:0;padding:0;margin:4px 0 20px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.set-feats legend{font:600 13px/1.4 var(--sans);color:var(--soft);padding:0;margin-bottom:10px}
+.set-feat{align-items:flex-start;flex-wrap:nowrap}
+.set-feat>input{flex:none;margin-top:2px}
+/* Collapsed extras: setup steps, the add form, the classification rules. */
+.set-steps{margin:0 0 24px}
+.set-steps>summary{font:600 13px/1.4 var(--sans);color:var(--soft);cursor:pointer}
+.set-steps[open]>summary{margin-bottom:10px}
+.set-steps ol{margin:0;padding-left:18px;line-height:1.8}
+.set-add>summary{display:inline-flex;list-style:none;cursor:pointer}
+.set-add>summary::-webkit-details-marker{display:none}
+.set-add[open]>summary{margin-bottom:18px}
+.set-more>summary{font:600 17px/1.35 var(--sans);letter-spacing:-.015em;color:var(--ink);cursor:pointer}
+.set-more[open]>summary{margin-bottom:12px}
+.set-more>p.lede{margin:0 0 12px}
+.set-more>summary::after,.set-steps>summary::after{content:"Show";margin-left:10px;font:400 12.5px/1 var(--sans);
+color:var(--faint);border-bottom:1px dotted var(--faint);letter-spacing:0}
+.set-more[open]>summary::after,.set-steps[open]>summary::after{content:"Hide"}
+.set-more>summary:hover::after,.set-steps>summary:hover::after{color:var(--ink)}
+.set-rules{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:10px;font-size:13px;color:var(--soft);max-width:110ch}
+.set-rules b{color:var(--ink);font-weight:600}
+/* Firm types: the two whole-database actions, each with its last run. */
+.set-actions-grid{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px 14px;align-items:center;margin:0 0 22px}
+.set-ft-name{width:28%}
+.set-ft-lists{min-width:260px}
+.set-kind-help{margin:0 0 14px}
+.set-kn-type{margin:8px 0 6px}
+.set-cols{gap:28px 40px;align-items:start}
+.set-kv td.set-kv-k{width:180px}
+/* Review queue: which firms, then which kind. */
+.set-filters{display:flex;gap:10px 14px;flex-wrap:wrap;align-items:center;margin:0 0 18px}
+.set-filters .set-tabs{margin:0}
+@media (max-width:600px){
+ .set-ov td.set-ov-name{width:auto}
+ .set-actions-grid{grid-template-columns:minmax(0,1fr);gap:6px}
+ .set-actions-grid>span{margin-bottom:8px}
+ .set-kv td.set-kv-k{width:auto}
+ .set-lanes{align-items:flex-start;flex-direction:column}
+ /* Wide row tables read top to bottom on a phone instead of scrolling sideways. */
+ table.set-stack,.set-stack>tbody,.set-stack>tbody>tr,.set-stack>tbody>tr>td{display:block;width:auto!important}
+ .set-stack>thead{display:none}
+ .set-stack>tbody>tr>td{padding:6px 16px;border-bottom:0;text-align:left}
+ .set-stack>tbody>tr>td:first-child{padding-top:14px}
+ .set-stack>tbody>tr>td:last-child{padding-bottom:14px}
+ .set-stack>tbody>tr+tr{border-top:1px solid var(--line)}
+ .set-stack td .meta{overflow-wrap:anywhere}
+ .set-body table.tight th,.set-body table.tight td{padding-left:10px;padding-right:10px}
+ /* Jobs stack the same way: name, state, progress, last run, actions. */
+ .set-body table.jobs-table,.set-body .jobs-table>tbody,.set-body .jobs-table>tbody>tr{display:block;width:auto}
+ .set-body .jobs-table>tbody>tr>td{width:auto!important;min-width:0;border-bottom:0;text-align:left}
+ .set-body .jobs-table>tbody>tr+tr{border-top:1px solid var(--line)}
+ .set-body .jobs-table td.jstate .chip{margin-right:8px}
+ .set-body .jobs-table td.jstate .meta{display:inline}
+ .set-body .jobs-table td:empty{display:none}
+}
+/* end settings */
+
+/* ---------------------------------------------------------------- 2026-10-15 cleanup: firm page */
+/* A word or figure that explains itself on hover (firm_view.term): a dotted
+   underline says "there is more here", the explanation sits in the tooltip. */
+.firm-page .tterm{border-bottom:1px dotted var(--faint);cursor:help}
+.firm-page .warnc .tterm{border-bottom-color:currentColor}
+.firm-page .hunt .tterm{border-bottom:0}
+.firm-page .chip[data-tip],.firm-page .ftype[data-tip],.firm-page .icp-tag [data-tip]{cursor:help}
+/* Hero: joins and departures as two labelled figures under the team count. */
+.firm-page .dhero .stats .d .mv{flex-wrap:wrap;gap:2px 12px}
+.firm-page .dhero .stats .d .mv b{font-size:12.5px}
+.firm-page .dhero .stats .d .mv .mv-l{font-size:11.5px}
+.firm-page .dhero .stats .d .meta{font-size:11px;color:var(--faint);margin-top:2px}
+/* Facts cells that hold the moves (Growth tab, overview Growth card). */
+.firm-page .facts .v .mv{flex-wrap:wrap;gap:2px 16px}
+.firm-page .facts .v .mv b{font-size:16px}
+.firm-page .facts .v .mv .mv-l{font-size:12.5px;font-weight:400;color:var(--soft)}
+.firm-page .facts>div>.meta{margin-top:4px}
+/* Product fit: room between each product's row and its open breakdown, and
+   between the breakdown's parts. */
+.firm-page details.fit .inner{padding-top:16px}
+.firm-page .fitrow>span.small{gap:8px 10px}
+.firm-page .fitrow>.tterm,.firm-page .fitrow>.chip{justify-self:start}
+.firm-page .bd-h{margin:22px 0 8px}
+.firm-page .bd-foot{margin:16px 0 0}
+.firm-page table.bd td.fac{width:24%}
+.firm-page table.bd td.num[data-l]{width:64px}
+.firm-page table.bd tr.total td{border-bottom:0}
+/* Contact discovery: facts as a list, then actions, then the two forms. */
+.firm-page .disc-kv{margin:0 0 18px}
+.firm-page .kv dd.stack{display:flex;flex-direction:column;gap:8px}
+.firm-page .disc-acts{margin:0 0 6px;gap:8px}
+.firm-page details.disc-form{margin-top:12px}
+.firm-page details.disc-form>form{margin-top:10px;align-items:flex-end}
+/* Assets chart caption, firm type, growth captions. */
+.firm-page .chart-meta{margin:0 0 10px}
+.firm-page .ftype-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.firm-page .ftype-desc{margin:12px 0 0;font-size:13.5px;color:#d6d6d6;max-width:80ch}
+.firm-page .moves-from{margin:14px 0 0;font-size:13.5px}
+.firm-page .moves-from .l{display:block;margin-bottom:2px;font-size:12.5px;color:var(--soft)}
+.firm-page .roles-status{margin:0 0 14px}
+.firm-page .roles-chips{margin:0 0 16px}
+.firm-page .dpanel-body .sub-sec>.evidence-list{margin-top:0}
+/* Phones: the score breakdown reads as one block per factor instead of a
+   table scrolled sideways. */
+@media(max-width:600px){
+ .firm-page details.fit .inner{padding-top:14px}
+ .firm-page table.bd thead{display:none}
+ .firm-page table.bd,.firm-page table.bd tbody{display:block}
+ .firm-page .table-scroll>table.bd{min-width:0}
+ .firm-page table.bd tr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 12px;
+  padding:14px 16px;border-bottom:1px solid var(--line)}
+ .firm-page table.bd tbody tr:last-child{border-bottom:0}
+ .firm-page table.bd td{display:block;width:auto;padding:0;border:0;background:none}
+ .firm-page table.bd tr.unk{background:rgba(232,172,74,.045)}
+ .firm-page table.bd td.fac,.firm-page table.bd td.ev{grid-column:1/-1}
+ .firm-page table.bd tr.total{grid-template-columns:minmax(0,1fr) auto;align-items:end}
+ .firm-page table.bd td.fac,.firm-page table.bd td.num[data-l]{width:auto}
+ .firm-page table.bd td.num{text-align:left}
+ .firm-page table.bd td.nil{display:none}
+ .firm-page table.bd td[data-l]::before{content:attr(data-l);display:block;margin-bottom:1px;
+  font-size:11px;font-weight:400;color:var(--faint)}
+ .firm-page .dhero .stats .d .mv{gap:0 8px}
+ /* Open roles: one block per role, its function, source and date under it. */
+ .firm-page table.roles-table thead{display:none}
+ .firm-page table.roles-table,.firm-page table.roles-table tbody{display:block}
+ .firm-page table.roles-table tr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 12px;
+  padding:12px 14px;border-bottom:1px solid var(--line)}
+ .firm-page table.roles-table tbody tr:last-child{border-bottom:0}
+ .firm-page table.roles-table td{display:block;padding:0;border:0;background:none;font-size:13px}
+ .firm-page table.roles-table td:first-child{grid-column:1/-1;font-size:13.5px}
+ .firm-page table.roles-table td[data-l]::before{content:attr(data-l);display:block;margin-bottom:1px;
+  font-size:11px;color:var(--faint)}
+}
+/* end firm */
+
+/* ---------------------------------------------------------------- 2026-10-15 cleanup: lists, firms, people, home, signals, ask */
+/* A term explained on hover (ui.tip_attr): a quiet dotted underline, so it
+   reads as "more here" without another sentence on the page. */
+.lede-tip{display:inline-block;margin-left:8px;font-size:12.5px;line-height:1.4;color:var(--faint);
+border-bottom:1px dotted var(--line3);white-space:nowrap;vertical-align:baseline}
+.lede-tip:hover,.lede-tip:focus-visible{color:var(--ink)}
+.th-tip{border-bottom:1px dotted var(--line3)}
+.th-tip:hover{color:var(--ink)}
+h3 .th-tip{color:inherit}
+.h-sub{margin-left:8px;font-size:12.5px;font-weight:400;letter-spacing:0;color:var(--faint)}
+/* Product list header, tab ledes, Removed counts: room before what follows. */
+.list-kpis{margin:0 0 24px}
+.lede.tab-lede{margin:0 0 16px}
+.dq-groups{margin:0 0 16px}
+/* People moves inside a sentence of evidence: two labelled figures. */
+.mv-i{white-space:nowrap}
+.mv-i b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.team-mv{margin-top:6px}
+.team-mv .mv{justify-content:flex-end}
+/* Scoring tab: the weights total under the weights, a save row that sits in
+   the page instead of floating over the form, the recheck row as one box. */
+table.factors tfoot td{border-top:1px solid var(--rule2);border-bottom:0;padding-top:12px;padding-bottom:12px;
+vertical-align:middle;background:none}
+.wtot-l{font-size:12.5px;color:var(--faint)}
+.rules .savebar{position:static;margin-top:24px;padding:16px 0 0;gap:12px 16px}
+.rules .savebar input[type=text]{flex:1 1 260px;max-width:440px;min-width:0}
+.rules .gline.pen{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 0}
+.rules .lv-tip{margin:6px 0 0;align-self:flex-start}
+.rescore-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 20px;
+margin-top:24px;padding:14px 16px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
+.rescore-row form{margin:0}
+.rescore-row .rescore-all{display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;margin-left:auto}
+.rescore-row label.small{flex-direction:row;align-items:center;gap:7px;color:var(--soft)}
+.rescore-row .rr-l{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0}
+.rescore-row .rr-l b{font-size:13px;color:var(--ink)}
+.rescore-row .rr-l .meta{margin:0}
+.rescore-row .rr-l form{margin-top:8px}
+.rules section.add-factor{margin-top:32px;padding-top:28px;border-top:1px solid var(--line)}
+.rules .add-factor .meta{margin:6px 0 0;font-size:12.5px;max-width:72ch}
+/* Home: hiring rows carry Joined and Left; long firm names stop at two lines. */
+.home-hire .hbars .r{grid-template-columns:minmax(0,1.5fr) minmax(40px,1fr) auto;gap:14px}
+.home-hire .hbars .r>a{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
+.home-hire .hbars .mv{gap:12px;justify-content:flex-end}
+.firms-table td.num .meta{white-space:nowrap}
+/* An empty result inside a table that scrolls sideways on a phone stays in
+   view instead of centring on the full table width. */
+.ranked-table td>.empty,.firms-table td>.empty,.people-table td>.empty,.signals-table td>.empty{
+position:sticky;left:0;max-width:calc(100vw - 72px)}
+/* Saved lists: the new list name has room for its example. */
+form.newlist label{flex:0 1 340px}
+form.newlist input[type=text]{width:100%;min-width:0}
+.dashboard-aside .s-head h2 .th-tip{border-bottom-color:var(--rule2)}
+/* Signals: the watch panel and the result row keep their distance. */
+.watch-panel{margin:0 0 16px}
+.watch-panel .watch-row{padding:4px 0}
+.resbar .acts{gap:12px}
+@media(max-width:600px){
+ .lede-tip{margin-left:0;margin-top:4px}
+ .rescore-row .rescore-all{margin-left:0}
+ .rules .savebar input[type=text]{flex-basis:100%;max-width:none}
+ .home-hire .hbars .r{grid-template-columns:minmax(0,1fr) auto}
+ .home-hire .hbars .r .b{display:none}
+}
+/* end lists */

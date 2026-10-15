@@ -5,6 +5,8 @@ page section bar and the dashboard workspace tabs) at several viewport widths
 and runs layout checks inside the browser:
 
   overlap    two text-bearing elements drawn on top of each other
+  crowded    a framed box (card, note, panel) with under 8px to the box or text
+             above or below it, so the two read as one
   spill      text running out of the box that should hold it
   overflow   the document, or an element, wider than the viewport or column
   hscroll    a scroll container that needs sideways scrolling
@@ -412,6 +414,62 @@ AUDIT_JS = r"""
       if (host && (r.width > 40 || r.height > 40)) add('icon', el, r, host.innerText || '', `${tag} renders ${Math.round(r.width)}x${Math.round(r.height)}px inside ${sel(host)}`);
       else if (!host && tag === 'svg' && (r.width > 480 || r.height > 320) && !el.getAttribute('viewBox')?.match(/^0 0 (\d{3,})/)) add('icon', el, r, '', `unsized svg renders ${Math.round(r.width)}x${Math.round(r.height)}px`);
       if (tag === 'img' && el.complete && el.naturalWidth === 0) add('icon', el, r, el.alt || el.src, 'image failed to load');
+    }
+  }
+
+  // ------------------------------------------------ crowding
+  // A framed box (card, note, alert, panel: a visible border or its own
+  // background) with almost no space between it and the box or text above or
+  // below it in the same column reads as one blob: the pills touching the
+  // "Everything is running" note on Jobs. Rows of small chips are spaced on
+  // purpose and are left alone, as are tables, menus and the sidebar.
+  {
+    const SKIP = 'table,nav.side,.fpanel,.tabs,.secnav,.save-view form,#pal,.bw-tip,svg,.chart';
+    const framed = (el) => {
+      const s = cs(el);
+      const bd = ['Top', 'Bottom', 'Left', 'Right'].some(k => px(s['border' + k + 'Width']) > 0 &&
+        s['border' + k + 'Style'] !== 'none' && rgba(s['border' + k + 'Color'])[3] > 0.05);
+      if (bd) return true;
+      const bg = rgba(s.backgroundColor);
+      if (bg[3] < 0.03 || !el.parentElement) return false;
+      const pb = effBg(el.parentElement).col, mine = over(bg, pb);
+      return Math.abs(mine[0] - pb[0]) + Math.abs(mine[1] - pb[1]) + Math.abs(mine[2] - pb[2]) > 6;
+    };
+    const CTRL = /^(INPUT|SELECT|TEXTAREA|BUTTON|OPTION)$/;
+    const boxes = [], others = [];
+    mainEl.querySelectorAll('*').forEach(el => {
+      if (el.closest(SKIP) || !visible(el)) return;
+      const s = cs(el);
+      if (s.position === 'absolute' || s.position === 'fixed' || s.display === 'inline' || s.display === 'contents') return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) return;
+      const isFramed = framed(el);
+      if (isFramed && !CTRL.test(el.tagName) && !el.matches('.btn,a.btn,summary,.chip,.pill,.fchip,.ftype,.dchip,.kbd,hr')
+          && r.height >= 30 && r.width >= 120) boxes.push({el, r});
+      else if (isFramed || CTRL.test(el.tagName) || Array.from(el.childNodes).some(c => c.nodeType === 3 && c.nodeValue.trim()))
+        others.push({el, r, ctrl: CTRL.test(el.tagName) || el.matches('.btn,a.btn')});
+    });
+    const seen = new Set();
+    for (const b of boxes) {
+      for (const o of boxes.concat(others)) {
+        if (o.el === b.el || b.el.contains(o.el) || o.el.contains(b.el)) continue;
+        // Rows of one list (feed items, accordion rows) are divided by their
+        // own rules on purpose.
+        if (o.el.tagName === b.el.tagName && o.el.className === b.el.className) continue;
+        const ov = Math.min(b.r.right, o.r.right) - Math.max(b.r.left, o.r.left);
+        if (ov < 0.3 * Math.min(b.r.width, o.r.width) || ov < 12) continue;
+        let gap = null, where = '';
+        if (o.r.top >= b.r.bottom - 2) { gap = o.r.top - b.r.bottom; where = 'below'; }
+        else if (o.r.bottom <= b.r.top + 2) { gap = b.r.top - o.r.bottom; where = 'above'; }
+        if (gap === null || gap >= 8 || gap < -2) continue;
+        // Something else sitting in the gap means they are not neighbours.
+        const key = [b.el, o.el].map(sel).sort().join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const ot = (o.el.innerText || o.el.value || o.el.tagName).trim().slice(0, 50);
+        add('crowded', b.el, union(b.r, o.r), (b.el.innerText || '').trim().slice(0, 50) + '  |  ' + ot,
+            `${sel(o.el)} sits ${Math.round(gap)}px ${where} the framed ${sel(b.el)}`);
+      }
     }
   }
 
@@ -937,7 +995,7 @@ class Audit:
             "spelling": getattr(self, "misspelled", []),
         }, indent=1, default=list), encoding="utf-8")
         groups = collections.OrderedDict()
-        order = ["overlap", "spill", "overflow", "clipped", "grid", "tablepad", "flexrow", "hscroll",
+        order = ["overlap", "crowded", "spill", "overflow", "clipped", "grid", "tablepad", "flexrow", "hscroll",
                  "hidden", "icon", "tinytext", "contrast", "console"]
         for f in sorted(self.findings, key=lambda f: (order.index(f["check"]) if f["check"] in order else 99)):
             groups.setdefault(f["check"], collections.OrderedDict()).setdefault(f["sig"], []).append(f)

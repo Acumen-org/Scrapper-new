@@ -76,6 +76,16 @@
     var t = e.target.closest && e.target.closest("[data-tip]");
     if (t && !t.contains(e.relatedTarget)) hideTip();
   });
+  // Keyboard focus and a tap (which focuses) show the same explanation.
+  document.addEventListener("focusin", function (e) {
+    var t = e.target.closest && e.target.closest("[data-tip]");
+    if (!t) return;
+    var r = t.getBoundingClientRect();
+    showTip(t.getAttribute("data-tip"), r.left + r.width / 2, r.top);
+  });
+  document.addEventListener("focusout", function (e) {
+    if (e.target.closest && e.target.closest("[data-tip]")) hideTip();
+  });
   window.addEventListener("scroll", hideTip, { passive: true });
 
   /* ---------------------------------------------------------- scales */

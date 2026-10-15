@@ -272,9 +272,10 @@ def firms(view: str = Query("firms"), q: str = Query(""), st: str = Query(""),
                                ("reach", "Reach", [("", "Any reach"), ("email", "Named email"),
                                                    ("verified", "Verified email"), ("none", "No email yet")])],
                         more=more, hidden={"view": view if view != "firms" else ""})
+    lede = ("The firms on this saved list." if list_name else
+            "Every SEC and state registered adviser firm.")
     body = f"""<div class="pg wide">
-<div class="head"><div><h1>{title}</h1><p class="lede">Every SEC and state registered adviser, with
-fit, team, reach and activity. Filter, save the view, export exactly what is on screen.</p></div>
+<div class="head"><div><h1>{title}</h1><p class="lede">{lede}</p></div>
 <div class="acts"><details class="save-view"><summary>Save view</summary><form method="post" action="/views/save">
 <input type="hidden" name="page" value="firms"><input type="hidden" name="qs" value="{esc(qs)}">
 <input type="text" name="name" placeholder="Name this view" required><button type="submit" class="primary sm">Save</button></form></details>{exp}</div></div>
@@ -331,13 +332,13 @@ def _firms(c, where, args, page_n, per, qs, sort=""):
                     f'<div class="meta">{esc(ui.product_name(r["best_product"]))}'
                     + (f', on {n_on} lists' if n_on > 1 else "") + '</div>')
         reg = "ERA" if r["is_era"] else (r["regulator"] or "")
-        who = (f'<span class="chip">{esc(r["status"] or "claimed")}</span>'
+        who = (f'<span class="chip">{esc((r["status"] or "claimed").capitalize())}</span>'
                f'<div class="meta">{esc(r["owner"] or "")}</div>'
                if (r["status"] or r["owner"]) else "")
         team = r["headcount"] if r["headcount"] is not None else (r["iar_count"] or 0)
         moves = ""
         if r["hires_12m"] or r["departures_12m"]:
-            moves = f'<div class="meta">{ui.moves_text(r["hires_12m"], r["departures_12m"])}</div>'
+            moves = f'<div class="team-mv">{ui.moves_html(r["hires_12m"], r["departures_12m"], "")}</div>'
         add = (f'<form method="post" action="/firms/addtolist">'
                f'<input type="hidden" name="crd" value="{esc(r["crd"])}">'
                f'<input type="hidden" name="back" value="/firms?{esc(qs)}">'
@@ -349,15 +350,28 @@ def _firms(c, where, args, page_n, per, qs, sort=""):
             f'<tr class="go" data-href="/firm/{esc(r["crd"])}"><td><div class="ent">{ui.mono(r["legal_name"])}<div>'
             f'<a class="t" href="/firm/{esc(r["crd"])}">{escn(r["legal_name"] or "(unnamed)")}</a>'
             f'<div class="meta">{ui.firm_meta(r)} &middot; {esc(reg)}</div>'
-            f'{("<div class=pills style=margin-top:6px><span class=ftype>" + esc(ftypes[r["crd"]].get("short") or ftypes[r["crd"]].get("label") or ftypes[r["crd"]]["category"]) + "</span></div>") if ftypes.get(r["crd"], {}).get("category") else ""}</div></div></td>'
+            f'{("<div class=pills style=margin-top:6px>" + ui.ftype_chip(ftypes[r["crd"]]) + "</div>") if ftypes.get(r["crd"], {}).get("category") else ""}</div></div></td>'
             f'<td class="num">{money(r["raum"])}<div class="meta">HNW {hs:.0f}%</div></td>'
             f'<td class="num">{team:,} {"person" if team == 1 else "people"}{moves}</td>'
             f'<td>{best or "<span class=muted>-</span>"}</td>'
-            f'<td>{ui.contact_cell(flags[r["crd"]])}</td><td>{who}{add}</td></tr>')
-    empty = '<tr><td colspan="6" class="empty">No firms match these filters.</td></tr>'
-    return (f'<div class="table-scroll"><table class="firms-table wide"><thead><tr><th>Firm</th><th class="num">AUM</th>'
-            f'<th class="num" title="People registered at the firm now, and job moves in 12 months">Team</th>'
-            f'<th>Best fit</th><th>Reach</th><th></th></tr></thead>'
+            f'<td>{ui.reach_cell(flags[r["crd"]])}</td><td>{who}{add}</td></tr>')
+    empty = ('<tr><td colspan="6"><div class="empty"><b>No firms match these filters</b>'
+             'Remove a filter above.</div></td></tr>')
+    th_aum = ui.tip_attr("AUM", "Regulatory assets under management from the firm's latest "
+                         "Form ADV.", foot="HNW: the share of those assets from high-net-worth "
+                         "clients.")
+    th_team = ui.tip_attr("Team", "People registered at the firm now, from the SEC's individual "
+                          "filings.",
+                          foot="Joined and Left: people who started there, or moved to another "
+                               "registered firm, in the past 12 months.")
+    th_fit = ui.tip_attr("Best fit", "The firm's best score out of 100 across the product lists, "
+                         "and which list it is.")
+    th_reach = ui.tip_attr(*ui.REACH_COLUMN_HELP)
+    return (f'<div class="table-scroll"><table class="firms-table wide"><thead><tr><th>Firm</th>'
+            f'<th class="num"><span class="th-tip"{th_aum}>AUM</span></th>'
+            f'<th class="num"><span class="th-tip"{th_team}>Team</span></th>'
+            f'<th><span class="th-tip"{th_fit}>Best fit</span></th>'
+            f'<th><span class="th-tip"{th_reach}>Reach</span></th><th></th></tr></thead>'
             f'<tbody>{"".join(body) or empty}</tbody></table></div>'), total
 
 
@@ -394,13 +408,13 @@ def _contacts(c, where, args, page_n, per):
 def export_csv(q: str = "", st: str = "", size: str = "", reg: str = "",
                on: str = "", stat: str = "", owner: str = "", trig: str = "",
                list_id: str = Query("", alias="list"), hires: str = "", reach: str = "",
-               sort: str = ""):
+               sort: str = "", cat: str = ""):
     import csv
     import io
     c = conn()
     hires = hires if hires.isdigit() else ""
     sort = sort if sort in SORTS else ""
-    where, args = _where(q, st, size, reg, on, stat, owner, trig, list_id, hires, reach)
+    where, args = _where(q, st, size, reg, on, stat, owner, trig, list_id, hires, reach, cat)
     rows = c.execute(f"""
         SELECT f.crd, f.legal_name, f.business_name, f.website, f.phone AS main_phone,
                f.city, f.state, f.regulator, f.raum, f.hnw_clients, f.hnw_aum,
@@ -424,11 +438,11 @@ def export_csv(q: str = "", st: str = "", size: str = "", reg: str = "",
 def export_xlsx(q: str = "", st: str = "", size: str = "", reg: str = "",
                 on: str = "", stat: str = "", owner: str = "", trig: str = "",
                 list_id: str = Query("", alias="list"), hires: str = "", reach: str = "",
-                sort: str = ""):
+                sort: str = "", cat: str = ""):
     c = conn()
     hires = hires if hires.isdigit() else ""
     sort = sort if sort in SORTS else ""
-    where, args = _where(q, st, size, reg, on, stat, owner, trig, list_id, hires, reach)
+    where, args = _where(q, st, size, reg, on, stat, owner, trig, list_id, hires, reach, cat)
     crds = [r["crd"] for r in c.execute(
         f"SELECT f.crd {FROM.format(where=where)} ORDER BY {SORTS[sort][1]} LIMIT 5000", args)]
     rows = contacts_rows(c, crds)
@@ -481,10 +495,9 @@ def saved():
         for v in views)
     body = f"""<div class="pg narrow">
 <div class="head"><div><h1>Saved lists</h1>
-<div class="lede">Firm lists and saved filters from
-any list or search. Add a firm to a list from any row with <b>+ list</b>.</div></div></div>
+<div class="lede">Firm lists you build with <b>+ List</b> on any row, and filters you save.</div></div></div>
 <section class="s"><div class="s-head"><h2>Your lists</h2></div>
-<form class="filters" method="post" action="/lists/create" style="border-top:0;padding-top:0">
+<form class="filters newlist" method="post" action="/lists/create">
 <label>New list<input type="text" name="name" placeholder="For example: Q4 push, Boston dinners" required></label>
 <button class="primary" type="submit">Create list</button></form>
 <table><thead><tr><th>List</th><th class="num">Firms</th><th>Open and export</th><th></th></tr></thead>

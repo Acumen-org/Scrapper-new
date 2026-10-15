@@ -21,6 +21,7 @@ nothing here re-checks the role; the forms still validate every value.
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 from datetime import date, datetime, timezone
 
@@ -43,9 +44,16 @@ TABS = [("overview", "Overview", "/settings"), ("users", "Users", "/settings/use
 
 
 def settings_tabs(active: str) -> str:
-    return ('<div class="seg" style="margin:4px 0 18px">' + "".join(
+    return ('<div class="seg set-tabs">' + "".join(
         f'<a class="{"on" if k == active else ""}" href="{href}">{esc(label)}</a>'
         for k, label, href in TABS) + '</div>')
+
+
+def how(title: str, body: str = "", points: list | None = None, point_head: str = "",
+        foot: str = "", label: str = "How it works") -> str:
+    """A quiet "How it works" at the end of a lede or beside a heading. The
+    explanation lives in its hover, so the page itself stays short."""
+    return f' <span class="set-how"{ui.tip_attr(title, body, points, point_head, foot)}>{esc(label)}</span>'
 
 
 def _frame(title: str, tab: str, lede: str, inner: str, msg: str = "", err: str = "") -> HTMLResponse:
@@ -55,7 +63,8 @@ def _frame(title: str, tab: str, lede: str, inner: str, msg: str = "", err: str 
     if err:
         flash = f'<div class="note bad">{esc(err)}</div>'
     body = (f'<div class="pg"><div class="head"><div><h1>{esc(title)}</h1>'
-            f'<div class="lede">{lede}</div></div></div>{settings_tabs(tab)}{flash}{inner}</div>')
+            f'<div class="lede">{lede}</div></div></div>{settings_tabs(tab)}{flash}'
+            f'<div class="set-body">{inner}</div></div>')
     return page(title, "settings", body)
 
 
@@ -65,12 +74,33 @@ CHOICE_LABEL = {"none": "Not connected", "anthropic": "Anthropic (Claude)", "ede
                 "off": "Off", "never": "Never"}
 
 
+# The few field explanations too long to read at a glance: a short line under
+# the field, with the full explanation behind "More".
+FIELD_SHORT = {
+    "app.public_url": "Leave blank to use the address the browser used.",
+    "ai.provider": "Eden AI reaches many model vendors through one key.",
+    "ai.model_smart": "Leave blank for the provider default (Claude Opus 5.5).",
+    "verify.per_minute": "A cap across all mail servers; it slows down by itself when servers push back.",
+    "crawl.contact_retry_days": "How long web and AI research wait before looking again for a missing contact.",
+    "ocr.base_url": "Leave blank to read scans with Tesseract on this server.",
+}
+# Help that names a stored value ("auto") rather than what the menu shows.
+FIELD_HELP = {
+    "verify.engine": "Automatic uses a Reacher server when one answers, else the built-in SMTP check.",
+    "crawl.use_browser": "Automatic renders a page in a headless browser only when plain fetching "
+                         "returns an empty shell.",
+}
+
+
 def _field(key: str) -> str:
     """One setting as a form field, from its spec. Secrets are write-only."""
     s = settings.BY_KEY[key]
     pinned = settings.pinned(key)
     dis = " disabled" if pinned else ""
-    hint = f'<div class="meta" style="text-transform:none;letter-spacing:0">{esc(s.help)}</div>' if s.help else ""
+    full = FIELD_HELP.get(key, s.help)
+    short = FIELD_SHORT.get(key)
+    hint = (f'<div class="meta">{esc(short)}{how(s.label, full, label="More")}</div>' if short else
+            f'<div class="meta">{esc(full)}</div>' if full else "")
     pin = ('<div class="meta warnc" style="text-transform:none;letter-spacing:0">Fixed by the '
            f'server environment ({esc(s.env)}); change it there.</div>' if pinned else "")
     if s.secret:
@@ -131,13 +161,26 @@ async def settings_save(request: Request):
 
 # ------------------------------------------------------------------ overview
 
-def _status_row(name: str, ok: bool | None, text: str, href: str) -> str:
-    chip = ('<span class="chip good">Working</span>' if ok else
-            '<span class="chip warn">Needs a look</span>' if ok is None else
-            '<span class="chip bad">Not working</span>')
-    return (f'<tr class="go" data-href="{href}"><td style="width:200px"><b>{esc(name)}</b></td>'
-            f'<td><div class="status-cell">{chip}<span>{text}</span></div></td>'
+STATUS_CHIP = {"ok": ("good", "Working"), "look": ("warn", "Needs a look"),
+               "bad": ("bad", "Not working"), "off": ("line", "Not set up")}
+
+
+def _status_row(name: str, state: str, text: str, href: str, word: str = "") -> str:
+    cls, default = STATUS_CHIP[state]
+    return (f'<tr class="go" data-href="{href}"><td class="set-ov-name"><b>{esc(name)}</b></td>'
+            f'<td><div class="status-cell"><span class="chip {cls}">{esc(word or default)}</span>'
+            f'<span>{text}</span></div></td>'
             f'<td class="num"><a href="{href}">Open</a></td></tr>')
+
+
+ENGINE_LABEL = {"reacher": "Reacher server", "native": "built-in mail server check",
+                "dns": "domain check only"}
+
+
+def _cap(s: str | None) -> str:
+    """First letter up, the rest as written: for status lines stored lower case."""
+    s = (s or "").strip().rstrip(".")
+    return s[:1].upper() + s[1:]
 
 
 @router.get("/settings", response_class=HTMLResponse)
@@ -146,45 +189,46 @@ def overview(msg: str = Query("")):
     ms = msauth.configured()
     pw = settings.get_bool("auth.password_login")
     rows.append(_status_row(
-        "Microsoft sign-in", ms,
-        ("Set up. People sign in with their Microsoft account." if ms else
-         "Not set up yet. Until it is, people sign in with Bellwether passwords.")
+        "Microsoft sign-in", "ok" if ms else "off",
+        ("People sign in with their Microsoft account." if ms else
+         "People sign in with Bellwether passwords until it is.")
         + ("" if pw or not ms else " Password sign-in is off."), "/settings/signin"))
     us = users.all_users()
     n_admin = sum(1 for u in us if u["role"] == "admin")
-    rows.append(_status_row("Users", True, f"{len(us)} accounts, {n_admin} admin"
-                            f"{'s' if n_admin != 1 else ''}.", "/settings/users"))
+    rows.append(_status_row("Users", "ok", f"{ui.plural(len(us), 'account')} &middot; "
+                            f"{ui.plural(n_admin, 'admin')}", "/settings/users", word="Active"))
     st = ai.status()
     rows.append(_status_row(
-        "AI provider", st["configured"] or None,
-        (f"{esc(st['provider'])}, {esc(st['model'])}. {st['used_today']} of {st['limit']} "
-         f"calls used today." if st["configured"] else
-         "Not connected. Bellwether AI works as a firm finder until one is."), "/settings/ai"))
+        "AI provider", "ok" if st["configured"] else "off",
+        (f"{esc(st['provider'])}, {esc(st['model'])} &middot; {st['used_today']:,} of "
+         f"{st['limit']:,} calls used today" if st["configured"] else
+         "Bellwether AI works as a firm finder until one is connected."), "/settings/ai"))
     try:
         from . import verify
         es = verify.engine_status_cached()
         if es is None:
-            rows.append(_status_row("Email verification", None,
-                                    "Checking the mail engine now; refresh in a few seconds.",
-                                    "/settings/verify"))
+            rows.append(_status_row("Email verification", "look",
+                                    "Testing the mail connection now; refresh in a few seconds.",
+                                    "/settings/verify", word="Testing"))
         else:
             good = es["resolved"] in ("reacher", "native")
-            txt = (f"Checking mailboxes with the {esc(es['resolved'])} engine."
-                   if good else "Only domain checks: outbound port 25 is closed and no Reacher server is set.")
-            rows.append(_status_row("Email verification", good or None, txt, "/settings/verify"))
+            txt = (f"Checking mailboxes with the {esc(ENGINE_LABEL.get(es['resolved'], es['resolved']))}."
+                   if good else "Domain checks only: outbound port 25 is closed and no Reacher server is set.")
+            rows.append(_status_row("Email verification", "ok" if good else "look", txt,
+                                    "/settings/verify"))
     except Exception:
-        rows.append(_status_row("Email verification", False, "The verification module did not load.",
+        rows.append(_status_row("Email verification", "bad", "The verification module did not load.",
                                 "/settings/verify"))
     try:
         from . import crawl
         b = crawl.browser_available() if hasattr(crawl, "browser_available") else None
-        rows.append(_status_row("Website reading", True,
-                                "Scrapling with browser impersonation"
-                                + ("; JavaScript pages rendered in a headless browser." if b else
-                                   "; JavaScript-only pages are skipped (no browser installed)."),
+        rows.append(_status_row("Website reading", "ok",
+                                "JavaScript pages are rendered in a headless browser." if b else
+                                "JavaScript-only pages are skipped: no headless browser is installed.",
                                 "/settings/crawl"))
     except Exception:
-        rows.append(_status_row("Website reading", None, "Crawler module not loaded.", "/settings/crawl"))
+        rows.append(_status_row("Website reading", "look", "The website reader did not load.",
+                                "/settings/crawl"))
     c = conn()
     try:
         sm = jobs.summary(c)
@@ -199,9 +243,9 @@ def overview(msg: str = Query("")):
         txt = (f"{len(open_alerts)} need{'s' if len(open_alerts) == 1 else ''} a person: "
                + esc("; ".join(a["title"] for a in open_alerts[:3])) + ".")
     else:
-        txt = (f"{sm['jobs']} jobs running by themselves, {run} working now"
-               f"{', ' + str(paused) + ' paused by an admin' if paused else ''}. Nothing needs you.")
-    rows.append(_status_row("Background jobs", False if bad else (None if open_alerts else True),
+        txt = (f"{sm['jobs']} jobs &middot; {run} working now"
+               f"{' &middot; ' + str(paused) + ' paused' if paused else ''} &middot; nothing needs you")
+    rows.append(_status_row("Background jobs", "bad" if bad else ("look" if open_alerts else "ok"),
                             txt, "/settings/jobs"))
     feed = c.execute("SELECT published_at FROM snapshot WHERE source_key='adv_feed'"
                      " ORDER BY id DESC LIMIT 1").fetchone()
@@ -211,22 +255,23 @@ def overview(msg: str = Query("")):
     except Exception:
         c.rollback()
     c.close()
-    fresh_ok, fresh_txt = None, "No SEC feed captured yet."
+    fresh_state, fresh_word, fresh_txt = "look", "No feed yet", "No SEC feed captured yet."
     if feed:
         try:
             m, d_, y = feed["published_at"].split("/")
             age = (date.today() - date(int(y), int(m), int(d_))).days
-            fresh_ok = age <= 10
-            fresh_txt = f"SEC adviser feed is {age} days old (published {esc(feed['published_at'])})."
+            fresh_state, fresh_word = ("ok", "Current") if age <= 10 else ("bad", "Out of date")
+            fresh_txt = (f"SEC adviser feed published {esc(feed['published_at'])}, "
+                         f"{'today' if age <= 0 else ui.plural(age, 'day') + ' ago'}.")
         except Exception:
             pass
     if sched and sched["message"]:
-        fresh_txt += f" Scheduler: {esc(sched['message'])}."
-    rows.append(_status_row("Data freshness", fresh_ok, fresh_txt, "/settings/system"))
-    inner = f'<table><tbody>{"".join(rows)}</tbody></table>'
+        fresh_txt += f' <span class="muted">{esc(_cap(sched["message"]))}.</span>'
+    rows.append(_status_row("Data freshness", fresh_state, fresh_txt, "/settings/system",
+                            word=fresh_word))
+    inner = f'<table class="set-ov"><tbody>{"".join(rows)}</tbody></table>'
     return _frame("Settings", "overview",
-                  "Only admins see this. Everything that configures Bellwether, with what each "
-                  "integration is doing right now.", inner, msg=msg)
+                  "What each part of Bellwether is doing right now. Admins only.", inner, msg=msg)
 
 
 # ------------------------------------------------------------------ users
@@ -241,38 +286,43 @@ def users_page(msg: str = Query(""), err: str = Query("")):
             f'{" checked" if f in u["families"] else ""}> {f}</label>' for f in users.FAMILIES)
         listed = settings.get_list("auth.admins")
         boot = (u["login"] in listed) or ((u.get("email") or "") in listed)
-        role_sel = ("<span class='chip lead' title='On the always-admin list in Sign-in'>Admin, always</span>"
+        always_tip = ui.tip_attr("Admin, always", "On the always-admin list in Sign-in, so this "
+                                 "seat cannot be changed here.")
+        role_sel = (f'<span class="chip"{always_tip}>Admin, always</span>'
                     if boot else
                     f'<select name="role">{"".join(ui.opt(r, u["role"], users.ROLE_LABEL[r]) for r in users.ROLES)}</select>')
-        how = "Microsoft" if u.get("ms_oid") else ("Password" if u.get("password_hash") else "Not signed in yet")
+        via = "Microsoft" if u.get("ms_oid") else ("Password" if u.get("password_hash") else "Not signed in yet")
         rows.append(
             f'<tr><td><b>{esc(u["name"])}</b><div class="meta">{esc(u.get("email") or u["login"])}</div></td>'
             f'<td><form method="post" action="/settings/users/save" class="row">'
             f'<input type="hidden" name="login" value="{esc(u["login"])}">{role_sel}'
             f'<span class="row" title="For product owners: which products they own">{fam}</span>'
             f'<label class="inline small"><input type="checkbox" name="active" value="1"'
-            f'{" checked" if u.get("active") else ""}> active</label>'
+            f'{" checked" if u.get("active") else ""}> Active</label>'
             f'<button class="sm" type="submit">Save</button></form></td>'
-            f'<td class="small">{esc(how)}<div class="meta">{esc(ui.ago(u.get("last_login_at")) or "never")}</div></td>'
+            f'<td class="small">{esc(via)}<div class="meta">{("Signed in " + esc(ui.ago(u.get("last_login_at")))) if u.get("last_login_at") else ("" if via.startswith("Not") else "Never signed in")}</div></td>'
             f'<td class="num"><form method="post" action="/settings/users/delete" '
             f'onsubmit="return confirm(\'Remove this account? Their notes and ownership stay.\')">'
             f'<input type="hidden" name="login" value="{esc(u["login"])}">'
             f'<button class="sm ghost" type="submit">Remove</button></form></td></tr>')
+    seat_tip = ui.tip_attr(
+        "Seats", "What each person may change.",
+        ["Admin: everything, including Settings",
+         "Product owner: the scoring of the products ticked, and enrichment sources",
+         "User: works the lists"],
+        foot="Active off keeps the account but stops it signing in.")
     add = f"""<section class="s"><h2>Add someone</h2>
-<p class="lede">People with a Microsoft account in your organisation get in by signing in; their
-account is created then, as a user. Add them here first to give them a seat before they arrive.
-A password is only for someone without Microsoft sign-in.</p>
-<form method="post" action="/settings/users/add" class="filters" style="border-top:0">
+<p class="lede">Microsoft users get an account when they first sign in; add them here to choose
+their seat first.</p>
+<form method="post" action="/settings/users/add" class="filters">
 <label>Email or username<input type="text" name="login" required placeholder="jane.doe@acumen-strategy.com"></label>
 <label>Name<input type="text" name="name" required></label>
 <label>Seat<select name="role">{"".join(ui.opt(r, "user", users.ROLE_LABEL[r]) for r in users.ROLES)}</select></label>
 <label>Owns<span class="row">{"".join(f'<label class="inline small"><input type="checkbox" name="fam" value="{f}"> {f}</label>' for f in users.FAMILIES)}</span></label>
-<label>Password (optional)<input type="password" name="password" autocomplete="new-password"></label>
+<label>Password, only without Microsoft<input type="password" name="password" autocomplete="new-password"></label>
 <button class="primary" type="submit">Add</button></form></section>"""
-    inner = (f'<p class="lede">Admins see Settings and can change everything. Product owners '
-             f'change the scoring of the products they own (PHH, AcuBooth, Glynac, ATS) and manage '
-             f'enrichment sources. Users work the lists.</p>'
-             f'<table><thead><tr><th>Person</th><th>Seat</th><th>Sign-in</th><th></th></tr></thead>'
+    inner = (f'<table class="set-stack"><thead><tr><th>Person</th><th><span class="set-tipped"{seat_tip}>Seat and '
+             f'access</span></th><th>Sign-in</th><th></th></tr></thead>'
              f'<tbody>{"".join(rows)}</tbody></table>{add}')
     return _frame("Users and roles", "users", "Who can use Bellwether, and what each person may change.",
                   inner, msg, err)
@@ -336,8 +386,8 @@ def signin_page(request: Request, msg: str = Query(""), err: str = Query("")):
     base = public_base(request)
     uri = msauth.redirect_uri(base)
     ok = msauth.configured()
-    steps = f"""<div class="panel" style="margin-bottom:22px"><h3>Setting it up, once</h3>
-<ol class="small soft" style="margin:6px 0 0;padding-left:18px;line-height:1.8">
+    steps = f"""<details class="panel set-steps"{"" if ok else " open"}><summary>Setting it up, once</summary>
+<ol class="small soft">
 <li>In the Microsoft Entra admin centre, open App registrations, then New registration. Name it
 Bellwether; supported account types: this organisation only.</li>
 <li>Redirect URI: platform <b>Web</b>, address <b style="color:var(--ink)" class="mono">{esc(uri)}</b></li>
@@ -345,13 +395,12 @@ Bellwether; supported account types: this organisation only.</li>
 the fields below.</li>
 <li>Certificates &amp; secrets, New client secret. Copy its <b>Value</b> into the secret field.</li>
 <li>Save, then <a href="/auth/microsoft" data-noprefetch>try signing in with Microsoft</a>. Once it works, you can
-turn password sign-in off.</li></ol></div>"""
+turn password sign-in off.</li></ol></details>"""
     state = ('<div class="note good">Microsoft sign-in is set up.</div>' if ok else
-             '<div class="note">Microsoft sign-in is not set up yet. Password sign-in stays on '
-             'until it is, so nobody is locked out.</div>')
+             '<div class="note plain">Microsoft sign-in is not set up yet, so password sign-in stays on.'
+             '</div>')
     inner = state + steps + _group_form("signin")
-    return _frame("Sign-in", "signin", "How people get into Bellwether. Microsoft is the main way in; "
-                  "anyone on the always-admin list is an admin the first time they sign in.",
+    return _frame("Sign-in", "signin", "How people get into Bellwether. Microsoft is the main way in.",
                   inner, msg, err)
 
 
@@ -361,13 +410,13 @@ turn password sign-in off.</li></ol></div>"""
 def ai_page(msg: str = Query(""), err: str = Query("")):
     feats = settings.get_list("ai.features")
     checks = "".join(
-        f'<label class="inline" style="margin-bottom:6px"><input type="checkbox" name="feature:{k}" value="1"'
-        f'{" checked" if k in feats else ""}> <b>{esc(k)}</b> <span class="muted small">{esc(v)}</span></label>'
+        f'<label class="inline set-feat"><input type="checkbox" name="feature:{k}" value="1"'
+        f'{" checked" if k in feats else ""}><span><b>{esc(k.capitalize())}</b> <span class="muted small">{esc(v)}</span></span></label>'
         for k, v in ai.FEATURES.items())
     keys = [k for k in ("ai.provider", "ai.api_key", "ai.base_url", "ai.model_smart",
                         "ai.model_fast", "ai.daily_limit")]
-    form = _group_form("ai", keys, extra=f'<h3 style="margin-top:6px">What it may do</h3>{checks}'
-                                         f'<div style="height:14px"></div>')
+    form = _group_form("ai", keys, extra=f'<fieldset class="set-feats"><legend>What it may do</legend>'
+                                         f'{checks}</fieldset>')
     st = ai.status()
     c = conn()
     usage = c.execute("""SELECT feature, COUNT(*) n, SUM(ok) ok, SUM(COALESCE(in_tokens,0)) tin,
@@ -375,27 +424,31 @@ def ai_page(msg: str = Query(""), err: str = Query("")):
         ORDER BY n DESC""", ((date.today().replace(day=1)).isoformat(),)).fetchall()
     errs = c.execute("SELECT at, feature, error FROM ai_call WHERE ok=0 ORDER BY id DESC LIMIT 5").fetchall()
     c.close()
-    use_html = "".join(f'<tr><td>{esc(r["feature"])}</td><td class="num">{r["n"]:,}</td>'
+    use_html = "".join(f'<tr><td>{esc((r["feature"] or "").capitalize())}</td><td class="num">{r["n"]:,}</td>'
                        f'<td class="num">{(r["ok"] or 0):,}</td><td class="num">{(r["tin"] or 0):,}</td>'
                        f'<td class="num">{(r["tout"] or 0):,}</td></tr>' for r in usage)
     err_html = "".join(f'<div class="gline"><span class="muted">{esc(ui.ago(e["at"]))}</span> '
                        f'{esc(e["feature"])}: {esc(e["error"])}</div>' for e in errs)
-    status = (f'<div class="note good">Connected: {esc(st["provider"])}, {esc(st["model"])}. '
-              f'{st["used_today"]} of {st["limit"]} calls used today.</div>' if st["configured"] else
-              '<div class="note">No AI provider is connected.</div>')
+    status = (f'<div class="note good set-status">Connected: {esc(st["provider"])}, {esc(st["model"])} '
+              f'&middot; {st["used_today"]:,} of {st["limit"]:,} calls used today'
+              if st["configured"] else
+              '<div class="note plain set-status">No AI provider is connected')
+    status += ('<button class="sm" data-post="/settings/ai/test" data-busy="Testing">'
+               'Test the connection</button></div>')
+    tip = how("Bellwether AI",
+              "Answers questions about firms and the market, writes a brief on each firm page, reads "
+              "team pages the rules could not parse and tidies titles. Everything it writes is "
+              "labelled as AI and grounded in Bellwether's own data.",
+              ["Anthropic: Claude, default model claude-opus-5-5",
+               "Eden AI: one key for many vendors, models named like anthropic/claude-opus-5-5",
+               "Any OpenAI-compatible endpoint"], "Providers")
     inner = f"""{status}
-<p class="lede">Bellwether AI answers questions about firms and the market, writes a brief on each
-firm page, reads team pages the rules could not parse, and tidies titles. Everything it writes is
-labelled as AI and grounded in Bellwether's own data. Choose a provider: Anthropic (Claude, default
-model claude-opus-5-5), Eden AI (one key for many vendors; models are named like
-anthropic/claude-opus-5-5 or openai/gpt-4o), or any OpenAI-compatible endpoint.</p>
-<div class="row" style="margin:10px 0 22px"><button class="sm" data-post="/settings/ai/test" data-busy="Testing">Test the connection</button></div>
 {form}
 <section class="s"><h2>Use this month</h2>
 <table class="tight"><thead><tr><th>Feature</th><th class="num">Calls</th><th class="num">Succeeded</th>
 <th class="num">Tokens in</th><th class="num">Tokens out</th></tr></thead><tbody>{use_html or '<tr><td colspan=5 class=empty>No calls yet.</td></tr>'}</tbody></table>
-{('<h3 style="margin-top:16px">Recent errors</h3>' + err_html) if err_html else ""}</section>"""
-    return _frame("AI", "ai", "The model provider behind Bellwether AI, with a hard daily limit.",
+{('<h3 class="set-h3">Recent errors</h3>' + err_html) if err_html else ""}</section>"""
+    return _frame("AI", "ai", "The model behind Bellwether AI, with a hard daily limit." + tip,
                   inner, msg, err)
 
 
@@ -417,15 +470,32 @@ def verify_page(msg: str = Query(""), err: str = Query(""), refresh: str = Query
               "port25_ok": None, "port25_detail": f"verification module failed to load: {e}",
               "reacher_url": None, "reacher_ok": None, "reacher_detail": ""}
     p25 = es.get("port25_ok")
-    status = (f'<table class="tight"><tbody>'
-              f'<tr><td style="width:220px">Engine in use</td><td><b>{esc(es.get("resolved"))}</b> '
-              f'<span class="muted">(setting: {esc(es.get("configured"))})</span></td></tr>'
-              f'<tr><td>Outbound port 25</td><td>{"<span class=ok>open</span>" if p25 else "<span class=bad>closed</span>" if p25 is False else "not tested"}'
+    p25_tip = ui.tip_attr(
+        "Outbound port 25",
+        "Mail servers judge the machine asking. Checks need outbound port 25 and work best from a "
+        "server with a fixed address, a reverse DNS name matching the HELO name and an SPF record "
+        "on the MAIL FROM domain that allows it.",
+        foot='From a home or office connection, Microsoft 365 and others often refuse to answer. '
+             'That shows as "Could not tell", never as a bad address.')
+    resolved = es.get("resolved") or ""
+    # The engine's own detail repeats the state ("outbound port 25 open (x
+    # answered)"); keep only what it adds.
+    p25_detail = re.sub(r"(?i)^outbound port 25 (is )?(open|closed)[\s:;,]*", "",
+                        es.get("port25_detail") or "").strip()
+    if p25_detail.startswith("(") and p25_detail.endswith(")"):
+        p25_detail = p25_detail[1:-1]
+    es = dict(es, port25_detail=p25_detail,
+              reacher_detail=es.get("reacher_detail") if es.get("reacher_url") else "")
+    status = (f'<table class="tight set-kv"><tbody>'
+              f'<tr><td class="set-kv-k">Engine in use</td><td><b>{esc(CHOICE_LABEL.get(resolved, resolved))}</b> '
+              f'<span class="muted">(setting: {esc(CHOICE_LABEL.get(es.get("configured") or "", es.get("configured") or ""))})</span></td></tr>'
+              f'<tr><td><span class="set-tipped"{p25_tip}>Outbound port 25</span></td>'
+              f'<td>{"<span class=ok>Open</span>" if p25 else "<span class=bad>Closed</span>" if p25 is False else "Not tested"}'
               f' <span class="muted small">{esc(es.get("port25_detail") or "")}</span></td></tr>'
-              f'<tr><td>Reacher server</td><td>{esc(es.get("reacher_url") or "not set")} '
+              f'<tr><td>Reacher server</td><td>{esc(es.get("reacher_url") or "Not set")} '
               f'{"<span class=ok>answering</span>" if es.get("reacher_ok") else ("<span class=bad>not answering</span>" if es.get("reacher_ok") is False else "")}'
               f' <span class="muted small">{esc(es.get("reacher_detail") or "")}</span></td></tr>'
-              f'</tbody></table><p><a class="btn sm" href="/settings/verify?refresh=1">Test again</a></p>')
+              f'</tbody></table><div class="set-actions"><a class="btn sm" href="/settings/verify?refresh=1">Test again</a></div>')
     c = conn()
     counts = c.execute("""SELECT verify_status, COUNT(*) n FROM contact_point WHERE kind='email'
                           GROUP BY verify_status ORDER BY n DESC""").fetchall()
@@ -434,19 +504,18 @@ def verify_page(msg: str = Query(""), err: str = Query(""), refresh: str = Query
     cnt = "".join(f'<tr><td><span class="chip v-{esc(r["verify_status"])}">'
                   f'{esc(contacts.VERIFY_LABEL.get(r["verify_status"], r["verify_status"]))}</span></td>'
                   f'<td class="num">{r["n"]:,}</td></tr>' for r in counts)
-    inner = f"""<p class="lede">Bellwether checks each address with the mail server that would receive
-it, without sending anything: it asks whether the server would accept that mailbox, then asks the
-same about a made-up address at the same domain. Only a server that accepts the real one and turns
-away the made-up one counts as verified. This is the method of the open-source check-if-email-exists
-(Reacher), built in; a Reacher server can be used instead.</p>
-<div class="note plain">Mail servers judge the machine asking. Checks need outbound port 25 and work
-best from a server with a fixed address, a reverse DNS name matching the HELO name below, and an SPF
-record on the MAIL FROM domain that allows it. From a home or office connection, Microsoft 365 and
-others often refuse to answer, which shows as "Could not tell", never as a bad address.</div>
-<h3 style="margin-top:18px">Right now</h3>{status}
-<h3 style="margin-top:18px">Addresses by result</h3><div class="table-scroll" style="max-width:480px"><table class="tight"><tbody>{cnt}</tbody></table></div>
+    inner = f"""<div class="cols-2 set-cols"><div><h3>Right now</h3>{status}</div>
+<div><h3>Addresses by result</h3><table class="tight"><tbody>{cnt or '<tr><td class="empty">No addresses yet.</td></tr>'}</tbody></table></div></div>
 <section class="s"><h2>Settings</h2>{_group_form("verify")}</section>"""
-    return _frame("Email verification", "verify", "How Bellwether confirms an email address exists.",
+    tip = how("How an address is checked",
+              "Bellwether asks the mail server that would receive the address whether it would accept "
+              "that mailbox, then asks the same about a made-up address at the same domain. Nothing "
+              "is sent. Only a server that accepts the real one and turns away the made-up one "
+              "counts as verified.",
+              foot="The method of the open-source check-if-email-exists (Reacher), built in; a "
+                   "Reacher server can be used instead.")
+    return _frame("Email verification", "verify",
+                  "How Bellwether confirms an email address exists, without sending anything." + tip,
                   inner, msg, err)
 
 
@@ -461,18 +530,26 @@ def crawl_page(msg: str = Query(""), err: str = Query("")):
             b = crawl.browser_available()
     except Exception:
         pass
-    inner = f"""<p class="lede">Firm websites and the directories on the Enrichment screen are read with
-Scrapling, using a real browser's network fingerprint so ordinary sites answer as they would a
-person. Pages that only draw themselves with JavaScript are rendered in a headless browser when one
-is installed{"" if b else " (none is installed here, so those pages are skipped)"}.</p>
+    browser = ('<div class="note good set-status">A headless browser is installed: JavaScript-only '
+               'pages are rendered.</div>' if b else
+               '<div class="note plain set-status">No headless browser is installed here, so '
+               'JavaScript-only pages are skipped.</div>')
+    tip = how("Reading websites",
+              "Firm websites and the directories on the Enrichment screen are read with Scrapling, "
+              "using a real browser's network fingerprint so ordinary sites answer as they would a "
+              "person. Pages that only draw themselves with JavaScript need a headless browser.")
+    ocr_tip = how("Brochures without a text layer",
+                  "A few brochures come back empty from the PDF reader. Most were typed into the "
+                  "SEC's fillable form, and their text is read exactly from the form fields. Scanned "
+                  "pages are read with Tesseract on this server's CPU, or with the Unlimited-OCR "
+                  "server above when one is set.")
+    inner = f"""{browser}
 {_group_form("crawl")}
-<section class="s"><h2>Brochures without a text layer</h2><p class="lede">A few brochures come back
-empty from the PDF reader. Most were typed into the SEC's fillable form, and their text is read
-exactly from the form fields. Scanned pages are read with Tesseract on this server's CPU; an
-Unlimited-OCR server is used instead only if one is set above.</p>
-<form method="post" action="/settings/ocr/test"><button class="sm" type="submit">Test OCR</button></form></section>"""
-    return _frame("Crawling", "crawl", "How firm websites, directories and scanned brochures are read.",
-                  inner, msg, err)
+<section class="s"><h2>Brochures without a text layer</h2>
+<p class="lede">Scanned brochures are read with OCR.{ocr_tip}</p>
+<form method="post" action="/settings/ocr/test" class="set-actions"><button class="sm" type="submit">Test OCR</button></form></section>"""
+    return _frame("Crawling", "crawl", "How firm websites, directories and scanned brochures are read."
+                  + tip, inner, msg, err)
 
 
 @router.post("/settings/ocr/test")
@@ -484,6 +561,91 @@ def ocr_test():
 
 
 # ------------------------------------------------------------------ jobs
+
+def _cadence(hours: float) -> str:
+    """How often a job runs once caught up, in words."""
+    if hours < 1:
+        return f"every {round(hours * 60)} minutes"
+    if hours == 1:
+        return "every hour"
+    if hours == 24:
+        return "daily"
+    if hours == 168:
+        return "weekly"
+    return f"every {hours:g} hours"
+
+
+def _is_flag(job) -> bool:
+    """A backlog query that only says due (1) or not (0), not how many are left."""
+    return (job.backlog_sql or "").lstrip().upper().startswith("SELECT CASE")
+
+
+JOB_CHIP = {"running": ("lead", "Working now"), "queued": ("line", "Catching up"),
+            "scheduled": ("line", "Up to date"), "paused": ("", "Paused"), "waiting": ("", "Waiting")}
+NEEDS_HREF = {"ai": "/settings/ai", "ocr": "/settings/crawl"}
+
+
+def _job_row(j: dict, alert: dict | None) -> str:
+    """One job: what it is (the name, explained on hover), whether it is working,
+    caught up or stuck, how far through its backlog, its last run, and actions."""
+    job = j["job"]
+    lane = jobs.LANE_LABEL.get(job.lane, job.lane)
+    tip = ui.tip_attr(job.label, job.blurb,
+                      foot=f"{lane} lane, where jobs take turns. Runs {_cadence(job.every_hours)} "
+                           f"once caught up.")
+    name = f'<b class="set-tipped"{tip}>{esc(job.label)}</b>'
+    if alert:
+        state = (f'<span class="chip {"bad" if alert["level"] == "bad" else "warn"}">'
+                 f'{"Needs you" if alert["level"] == "bad" else "Check"}</span>')
+    else:
+        cls, word = JOB_CHIP.get(j["state"], ("", j["state"]))
+        state = f'<span class="chip {cls}">{esc(word)}</span>'
+    if j["state"] == "running" and j.get("running_since"):
+        state += f'<div class="meta">Started {esc(ui.ago(j["running_since"]))}</div>'
+    elif j["next_run_at"] and j["state"] == "scheduled":
+        # A next run already in the past means the worker will pick it up now.
+        nxt = ui.ago(j["next_run_at"])
+        nxt = "Due now" if "ago" in nxt or nxt in ("just now", "today") else "Next run " + nxt
+        state += f'<div class="meta">{esc(nxt)}</div>'
+
+    prog = ""
+    total, done, backlog = j.get("total"), j.get("done"), j.get("backlog")
+    left = "" if _is_flag(job) or not backlog else f" &middot; {backlog:,} to go"
+    if total and done is not None:
+        pct = min(done / total * 100, 100)
+        prog = (f'<div class="meter"><i style="width:{pct:.1f}%"></i></div>'
+                f'<div class="meta">{done:,} of {total:,} done{left}</div>')
+    elif left:
+        prog = f'<div class="meta">{backlog:,} to go</div>'
+    if job.recent_sql and j.get("recent") is not None:
+        prog += f'<div class="meta">Last day: {j["recent"]:,} {esc(job.recent_label)}</div>'
+
+    if j["last_run_at"]:
+        bad = j["last_status"] in ("failed", "timeout")
+        flag = ""
+        if bad:
+            word = "Failed" if j["last_status"] == "failed" else "Timed out"
+            times = f' {j["fails"]} times in a row' if (j.get("fails") or 0) > 1 else ""
+            flag = f' <span class="chip bad">{word}{times}</span>'
+        message = (j["message"] or "").strip()
+        last = (f'<div class="small">Ran {esc(ui.ago(j["last_run_at"]))}{flag}</div>'
+                + (f'<div class="meta set-clamp" title="{esc(message)}">{esc(message[:240])}</div>'
+                   if message else ""))
+    elif j["why"]:
+        href = NEEDS_HREF.get(job.needs.split(":")[0], "")
+        last = (f'<div class="meta"><a href="{href}">{esc(j["why"])}</a></div>' if href else
+                f'<div class="meta">{esc(j["why"])}</div>')
+    else:
+        last = '<div class="meta">Not run yet</div>'
+
+    pause = ("resume", "Resume") if j["state"] == "paused" else ("pause", "Pause")
+    return (f'<tr><td class="set-job-name">{name}</td><td class="jstate">{state}</td>'
+            f'<td class="set-job-prog">{prog}</td><td class="set-job-last">{last}</td>'
+            f'<td class="num nowrap"><form method="post" action="/settings/jobs/{esc(job.kind)}/run" style="display:inline">'
+            f'<button class="sm" type="submit">Run now</button></form> '
+            f'<form method="post" action="/settings/jobs/{esc(job.kind)}/{pause[0]}" style="display:inline">'
+            f'<button class="sm ghost" type="submit">{pause[1]}</button></form></td></tr>')
+
 
 @router.get("/settings/jobs", response_class=HTMLResponse)
 def jobs_page(msg: str = Query("")):
@@ -503,85 +665,41 @@ def jobs_page(msg: str = Query("")):
     groups: dict = {}
     for j in ov:
         groups.setdefault(j["job"].group, []).append(j)
-    chips = {"running": "lead", "queued": "line", "scheduled": "line", "paused": "", "waiting": "dis"}
-    words = {"running": "Working now", "queued": "Catching up", "scheduled": "Up to date",
-             "paused": "Paused", "waiting": "Waiting"}
     sections = []
     for g, items in groups.items():
-        rows = []
-        for j in items:
-            job = j["job"]
-            pct = (j["done"] / j["total"] * 100) if j.get("total") and j.get("done") is not None else None
-            today = (f'<div class="meta"><b>{j["recent"]:,}</b> {esc(job.recent_label)} in the last day</div>'
-                     if job.recent_sql and j.get("recent") is not None else "")
-            prog = (f'<div class="meter"><i style="width:{pct:.1f}%"></i></div>'
-                    f'<div class="meta">{j["done"]:,} of {j["total"]:,}'
-                    f'{" &middot; " + format(j["backlog"], ",") + " to go" if j.get("backlog") else ""}</div>'
-                    if pct is not None else
-                    (f'<div class="meta">{j["backlog"]:,} to go</div>' if j.get("backlog") else ""))
-            prog = today + prog
-            last = ""
-            if j["last_run_at"]:
-                lc = "bad" if j["last_status"] in ("failed", "timeout") else "muted"
-                last = (f'<div class="small">{esc(ui.ago(j["last_run_at"]))} '
-                        f'<span class="{lc}">{esc(j["last_status"] or "")}</span></div>'
-                        f'<div class="meta">{esc((j["message"] or "")[:140])}</div>')
-            elif j["why"]:
-                last = f'<div class="meta warnc">{esc(j["why"])}</div>'
-            nxt = ""
-            if j["next_run_at"] and j["state"] == "scheduled":
-                # A next run already in the past means the worker will pick it up now.
-                nxt = esc(ui.ago(j["next_run_at"]))
-                nxt = "due now" if "ago" in nxt or nxt == "just now" else nxt
-            pause = ("resume", "Resume") if j["state"] == "paused" else ("pause", "Pause")
-            al = alert_of.get(job.kind)
-            state_chip = (f'<span class="chip {"bad" if al["level"] == "bad" else "warn"}">'
-                          f'{"Needs you" if al["level"] == "bad" else "Check"}</span>' if al else
-                          f'<span class="chip {chips.get(j["state"], "")}">{words.get(j["state"], j["state"])}</span>')
-            lane = jobs.LANE_LABEL.get(job.lane, job.lane)
-            rows.append(
-                f'<tr><td style="width:30%"><b>{esc(job.label)}</b>'
-                f'<details class="source-help"><summary>Details</summary><p>{esc(job.blurb)}</p></details></td>'
-                f'<td class="jstate">{state_chip}<div class="meta">{esc(lane)} lane</div>'
-                f'{"<div class=meta>Next run " + nxt + "</div>" if nxt else ""}</td>'
-                f'<td style="min-width:200px">{prog}</td><td style="width:22%">{last}</td>'
-                f'<td class="num nowrap"><form method="post" action="/settings/jobs/{esc(job.kind)}/run" style="display:inline">'
-                f'<button class="sm" type="submit">Run now</button></form> '
-                f'<form method="post" action="/settings/jobs/{esc(job.kind)}/{pause[0]}" style="display:inline">'
-                f'<button class="sm ghost" type="submit">{pause[1]}</button></form></td></tr>')
+        rows = "".join(_job_row(j, alert_of.get(j["job"].kind)) for j in items)
         sections.append(f'<section class="s"><h2>{esc(jobs.GROUP_LABEL.get(g, g))}</h2>'
-                        f'<table class="jobs-table"><tbody>{"".join(rows)}</tbody></table></section>')
-    wmsg = esc((weekly["message"] if weekly else "") or "not checked in yet")
-    wlast = esc(ui.ago((weekly or {}).get("last_started")) or "never") if weekly else "never"
-    weekly_html = f"""<section class="s"><h2>Weekly SEC cycle</h2><table><tbody><tr>
-<td style="width:30%"><b>SEC feeds, people, triggers, scores</b><div class="meta">Captures the SEC's
-weekly adviser and individual feeds as soon as they publish, then rebuilds firms, people, hiring,
-signals and scores. Runs by itself when a new feed is due.</div></td>
-<td><span class="chip line">Automatic</span></td><td class="small soft">{wmsg}</td>
-<td class="small">Last started {wlast}</td>
-<td class="num"><form method="post" action="/settings/jobs/weekly_cycle/run"><button class="sm" type="submit">Run now</button></form></td>
+                        f'<table class="jobs-table"><tbody>{rows}</tbody></table></section>')
+
+    wmsg = _cap((weekly["message"] if weekly else "") or "Not checked in yet")
+    wlast = ui.ago((weekly or {}).get("last_started")) if weekly else ""
+    wtip = ui.tip_attr("Weekly SEC cycle",
+                       "Captures the SEC's weekly adviser and individual feeds as soon as they "
+                       "publish, then rebuilds firms, people, hiring, signals and scores.",
+                       foot="Runs by itself when a new feed is due.")
+    weekly_html = f"""<section class="s"><h2>Weekly SEC cycle</h2><table class="jobs-table"><tbody><tr>
+<td class="set-job-name"><b class="set-tipped"{wtip}>SEC feeds and rebuild</b></td>
+<td class="jstate"><span class="chip line">Automatic</span></td>
+<td class="set-job-prog"><div class="meta">{esc(wmsg)}</div></td>
+<td class="set-job-last"><div class="{"small" if wlast else "meta"}">{"Started " + esc(wlast) if wlast else "Not started yet"}</div></td>
+<td class="num nowrap"><form method="post" action="/settings/jobs/weekly_cycle/run" style="display:inline"><button class="sm" type="submit">Run now</button></form></td>
 </tr></tbody></table></section>"""
-    attention = ""
+
+    watch = ("Bellwether checks every job every five minutes, restarts anything stuck and moves "
+             "overdue work to the front of its lane. Anything it cannot fix appears here and as a "
+             "count on Settings.")
     if open_alerts:
         items = "".join(
             f'<div class="alert-row {esc(a["level"])}"><div><b>{esc(a["title"])}</b>'
             f'<p>{esc(a["detail"] or "")}</p><div class="meta">Raised {esc(ui.ago(a["since"]))}</div></div>'
             f'{"<a class=btn href=" + esc(a["href"]) + ">Fix</a>" if a.get("href") and a["href"] != "/settings/jobs" else ""}</div>'
             for a in open_alerts)
-        attention = (f'<section class="s attention"><h2>Needs your attention</h2>'
-                     f'<p class="lede">Bellwether repairs stuck and overdue jobs by itself. These it '
-                     f'cannot fix alone.</p>{items}</section>')
+        attention = (f'<section class="s attention"><h2>Needs your attention'
+                     f'{how("What Bellwether fixes by itself", watch, label="Why")}</h2>{items}</section>')
     else:
-        attention = ('<section class="s"><div class="all-clear"><b>Everything is running.</b> '
-                     'Bellwether checks every job every five minutes, restarts anything stuck and '
-                     'moves overdue work to the front of its lane. Anything it cannot fix appears '
-                     'here and as a count on Settings.</div></section>')
-    fixed = ""
-    if fixes:
-        fixed = ('<section class="s"><h2>Fixed by itself in the last day</h2><table class="jobs-table"><tbody>'
-                 + "".join(f'<tr><td class="nowrap small" style="width:140px">{esc(ui.ago(e["at"]))}</td>'
-                           f'<td>{esc(e["detail"] or "")}</td></tr>' for e in fixes)
-                 + '</tbody></table></section>')
+        attention = (f'<div class="all-clear"><b>Everything is running.</b> Nothing needs you.'
+                     f'{how("What Bellwether fixes by itself", watch)}</div>')
+
     lane_line = ""
     if lanes:
         bits = []
@@ -590,12 +708,22 @@ signals and scores. Runs by itself when a new feed is due.</div></td>
             if not row:
                 continue
             now_job = jobs.BY_KIND.get(row.get("job") or "")
-            bits.append(f'<span class="pill">{esc(jobs.LANE_LABEL.get(ln, ln))}: '
+            bits.append(f'<span class="pill{"" if now_job else " off"}">{esc(jobs.LANE_LABEL.get(ln, ln))}: '
                         f'{esc(now_job.label) if now_job else "idle"}</span>')
-        lane_line = f'<div class="pills" style="margin:0 0 18px">{"".join(bits)}</div>'
-    inner = f'{attention}{lane_line}{fixed}{weekly_html}{"".join(sections)}'
-    return _frame("Jobs", "jobs", "Jobs run by themselves, in four lanes side by side. "
-                  "Use Run now to put one first in its lane.", inner, msg)
+        lanes_tip = ui.tip_attr("Lanes", "Jobs run in four lanes side by side. Jobs in one lane "
+                                "take turns; Run now puts a job first in its lane.")
+        lane_line = (f'<div class="set-lanes"><span class="set-lanes-l set-tipped"{lanes_tip}>'
+                     f'Running now</span><div class="pills">{"".join(bits)}</div></div>')
+
+    fixed = ""
+    if fixes:
+        fixed = ('<section class="s"><h2>Fixed by itself in the last day</h2><table class="jobs-table"><tbody>'
+                 + "".join(f'<tr><td class="nowrap small" style="width:140px">{esc(ui.ago(e["at"]))}</td>'
+                           f'<td>{esc(e["detail"] or "")}</td></tr>' for e in fixes)
+                 + '</tbody></table></section>')
+    inner = f'<div class="set-jobs-top">{attention}{lane_line}</div>{fixed}{weekly_html}{"".join(sections)}'
+    return _frame("Jobs", "jobs", "Background work that keeps the data current. Run now puts a job "
+                  "first in its lane.", inner, msg)
 
 
 @router.post("/settings/jobs/{kind}/{action}")
@@ -666,12 +794,16 @@ def _job_line(c, kind: str) -> str:
         return '<span class="meta">Not run yet</span>'
     bits = []
     if r["force"]:
-        bits.append("queued to run now")
+        bits.append("Queued to run now")
     if r["last_run_at"]:
-        bits.append(f'last ran {esc(ui.ago(r["last_run_at"]))}'
-                    + (f' ({esc(r["last_status"])})' if r["last_status"] else ""))
-    msg = f'<div class="meta">{esc((r["message"] or "")[:160])}</div>' if r["message"] else ""
-    return f'<span class="small soft">{"; ".join(bits) or "scheduled"}</span>{msg}'
+        failed = r["last_status"] in ("failed", "timeout")
+        bits.append(f'Last ran {esc(ui.ago(r["last_run_at"]))}'
+                    + (' <span class="chip bad">Failed</span>' if failed else ""))
+    msg = (f'<div class="meta set-clamp" title="{esc(r["message"])}">{esc((r["message"] or "")[:160])}</div>'
+           if r["message"] else "")
+    every = (f"Runs by itself, {_cadence(jobs.BY_KIND[kind].every_hours)}" if kind in jobs.BY_KIND
+             else "Runs by itself")
+    return f'<span class="small soft">{" &middot; ".join(bits) or every}</span>{msg}'
 
 
 @router.get("/settings/firmtypes", response_class=HTMLResponse)
@@ -701,25 +833,27 @@ def firmtypes_page(q: str = Query(""), cat: str = Query(""), msg: str = Query(""
         n = counts.get(k, {})
         lists = ("All lists" if k == "unknown" else ", ".join(reach.get(k, [])) or "No list")
         rows.append(
-            f'<tr><td style="width:28%"><b>{esc(cdef["label"])}</b>'
-            f'<div class="meta" style="text-transform:none;letter-spacing:0">{esc(cdef["description"])}</div></td>'
+            f'<tr><td class="set-ft-name"><b class="set-tipped"{ui.tip_attr(cdef["label"], cdef["description"])}>'
+            f'{esc(cdef["label"])}</b></td>'
             f'<td class="num"><a href="/settings/firmtypes?{qs_join(cat=k)}#firms">{n.get("n", 0):,}</a></td>'
             f'<td class="num">{n.get("sec", 0):,}</td>'
             f'<td class="num">{n.get("manual", 0):,}</td>'
             f'<td class="num">{n.get("conf", 0):.0f}%</td>'
-            f'<td class="small">{esc(lists)}<div class="meta" style="text-transform:none;letter-spacing:0">'
-            f'{esc(cdef["treatment"])}</div></td></tr>')
+            f'<td class="small set-ft-lists">{esc(lists)}<div class="meta">{esc(cdef["treatment"])}</div></td></tr>')
+    lists_tip = ui.tip_attr("Product lists", "The lists firms of this type may appear on. Each "
+                            "product sets its own on its Scoring screen.",
+                            foot="A firm classified below that product's confidence threshold, or "
+                                 "not classified, is never removed.")
     summary = (f'<table><thead><tr><th>Type</th><th class="num">Firms</th>'
                f'<th class="num">SEC-registered</th><th class="num">Set by hand</th>'
-               f'<th class="num">Avg confidence</th><th>Product lists</th></tr></thead>'
+               f'<th class="num">Avg confidence</th><th><span class="set-tipped"{lists_tip}>'
+               f'Product lists</span></th></tr></thead>'
                f'<tbody>{"".join(rows)}</tbody></table>'
-               f'<p class="meta">{total:,} firms classified. Which lists each type may appear on is set '
-               f'per product on its Scoring screen; a firm classified below that product\'s '
-               f'confidence threshold, or not classified, is never removed.</p>')
-    actions = f"""<div class="row" style="margin:6px 0 4px">
+               f'<p class="meta set-after">{total:,} firms classified. Hover a type for what it means; '
+               f'click its count for the largest firms.</p>')
+    actions = f"""<div class="set-actions-grid">
 <form method="post" action="/settings/firmtypes/reclassify"><button class="primary" type="submit">Reclassify all firms</button></form>
-<span>{classify_line}</span></div>
-<div class="row" style="margin:6px 0 18px">
+<span>{classify_line}</span>
 <form method="post" action="/settings/firmtypes/rescore"><button type="submit">Rescore all firms</button></form>
 <span>{rescore_line}</span></div>"""
 
@@ -756,8 +890,8 @@ def firmtypes_page(q: str = Query(""), cat: str = Query(""), msg: str = Query(""
             c.close()
         items = [dict(r, firm_class=types.get(r["crd"])) for r in listed]
         cat_html = (f'<section class="s" id="firms"><h2>Largest firms typed {esc(firmtype.label(cat))}</h2>'
-                    f'<p class="lede">The 50 largest by assets, to check the rules. Set a type by hand '
-                    f'where they are wrong; it is kept through every reclassification.</p>'
+                    f'<p class="lede">The 50 largest by assets. Where the rules are wrong, set the type '
+                    f'by hand; it survives every reclassification.</p>'
                     f'<table><tbody>{firm_rows(items, qs_join(cat=cat))}</tbody></table></section>')
 
     man_rows = "".join(
@@ -778,17 +912,16 @@ def firmtypes_page(q: str = Query(""), cat: str = Query(""), msg: str = Query(""
                       f'<tbody>{man_rows}</tbody></table>' if manual else
                       '<p class="muted">No firm has a type set by hand yet.</p>')
                    + '</section>')
-    rules_html = ('<section class="s"><h2>How the rules decide</h2><p class="lede">Tried in this order; '
-                  'the first that applies decides. Known names live in '
-                  '<a href="/settings/knowledge?kind=entity">Industry knowledge</a>.</p>'
-                  + "".join(f'<div class="gline" style="padding:6px 0"><b>{i}. {esc(t)}</b> '
-                            f'<span class="small soft">{esc(b)}</span></div>'
-                            for i, (t, b) in enumerate(firmtype.RULES_SUMMARY, 1))
-                  + '</section>')
+    rules_html = ('<section class="s"><details class="set-more"><summary>How the rules decide</summary>'
+                  '<p class="lede">Tried in this order; the first that applies decides. Known names '
+                  'live in <a href="/settings/knowledge?kind=entity">Industry knowledge</a>.</p>'
+                  '<ol class="set-rules">'
+                  + "".join(f'<li><b>{esc(t)}</b> <span class="small soft">{esc(b)}</span></li>'
+                            for t, b in firmtype.RULES_SUMMARY)
+                  + '</ol></details></section>')
     inner = actions + summary + search_html + cat_html + manual_html + rules_html
     return _frame("Firm types", "firmtypes",
-                  "What kind of firm each adviser is: an independent RIA, a custodian like Schwab, a "
-                  "wirehouse, an asset manager, a fund manager. Each product sells only to some types.",
+                  "What kind of firm each adviser is. Each product sells only to some types.",
                   inner, msg, err)
 
 
@@ -896,7 +1029,7 @@ def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str =
     finally:
         c.close()
     per = {k: sum(1 for i in all_items if i["kind"] == k) for k in knowledge.KINDS}
-    seg = ('<div class="seg" style="margin:0 0 14px">' + "".join(
+    seg = ('<div class="seg set-tabs set-subtabs">' + "".join(
         f'<a class="{"on" if k == kind else ""}" href="/settings/knowledge?{qs_join(kind=k)}">'
         f'{esc(label)} <span class="muted">{per[k]}</span></a>'
         for k, label in knowledge.KINDS.items()) + '</div>')
@@ -912,11 +1045,11 @@ def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str =
     for it in items:
         d = it.get("data") or {}
         state = ('<span class="chip line">Off</span>' if not it.get("active") else
-                 ('<span class="chip warn">Edited</span>' if it.get("edited") else
-                  '<span class="chip line">Shipped</span>'))
+                 ('<span class="chip">Edited</span>' if it.get("edited") else
+                  '<span class="chip line">Built in</span>'))
         detail = ""
         if kind == "entity":
-            detail = (f'<div class="small"><span class="chip">{esc(firmtype.label(d.get("category")))}</span></div>'
+            detail = (f'<div class="small set-kn-type"><span class="chip">{esc(firmtype.label(d.get("category")))}</span></div>'
                       f'<div class="meta" style="text-transform:none;letter-spacing:0">Names: '
                       f'{esc(", ".join(d.get("patterns") or []) or "none")}</div>'
                       + (f'<div class="meta" style="text-transform:none;letter-spacing:0">Owners: '
@@ -935,7 +1068,7 @@ def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str =
         if shipped and (it.get("edited") or not it.get("active")):
             buttons.append(
                 f'<form method="post" action="/settings/knowledge/reset" style="display:inline" '
-                f'onsubmit="return confirm(\'Put this item back to the shipped version?\')">'
+                f'onsubmit="return confirm(\'Put this item back to the built-in version?\')">'
                 f'<input type="hidden" name="id" value="{it["id"]}">'
                 f'<button class="sm ghost" type="submit">Reset</button></form>')
         if not shipped and kind != "category":
@@ -945,7 +1078,7 @@ def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str =
                 f'<input type="hidden" name="id" value="{it["id"]}">'
                 f'<button class="sm ghost" type="submit">Delete</button></form>')
         edit = (f'<details class="source-help"><summary>Edit</summary>'
-                f'<form method="post" action="/settings/knowledge/save" style="margin-top:8px">'
+                f'<form method="post" action="/settings/knowledge/save" class="set-form set-edit">'
                 f'<input type="hidden" name="id" value="{it["id"]}"><input type="hidden" name="kind" value="{esc(kind)}">'
                 f'{_kn_fields(it, kind)}<button class="primary sm" type="submit">Save</button></form></details>')
         who = ("" if not it.get("edited") else
@@ -956,27 +1089,36 @@ def knowledge_page(kind: str = Query("entity"), msg: str = Query(""), err: str =
             f'<td class="nowrap">{state}</td><td class="num nowrap">{" ".join(buttons)}</td></tr>')
     add = ""
     if kind != "category":
-        add = (f'<section class="s"><h2>Add</h2><form method="post" action="/settings/knowledge/save">'
+        noun = {"entity": "a known entity", "product": "a product note", "glossary": "a term",
+                "fact": "a note"}.get(kind, "an item")
+        add = (f'<section class="s"><details class="set-add"{" open" if not items and not q.strip() else ""}>'
+               f'<summary class="btn">Add {esc(noun)}</summary>'
+               f'<form method="post" action="/settings/knowledge/save" class="set-form">'
                f'<input type="hidden" name="kind" value="{esc(kind)}">{_kn_fields(None, kind)}'
-               f'<button class="primary" type="submit">Add</button></form></section>')
+               f'<button class="primary" type="submit">Add</button></form></details></section>')
     try:
         digest = knowledge.ai_context()
     except Exception:
         digest = ""
     ai_html = (f'<section class="s"><h2>What Bellwether AI reads</h2><p class="lede">A digest of '
                f'this knowledge, about {len(digest.split()):,} words, goes with every question and '
-               f'brief, beside the data on the firm itself.</p><details class="source-help">'
+               f'brief.</p><details class="source-help">'
                f'<summary>Show the digest</summary><pre class="small soft" style="white-space:pre-wrap">'
                f'{esc(digest)}</pre></details></section>') if digest else ""
     search = (f'<form class="knowledge-search" method="get" action="/settings/knowledge">'
               f'<input type="hidden" name="kind" value="{esc(kind)}">'
               f'<input type="search" name="q" value="{esc(q)}" aria-label="Search industry knowledge" placeholder="Search names or rules">'
               f'<button type="submit">Search</button></form>')
-    inner = (seg + search + f'<p class="lede">{esc(knowledge.KIND_HELP.get(kind, ""))}</p>'
-             f'<table><tbody>{"".join(rows) or "<tr><td class=empty>Nothing here yet.</td></tr>"}</tbody></table>'
+    help_txt = knowledge.KIND_HELP.get(kind, "")
+    first, _, rest = help_txt.partition(". ")
+    help_html = (f'<p class="lede set-kind-help">{esc(first.rstrip(".") + ".")}'
+                 + (how(knowledge.KINDS.get(kind, ""), rest) if rest else "") + '</p>') if help_txt else ""
+    inner = (seg + search + help_html
+             + f'<table class="set-stack"><tbody>{"".join(rows) or "<tr><td class=empty>Nothing here yet.</td></tr>"}</tbody></table>'
              + add + ai_html)
     return _frame("Industry knowledge", "knowledge",
-                  "Edit the firm identities, definitions and product knowledge used by classification and AI.", inner, msg, err)
+                  "The firm names, definitions and product knowledge behind classification and AI.",
+                  inner, msg, err)
 
 
 def _knowledge_changed(c, item):
@@ -1068,6 +1210,54 @@ def knowledge_delete(id: int = Form(...)):
 
 # ------------------------------------------------------------------ system
 
+# What each source and table is, in words. The stored key stays on hover
+# (title), for anyone matching a row to the logs.
+SOURCE_LABEL = {
+    "adv_feed": "SEC adviser feed", "adv_state_feed": "State adviser feed",
+    "ia_indvl_feed": "SEC individual feed", "people": "People and hiring",
+    "people_index": "People screen", "brochures": "Brochures", "brochure": "Brochures",
+    "brochure_contacts": "Brochure contacts", "firm_class": "Firm types",
+    "holding_13f": "13F holdings", "edgar_13f_index": "13F filing index",
+    "adv_13f_match": "13F matches", "13f": "13F filings", "filing_13f": "13F filings",
+    "form_d": "Form D", "mail_platform": "Email platform", "cusip_map": "Security map",
+    "growth": "Growth", "directories": "Directories", "open_roles": "Open roles",
+    "email_hunt": "Email hunt", "contacts": "Contacts", "diff_snapshots": "Change detection",
+    "firm_overlay": "Firm overlay", "custodian_share": "Custodian share",
+    "firm_history": "Firm history", "ai_research": "AI contact research",
+    "firm_adv_extra": "Form ADV extra answers", "firm_adv_profile": "Form ADV profile",
+    "firm_refresh": "Custodian refresh", "adv_filing_crosswalk": "ADV filing archive",
+    "schedule_a_b": "Schedule A and B", "schedule_d_archive": "Schedule D archive",
+    "offices": "Office phones", "web_enrich": "Firm websites", "contact_search": "Web search",
+}
+TABLE_LABEL = {
+    "firm": "Firms", "firm_scope": "Firms in scope", "product_score": "Product scores",
+    "person": "People", "person_employment": "Employment records", "people_event": "People moves",
+    "contact_point": "Contact points", "trigger_event": "Trigger events", "brochure": "Brochures",
+    "brochure_tag": "Brochure tags", "firm_mail_platform": "Email platforms",
+    "web_page": "Web pages read", "web_signal": "Web signals",
+    "schedule_a": "Owners and officers (Schedule A)", "sched_d_7b1": "Private funds (Schedule D 7.B.1)",
+    "holding_13f": "13F holdings", "directory_record": "Directory records", "ai_call": "AI calls",
+    "score_override": "Score overrides",
+}
+
+
+def _source(key: str | None) -> str:
+    key = key or ""
+    base, _, rest = key.partition(":")
+    label = SOURCE_LABEL.get(key) or SOURCE_LABEL.get(base) or base.replace("_", " ").capitalize()
+    if rest:
+        label += ": " + rest.replace("_", " ")
+    return f'<span title="{esc(key)}">{esc(label)}</span>'
+
+
+def _size(n: int | None) -> str:
+    n = int(n or 0)
+    for unit, step in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= step:
+            return f"{n / step:,.1f} {unit}"
+    return f"{n:,} byte{'' if n == 1 else 's'}"
+
+
 @router.get("/settings/system", response_class=HTMLResponse)
 def system_page():
     c = conn()
@@ -1094,36 +1284,42 @@ def system_page():
               "holding_13f", "directory_record", "ai_call", "score_override"):
         n = safe(f"SELECT COUNT(*) n FROM {t}")
         if n is not None:
-            counts.append(f'<tr><td>{t}</td><td class="num">{n:,}</td></tr>')
+            counts.append(f'<tr><td><span title="{t}">{esc(TABLE_LABEL.get(t, t))}</span></td>'
+                          f'<td class="num">{n:,}</td></tr>')
     c.close()
     beat = ""
     if sched and sched["last_check"]:
         mins = (datetime.now(timezone.utc) - datetime.fromisoformat(sched["last_check"])).total_seconds() / 60
-        beat = (f'<p><b>Scheduler:</b> {"<span class=ok>on</span>" if mins < 15 else "<span class=bad>stalled</span>"}, '
-                f'last checked {esc(ui.ago(sched["last_check"]))}. '
-                f'{esc((sched["message"] or "")[:1].upper() + (sched["message"] or "")[1:])}.</p>')
+        on = mins < 15
+        beat = (f'<div class="note {"plain" if on else "bad"} set-status"><span><b>Scheduler '
+                f'{"on" if on else "stalled"}</b> &middot; last checked {esc(ui.ago(sched["last_check"]))}'
+                f'{" &middot; " + esc(_cap(sched["message"])) if sched["message"] else ""}</span></div>')
+    words = {"ok": "OK", "failed": "Failed", "skipped": "Skipped", "running": "Running"}
     rrow = []
     for r in runs:
         cls = {"ok": "ok", "failed": "bad", "skipped": "warnc", "running": "warnc"}.get(r["status"], "")
-        flag = ' <b class="warnc">FLAGGED</b>' if r["flagged"] else ""
-        rrow.append(f'<tr><td>{esc(r["source_key"])}</td><td>{esc(r["stage"])}</td>'
-                    f'<td class="{cls}"><b>{esc(r["status"])}</b>{flag}</td>'
+        flag = ' <span class="chip warn">Flagged</span>' if r["flagged"] else ""
+        message = r["message"] or ""
+        rrow.append(f'<tr><td>{_source(r["source_key"])}</td><td>{esc(_cap((r["stage"] or "").replace("_", " ")))}</td>'
+                    f'<td class="{cls} nowrap"><b>{esc(words.get(r["status"], _cap(r["status"])))}</b>{flag}</td>'
                     f'<td class="num">{format(r["rows_out"], ",") if r["rows_out"] is not None else "-"}</td>'
-                    f'<td class="small">{esc(ui.ago(r["finished_at"] or r["started_at"]))}</td>'
-                    f'<td class="small soft">{esc((r["message"] or "")[:140])}</td></tr>')
-    srow = "".join(f'<tr><td>{esc(s["source_key"])}</td><td>{esc(s["published_at"])}</td>'
-                   f'<td class="num">{s["bytes"]:,}</td><td class="small">{esc(s["captured_at"][:10])}</td></tr>'
+                    f'<td class="small nowrap">{esc(ui.ago(r["finished_at"] or r["started_at"]))}</td>'
+                    f'<td class="small soft" title="{esc(message)}">{esc(message[:140])}</td></tr>')
+    srow = "".join(f'<tr><td>{_source(s["source_key"])}</td><td>{esc(s["published_at"])}</td>'
+                   f'<td class="num" title="{s["bytes"]:,} bytes">{_size(s["bytes"])}</td>'
+                   f'<td class="small">{esc(s["captured_at"][:10])}</td></tr>'
                    for s in snaps)
+    snap_tip = ui.tip_attr("Snapshots", "Every SEC file Bellwether reads is kept exactly as "
+                           "downloaded, so any figure can be traced back to its source.")
     inner = f"""{beat}
 <section class="s"><h2>Recent runs</h2><table class="tight"><thead><tr><th>Source</th><th>Stage</th>
 <th>Status</th><th class="num">Rows</th><th>When</th><th>Message</th></tr></thead>
-<tbody>{"".join(rrow)}</tbody></table></section>
-<section class="s"><div class="cols-2"><div><h3>Immutable snapshots</h3><table class="tight">
-<thead><tr><th>Source</th><th>Published</th><th class="num">Bytes</th><th>Captured</th></tr></thead>
-<tbody>{srow}</tbody></table></div><div><h3>Record counts</h3><table class="tight"><tbody>{"".join(counts)}</tbody></table>
-<p class="meta"><a href="/settings/system.json">Raw JSON</a></p></div></div></section>"""
-    return _frame("System", "system", "Whether the data is current and what has run. Red means failed "
-                  "or stale; amber means flagged.", inner)
+<tbody>{"".join(rrow) or '<tr><td colspan="6" class="empty">No runs yet.</td></tr>'}</tbody></table></section>
+<section class="s"><div class="cols-2 set-cols"><div><h3><span class="set-tipped"{snap_tip}>Snapshots</span></h3><table class="tight">
+<thead><tr><th>Source</th><th>Published</th><th class="num">Size</th><th>Captured</th></tr></thead>
+<tbody>{srow or '<tr><td colspan="4" class="empty">None yet.</td></tr>'}</tbody></table></div><div><h3>Record counts</h3><table class="tight"><tbody>{"".join(counts)}</tbody></table>
+<p class="meta set-after"><a href="/settings/system.json">Raw JSON</a></p></div></div></section>"""
+    return _frame("System", "system", "Whether the data is current, and what has run.", inner)
 
 
 @router.get("/settings/system.json")

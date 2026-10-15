@@ -243,8 +243,10 @@ JOBS: list[Job] = [
         "Tells Microsoft 365 from Google from public mail records, re-checked every 90 days.",
         "scripts.mail_platform", ("--limit", "400"), every_hours=24,
         backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN firm_mail_platform m ON m.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE m.crd IS NULL OR r.requested_at > m.checked_at",
-        done_sql="SELECT COUNT(*) n FROM firm_mail_platform m JOIN firm_scope s ON s.crd=m.crd",
-        total_sql="SELECT COUNT(*) n FROM firm_scope", group="filings",
+        # Every firm, priority firms first (scripts/mail_platform.py), so done
+        # and total count the same firms the backlog does.
+        done_sql="SELECT COUNT(*) n FROM firm_mail_platform m JOIN firm_current f ON f.crd=m.crd",
+        total_sql="SELECT COUNT(*) n FROM firm_current", group="filings",
         recent_sql="SELECT COUNT(*) n FROM firm_mail_platform WHERE checked_at >= '{day_ago}'",
         recent_label="firms checked"),
     Job("firm_refresh", "Custodian refresh",

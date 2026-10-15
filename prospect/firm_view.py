@@ -44,7 +44,7 @@ from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import ai, contacts, products, roles, ui
-from .webapp import (ICONS, STATUSES, TYPE_LABEL, caveat, conn, current_account, current_owner, esc,
+from .webapp import (CAVEATS, ICONS, STATUSES, TYPE_LABEL, conn, current_account, current_owner, esc,
                      escn, missing_chip, money, nice_name, page, score_cell)
 
 router = APIRouter()
@@ -57,6 +57,24 @@ CRD_RE = re.compile(r"^[0-9]{1,12}$")
 OUT_TYPES = {"custodian", "wirehouse", "independent_bd", "bank_trust", "insurance"}
 
 SOURCE_LABEL = ui.SOURCE_LABEL
+
+
+def term(text: str, title: str = "", body: str = "", points=None, point_head: str = "",
+         foot: str = "", cls: str = "tterm", focus: bool = True) -> str:
+    """A word or figure that explains itself on hover or focus (ui.tip_attr),
+    so definitions and fine print sit on the thing they explain instead of in
+    loose sentences around it. text is trusted HTML. Inside a link or a
+    summary, which take focus themselves, focus=False keeps it hover only."""
+    attr = ui.tip_attr(title, body, points, point_head, foot)
+    if not focus:
+        attr = re.sub(r' (aria-label="[^"]*"|tabindex="0")', "", attr)
+    return f'<span class="{cls}"{attr}>{text}</span>'
+
+
+def caveat_term(key: str, text: str, title: str) -> str:
+    """A figure with a known limitation (config/scoring.yml caveats), the
+    limitation on hover."""
+    return term(text, title, " ".join(CAVEATS[key].split()))
 
 
 def _pretty_name(filed: str) -> str:
@@ -75,7 +93,9 @@ def aum_chart(history) -> str:
     """Regulatory AUM over time as an inline SVG with real axes: dollar
     gridlines, a year scale, and every filing as a hoverable point."""
     if len(history) < 2:
-        return '<p class="muted small">At least two filings are needed to show asset history.</p>'
+        return ('<p class="muted small">' + ("Only one filing on record, so there is no history "
+                                             "to chart yet." if history else
+                                             "No filing with assets on record yet.") + '</p>')
     vals = [h["raum"] for h in history]
     xs = [_yearpos(h["filing_date"]) for h in history]
     lo, hi = min(vals), max(vals)
@@ -106,18 +126,17 @@ def aum_chart(history) -> str:
         f'<circle cx="{X(x):.1f}" cy="{Y(v):.1f}" r="2.6" fill="var(--ok)" '
         f'opacity=".85"><title>{esc(h["filing_date"])}: {money(v)}</title></circle>'
         for x, v, h in zip(xs, vals, history))
-    growth = ""
+    bits = [f'{len(history)} filings, {esc(history[0]["filing_date"][:4])} to '
+            f'{esc(history[-1]["filing_date"][:4])}', f"latest {money(vals[-1])}"]
     if vals[0]:
         pct = (vals[-1] - vals[0]) / vals[0] * 100
         ratio = vals[-1] / vals[0]
-        growth = (f' &middot; {ratio:,.0f} times larger over the span' if ratio >= 10 else
-                  f' &middot; {pct:+,.0f}% over the span' if abs(pct) >= 1 else " &middot; roughly flat")
+        bits.append(f'{ratio:,.0f} times larger over the span' if ratio >= 10 else
+                    f'{pct:+,.0f}% over the span' if abs(pct) >= 1 else "roughly flat")
     series = json.dumps({"points": [[h["filing_date"][:10], float(h["raum"])] for h in history],
                          "format": "money", "what": "Filed"})
     return (
-        f'<div class="meta" style="margin-bottom:8px">{len(history)} filings from '
-        f'{esc(history[0]["filing_date"][:4])} to {esc(history[-1]["filing_date"][:4])}. '
-        f'Now {money(vals[-1])}{growth}. Hover the chart to read any filing.</div>'
+        f'<div class="meta chart-meta">{" &middot; ".join(bits)}</div>'
         f'<div class="ichart" data-chart="line" data-height="230" data-label="Assets over time" '
         f'data-series="{esc(series)}">'
         f'<svg class="chart" viewBox="0 0 {W} {H}" style="width:100%;height:{H}px;display:block">'
@@ -153,16 +172,23 @@ def _fit_section(crd: str, results: dict, ranks: dict, focus: str) -> str:
         is_open = r.product == focus or (not focus and i == 0 and r.status == "scored")
         if r.status == "scored":
             rank = ranks.get(r.product)
+            rank_s = (term(f"#{rank:,} on the list", f"#{rank:,} on the {p['name']} list",
+                           f"Where this firm ranks among every firm scored for {p['name']}.", focus=False)
+                      if rank else "")
+            pitch = esc(r.pitch) if r.pitch else ""
             head = (f'{score_cell(r.score, r.coverage, r.potential)}'
-                    f'<span class="small soft">{f"#{rank:,} on the list" if rank else ""}'
-                    f'{" &middot; " + esc(r.pitch) if r.pitch else ""}'
-                    f'<span style="margin-left:8px">{missing_chip("|".join(r.missing), 2)}</span></span>')
+                    f'<span class="small soft"><span>{" &middot; ".join(x for x in (rank_s, pitch) if x)}'
+                    f'</span>{missing_chip("|".join(r.missing), 2)}</span>')
         elif r.status == "disqualified":
-            head = (f'<span class="chip dis">Removed</span>'
-                    f'<span class="small soft">{esc(r.reason)}</span>')
+            head = (term('Removed', "Removed from this list",
+                         f"Something on record rules this firm out for {p['name']}, "
+                         "whatever it would score.", cls="chip dis", focus=False)
+                    + f'<span class="small soft">{esc(r.reason)}</span>')
         else:
-            head = (f'<span class="muted small">Not eligible</span>'
-                    f'<span class="small soft">{esc(r.reason)}</span>')
+            head = (term("Not eligible", "Not eligible",
+                         f"The firm misses a requirement {p['name']} has, so it is not "
+                         "ranked on that list.", focus=False)
+                    + f'<span class="small soft">{esc(r.reason)}</span>')
         inner = _breakdown(crd, r) if r.status == "scored" else _gates_html(r)
         out.append(
             f'<details class="fit" id="fit-{r.product}"{" open" if is_open else ""}>'
@@ -210,40 +236,82 @@ def _breakdown(crd: str, r) -> str:
                     f'<button class="sm" type="submit">Save</button></form></details>')
         known = comp.get("known", True)
         level = (f'<div class="meta">Level: {esc(comp["level"])}</div>' if known else
-                 '<div class="meta warnc">Missing data: earns nothing until it is found</div>')
+                 '<div class="meta warnc">' + term(
+                     "No data yet", "No data yet",
+                     f"Bellwether has not found this for the firm. It carries {comp['weight']:g}% "
+                     "of the score and earns nothing until it is found.") + '</div>')
         pts = f'{comp["points"]:.0f}' if known else '<span class="warnc">?</span>'
         rows.append(
-            f'<tr class="{"" if known else "unk"}"><td style="width:24%"><b>{esc(comp["label"])}</b>{man}</td>'
-            f'<td class="ev">{esc(comp["evidence"])}{level}{form}</td>'
-            f'<td class="num pts" style="width:62px">{pts}</td>'
-            f'<td class="num muted" style="width:56px">{comp["weight"]:g}%</td>'
-            f'<td class="num pts" style="width:62px">+{comp["contrib"]:.1f}</td></tr>')
+            f'<tr class="{"" if known else "unk"}"><td class="fac"><b>{esc(comp["label"])}</b>{man}</td>'
+            f'<td class="ev">{ui.evidence_html(comp["evidence"])}{level}{form}</td>'
+            f'<td class="num pts" data-l="Points">{pts}</td>'
+            f'<td class="num muted" data-l="Weight">{comp["weight"]:g}%</td>'
+            f'<td class="num pts" data-l="Adds">+{comp["contrib"]:.1f}</td></tr>')
     for pen in r.penalties:
-        rows.append(f'<tr><td><b class="bad">{esc(pen["label"])}</b></td>'
-                    f'<td class="ev">{esc(pen["evidence"])}</td><td></td><td></td>'
-                    f'<td class="num pts bad">-{pen["points"]}</td></tr>')
-    rows.append(f'<tr><td></td><td class="num muted">Score, on {r.coverage:.0f}% known data'
-                f'{f" (could reach {r.potential:.0f})" if r.coverage < 99.5 else ""}</td><td></td><td></td>'
-                f'<td class="num pts" style="font-size:16px">{r.score:.1f}</td></tr>')
-    gates = "".join(
-        f'<div class="gline"><b>Pass</b> {esc(g["label"])}: '
-        f'<span class="muted">{esc(g["evidence"])}</span></div>' for g in r.gates) or (
+        rows.append(f'<tr><td class="fac"><b class="bad">{esc(pen["label"])}</b></td>'
+                    f'<td class="ev">{esc(pen["evidence"])}</td><td class="nil"></td><td class="nil"></td>'
+                    f'<td class="num pts bad" data-l="Takes off">-{pen["points"]}</td></tr>')
+    cov = f"{r.coverage:.0f}% known data"
+    if r.coverage < 99.5:
+        cov = term(cov, cov, f"{r.coverage:.0f}% of the {p['name']} score rests on data Bellwether "
+                   f"holds. The rest earns nothing until it is found; with it, the score could "
+                   f"reach {r.potential:.0f}.")
+    rows.append(f'<tr class="total"><td class="nil"></td><td class="num muted">Score, on {cov}'
+                f'{f" (could reach {r.potential:.0f})" if r.coverage < 99.5 else ""}</td>'
+                f'<td class="nil"></td><td class="nil"></td>'
+                f'<td class="num pts" data-l="Score">{r.score:.1f}</td></tr>')
+
+    def gate_line(g):
+        ev = g["evidence"] if g["evidence"] and g["evidence"] != g["label"] else ""
+        return (f'<div class="gline"><b>Pass</b> {esc(g["label"])}'
+                + (f': <span class="muted">{esc(ev)}</span>' if ev else "") + '</div>')
+    gates = "".join(gate_line(g) for g in r.gates) or (
         '<div class="gline muted">This list has no gates: every firm is ranked on it.</div>')
+    gate_h = term("Gates passed", "Gates",
+                  f"Requirements a firm must meet to be ranked on the {p['name']} list at all.")
     sig = ""
     if r.signals:
-        sig = ('<h3 style="margin-top:16px">Talking points and flags</h3>' + "".join(
+        sig = ('<h3 class="bd-h">Talking points and flags</h3>' + "".join(
             f'<div class="gline"><span class="chip">{esc(s["label"])}</span> '
             f'{esc(s["text"])}</div>' for s in r.signals[:8]))
-    rules = "".join(f'<div class="note plain small">{esc(x)}</div>' for x in p.get("rules", []))
-    return (f'<table class="bd"><thead><tr><th>Factor</th><th>Evidence</th>'
-            f'<th class="num">Points</th><th class="num">Weight</th>'
-            f'<th class="num">Adds</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
-            f'<h3 style="margin-top:16px">Gates passed</h3>{gates}{sig}{rules}'
-            f'<p class="small muted" style="margin-top:10px">'
+    rules = ""
+    if p.get("rules"):
+        rules = (f'<h3 class="bd-h">Selling rules for {esc(p["name"])}</h3><ul class="evidence-list">'
+                 + "".join(f'<li>{esc(x)}</li>' for x in p["rules"]) + '</ul>')
+    th = (term("Points", "Points", "How well the firm meets this factor, from 0 to 100."),
+          term("Weight", "Weight", "The share of the score this factor carries."),
+          term("Adds", "Adds", "Points times weight: what this factor adds to the score."))
+    return (f'<div class="table-scroll"><table class="bd"><thead><tr><th>Factor</th><th>Evidence</th>'
+            f'<th class="num">{th[0]}</th><th class="num">{th[1]}</th>'
+            f'<th class="num">{th[2]}</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+            f'<h3 class="bd-h">{gate_h}</h3>{gates}{sig}{rules}'
+            f'<p class="small muted bd-foot">'
             f'<a href="/lists/{r.product}?view=scoring">How {esc(p["name"])} is scored</a></p>')
 
 
 # ------------------------------------------------------------------ people
+
+# What each email label means, shown on hover over the label.
+EMAIL_MEANING = {
+    "Verified": "A mail server confirmed this address takes mail.",
+    "Published": "The firm or a public page shows this address. No mail server has confirmed it "
+                 "yet; Check asks one now.",
+    "Bounces": "A mail server said this address does not exist.",
+    "Risky": "The mail server gave a mixed answer about this address.",
+    "Accept-all domain": "Their mail server accepts every address, so this one cannot be confirmed.",
+    "Could not tell": "The mail server did not give a clear answer.",
+    "No mail server": "The domain has no mail server.",
+    "Not checked": "Not checked with a mail server yet.",
+    "Queued": "Waiting to be checked with the mail server.",
+}
+PHONE_MEANING = {
+    "Direct": "Reaches this person, not the switchboard.",
+    "Mobile": "This person's mobile number.",
+    "Office": "The office this person works from.",
+    "Main line": "The firm's main number.",
+    "Toll free": "The firm's toll-free number.",
+}
+
 
 def _contact_line(cp, show_verify=True) -> str:
     """One email, phone or profile with where it came from and how sure we are."""
@@ -258,19 +326,27 @@ def _contact_line(cp, show_verify=True) -> str:
             btn = (f'<button class="sm ghost" data-post="/api/contact/{cp["id"]}/verify" '
                    f'data-busy="Checking" data-target="[data-vr=v{cp["id"]}]">Check</button>')
         role = ' <span class="muted small">shared inbox</span>' if cp["is_role"] else ""
+        chip = term(esc(label), label, EMAIL_MEANING.get(label, "").format(src=src),
+                    foot=f"From {src}" + (f", confidence {cp['confidence']}" if cp["confidence"] else ""),
+                    cls=f"chip v-{esc(status)}")
         return (f'<div class="cline{" ok" if status == "valid" else ""}">{ICONS["mail"]}'
                 f'<a href="mailto:{esc(cp["value"])}" title="{esc(cp["value"])}">{esc(cp["value"])}</a>{role}'
-                f'<span id="vs{cp["id"]}" data-vr="v{cp["id"]}"><span class="chip v-{esc(status)}" title="From {esc(src)};'
-                f' confidence {cp["confidence"]}">{esc(label)}</span></span>{btn}</div>')
+                f'<span id="vs{cp["id"]}" data-vr="v{cp["id"]}">{chip}</span>{btn}</div>')
     if cp["kind"] == "linkedin":
+        matched = cp["verify_status"] == "matched"
+        chip = term("Matched" if matched else "Likely match",
+                    "Matched" if matched else "Likely match",
+                    "The profile names this person at this firm." if matched else
+                    "The name and firm fit; the profile has not been confirmed.",
+                    foot=f"From {src}", cls="chip" + (" good" if matched else ""))
         return (f'<div class="cline">{ICONS["linkedin"]}<a href="{esc(cp["value"])}" target="_blank" '
-                f'rel="noopener" data-noprefetch>LinkedIn profile</a>'
-                f'<span class="chip{" good" if cp["verify_status"] == "matched" else ""}" title="From {esc(src)}">'
-                f'{"Matched" if cp["verify_status"] == "matched" else "Likely match"}</span></div>')
+                f'rel="noopener" data-noprefetch>LinkedIn profile</a>{chip}</div>')
     lab = {"direct": "Direct", "mobile": "Mobile", "office": "Office", "main": "Main line",
            "toll_free": "Toll free"}.get(cp["label"] or "", "Phone")
+    chip = term(esc(lab), lab if lab != "Phone" else "Phone number", PHONE_MEANING.get(lab, ""),
+                foot=f"From {src}", cls="chip line")
     return (f'<div class="cline">{ICONS["phone"]}<a href="tel:{esc(cp["value"])}">{esc(ui.phone_text(cp["value"]))}</a>'
-            f'<span class="chip line" title="From {esc(src)}">{esc(lab)}</span></div>')
+            f'{chip}</div>')
 
 
 PEOPLE_CARDS_MAX = 60
@@ -295,8 +371,9 @@ def _icp_tags(hits: list[dict]) -> tuple[str, str, bool]:
         who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
         parts.append(f"{who} ICP")
         roles_said.append(f"{who}: {label}")
-    tip = "Ideal customer profile. " + "; ".join(roles_said)
-    return (f'<div class="icp-tag" title="{esc(tip)}">{esc(" · ".join(parts))}</div>',
+    tip = ui.tip_attr(" · ".join(parts), "Ideal customer profile: this person holds a role the "
+                      "product sells to.", roles_said, "Role")
+    return (f'<div class="icp-tag"><span{tip}>{esc(" · ".join(parts))}</span></div>',
             colour, bool(hits[0]["primary"]))
 
 
@@ -308,13 +385,16 @@ def _person_card(person: dict, key: str, points: list, hunt: dict | None = None,
     role = roles.classify(person.get("title") or "")
     chips = []
     if person.get("is_officer"):
-        chips.append('<span class="chip">Officer</span>')
+        chips.append(term("Officer", "Officer", "Named as an officer, director or owner on the "
+                          "firm's Form ADV (Schedule A).", cls="chip"))
     for d in (person.get("designations") or [])[:3]:
         label = d if isinstance(d, str) else (d.get("name") or d.get("code") or "")
         if label and len(label) <= 12:
             chips.append(f'<span class="chip">{esc(label)}</span>')
     if person.get("has_disclosure"):
-        chips.append('<span class="chip warn">Disclosure</span>')
+        chips.append(term("Disclosure", "Disclosure on record", "This person's SEC record lists a "
+                          "disclosure, such as a customer complaint or a regulatory action. "
+                          "Open SEC record for the details.", cls="chip warn"))
     meta = []
     if person.get("since"):
         meta.append(f'Since {esc(person["since"][:7])}')
@@ -354,16 +434,20 @@ HUNT_SETTLED = {"exhausted", "accept_all_domain", "no_mail_server", "no_domain",
 def _hunt_line(hunt: dict | None) -> str:
     """Where the email hunt stands for one person, in words."""
     if not hunt:
-        return ('<div class="hunt" title="Website, web search, every common pattern checked '
-                'with the mail server, and AI research">Finding a verified email</div>')
+        return ('<div class="hunt">' + term(
+            "Finding a verified email", "Finding a verified email",
+            "Bellwether reads their website, searches the web, checks every common address "
+            "pattern with their mail server, then tries AI research.") + '</div>')
     tried = hunt.get("tried") or 0
     extra = f" &middot; {tried} address{'es' if tried != 1 else ''} checked" if tried else ""
     when = ""
     if hunt.get("next_try_at") and hunt["state"] in HUNT_SETTLED:
         when = f" &middot; trying again {esc(ui.ago(hunt['next_try_at']))}"
     settled = hunt["state"] in HUNT_SETTLED
-    return (f'<div class="hunt{" done" if settled else ""}" title="{esc(hunt.get("detail") or hunt["label"])}">'
-            f'{esc(hunt["label"])}{extra}{when}</div>')
+    detail = hunt.get("detail") or ""
+    label = (term(esc(hunt["label"]), hunt["label"], detail) if detail and detail != hunt["label"]
+             else esc(hunt["label"]))
+    return f'<div class="hunt{" done" if settled else ""}">{label}{extra}{when}</div>'
 
 
 def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: list,
@@ -427,19 +511,29 @@ def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: 
                 f'{len(uniq):,}, reachable people first. <a href="/people?q={esc(crd)}">See everyone '
                 f'at this firm in People</a>.</p>')
     if not cards:
-        html = ('<div class="card empty"><b>No people on record yet</b>The SEC roster, Schedule A '
-                'and the website reader fill this in; use Find contacts now to start.</div>')
+        html = ('<div class="card empty"><b>No people on record yet</b>Use Find contacts now to '
+                'read their filings and website.</div>')
     else:
         html = f'<div class="people-grid">{"".join(cards)}</div>{more}'
     return html, cards[:6], counts
 
 
-def _net_words(net: int) -> str:
-    if net > 0:
-        return f'<span class="ok">Grew by {net}</span>'
-    if net < 0:
-        return f'<span class="bad">Shrank by {-net}</span>'
-    return "No change"
+def _ftype_body(ft: dict) -> str:
+    """The Firm profile's firm type, said in full: the same chip as the hero
+    (its hover holds the same explanation), what the type means, the evidence
+    that put this firm in it, and how sure Bellwether is."""
+    from . import firmtype
+    cat = next((c for c in firmtype.categories() if c["key"] == ft["category"]), {}) or {}
+    if ft.get("source") == "manual":
+        how = "Set by hand by someone on the team"
+    else:
+        how = ("Classified by " + str(ft.get("source_label") or "rules").lower()
+               + (f", {ft['confidence']}% sure" if ft.get("confidence") is not None else ""))
+    ev = [str(e) for e in (ft.get("evidence") or []) if e]
+    return (f'<div class="ftype-row">{ui.ftype_chip(ft, short=False)}<span class="meta">{esc(how)}</span></div>'
+            + (f'<p class="ftype-desc">{esc(cat["description"])}</p>' if cat.get("description") else "")
+            + ('<div class="sub-sec"><h3>Why this firm</h3><ul class="evidence-list">'
+               + "".join(f"<li>{esc(e)}</li>" for e in ev) + '</ul></div>' if ev else ""))
 
 
 # ------------------------------------------------------------------ page
@@ -549,14 +643,15 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     for t in trigs[:60]:
         kind = products.trigger_products().get(t["trigger_type"], {}).get("kind")
         chip = "dis" if kind == "disqualifier" else "lead"
-        old = (" &middot; " + caveat("archive_as_of", "archive") if t["detected_date"] < "2025-01-01" else "")
+        old = (" &middot; " + caveat_term("archive_as_of", "from the archive", "From the archive")
+               if t["detected_date"] < "2025-01-01" else "")
         trow.append(f'<div class="ev"><div><span class="nowrap">{esc(t["detected_date"])}</span>'
                     f'<div class="meta">{esc(ui.ago(t["detected_date"]))}{old}</div></div>'
                     f'<div><span class="chip {chip}">{esc(TYPE_LABEL.get(t["trigger_type"], t["trigger_type"]))}</span></div>'
                     f'<div class="why">{esc(t["description"])}'
                     f'{" <span class=chip>" + esc(t["state"]) + "</span>" if t["state"] else ""}</div></div>')
     trig_html = (f'<div class="timeline">{"".join(trow)}</div>' if trow else
-                 '<p class="muted">No recorded signals yet. Bellwether watches every filing for changes.</p>')
+                 '<p class="muted">No signals recorded for this firm yet.</p>')
 
     # ---- their own words
     points, seen_tp = [], set()
@@ -575,13 +670,14 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
         for tp in points)
     if not tp_html:
         tp_html = ('<p class="muted">' + (
-            "The brochure does not use any of the product vocabulary (covered calls, "
-            "alternatives, real estate, 1031, reporting platforms)."
-            if bro and bro["status"] == "ok" else
-            "Brochure not read yet; the brochure job reads the product lists best first.") + "</p>")
+            "Nothing in the brochure touches our products (covered calls, alternatives, real "
+            "estate, 1031, reporting platforms)."
+            if bro and bro["status"] == "ok" else "Brochure not read yet.") + "</p>")
+    # Where the words came from goes in the panel's subtitle, not under them.
+    tp_sub = "What their brochure says that matters for our products"
     if bro:
-        tp_html += (f'<p class="meta" style="margin-top:8px">From the Part 2A brochure '
-                    f'{esc(bro["brochure_name"] or "")} filed {esc(bro["date_submitted"] or "?")}.</p>')
+        tp_sub = (f'From their Part 2A brochure{" " + esc(bro["brochure_name"]) if bro["brochure_name"] else ""}'
+                  f', filed {esc(bro["date_submitted"] or "on an unknown date")}')
 
     # ---- profile facts
     x = d["extra"] or {}
@@ -610,11 +706,12 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
         current_custody = 'No custodian names found in the current ADV'
     if refreshed and refreshed.get('status') != 'ok':
         current_custody += '<div class="meta warnc">Latest refresh failed; retry scheduled.</div>'
-    schwab = "-"
+    schwab = "Not known"
     if cust.get("schwab_share_reported") is not None:
-        schwab = (caveat("schwab_share_reported",
-                         f'{cust["schwab_share_reported"] * 100:.0f}% of reported')
-                  + f' <span class="meta">as of {esc(cust.get("as_of_filing_date"))}</span>')
+        schwab = (caveat_term("schwab_share_reported",
+                              f'{cust["schwab_share_reported"] * 100:.0f}% of reported custody',
+                              "Share of reported custody, not of all assets")
+                  + f'<div class="meta">As of {esc(cust.get("as_of_filing_date"))}</div>')
     mail_s = {"m365": "Microsoft 365", "google": "Google Workspace", "other": "Other provider",
               "none": "No mail server", "no_domain": "No domain on file",
               "unknown": "Not identifiable"}.get(mail.get("platform"), "Not checked yet")
@@ -630,10 +727,10 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     clients_html = f"""<div class="facts four">
 <div><div class="l">High net worth clients</div><div class="v">{f['hnw_clients'] or 0:,} <small>{money(f['hnw_aum'])}, {hs:.0f}% of assets</small></div></div>
 <div><div class="l">Other individuals</div><div class="v">{f['retail_clients'] or 0:,} <small>{money(f['retail_aum'])}</small></div></div>
-<div><div class="l">All clients</div><div class="v">{f['clients_total'] or 0:,} <small>average {caveat('est_avg_client_size', est)}</small></div></div>
+<div><div class="l">All clients</div><div class="v">{f['clients_total'] or 0:,} <small>average {caveat_term('est_avg_client_size', est, 'Average client size, an estimate') if f['clients_total'] else est}</small></div></div>
 <div><div class="l">Discretionary</div><div class="v">{money(f['raum_disc'])} <small>of {money(f['raum'])}</small></div></div>
 </div>
-<dl class="kv sub-sec"><dt>Services</dt><dd>{esc(", ".join(svc)) or "-"}</dd></dl>"""
+<dl class="kv sub-sec"><dt>Services</dt><dd>{esc(", ".join(svc).capitalize()) or "None reported"}</dd></dl>"""
 
     if funds:
         frows = "".join(
@@ -650,8 +747,9 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     seg_html = ""
     if seg:
         seg_html = (f'<p class="sub-sec"><b>{esc(seg["segment"].capitalize())}</b>: '
-                    f'{esc(seg["rationale"])} {caveat("archive_as_of", "archive")} as of '
-                    f'{esc(seg["as_of_filing_date"])}</p>')
+                    f'{esc(seg["rationale"])}<span class="meta" style="display:block">'
+                    f'{caveat_term("archive_as_of", "From the archive", "From the archive")}, '
+                    f'as of {esc(seg["as_of_filing_date"])}</span></p>')
     h13 = sorted(d["h13f"].items(), key=lambda kv: -(kv[1]["value"] or 0))
     h13_html = ""
     if h13:
@@ -659,19 +757,33 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                     + "".join(f'<tr><td><b>{esc(tk)}</b></td><td class="num">{money(h["value"])}</td>'
                               f'<td class="meta">{esc(h["quarter"])}</td></tr>' for tk, h in h13[:12])
                     + "</tbody></table></div>")
+    archive_custodian = "Not known"
+    if cust.get("primary_canonical"):
+        archive_custodian = (esc(cust["primary_canonical"])
+                             + (f", {cust['reported_custodians']} reported"
+                                if cust.get("reported_custodians") else "")
+                             + (f'<div class="meta">As of {esc(cust["as_of_filing_date"])}</div>'
+                                if cust.get("as_of_filing_date") else ""))
+    files_13f = "No"
+    if d["files_13f"]:
+        files_13f = "Yes"
+        if match:
+            files_13f += " &middot; " + term(
+                f'CIK {esc(match["cik"])}', f'SEC filer {match["cik"]}',
+                "The 13F filer matched to this adviser by name and address.",
+                foot=f'Match {match["confidence"] * 100:.0f}% sure')
     invest_html = f"""<dl class="kv">
 <dt>Custodians in latest ADV</dt><dd>{current_custody}</dd>
-<dt>Primary custodian, archive</dt><dd>{esc(cust.get('primary_canonical') or '-')}{f", {cust.get('reported_custodians')} reported" if cust.get('reported_custodians') else ""}{f'<div class="meta">As of {esc(cust["as_of_filing_date"])}</div>' if cust.get('as_of_filing_date') else ''}</dd>
+<dt>{caveat_term("archive_as_of", "Primary custodian, archive", "From the archive")}</dt><dd>{archive_custodian}</dd>
 <dt>Schwab share</dt><dd>{schwab}</dd>
-<dt>Files 13F</dt><dd>{"Yes" + (f' <span class="meta">CIK {esc(match["cik"])}, link confidence {match["confidence"]:.2f}</span>' if match else "") if d["files_13f"] else "No"}</dd>
+<dt>Files 13F</dt><dd>{files_13f}</dd>
 </dl>"""
     assets_html = (
         ui.panel("Assets over time", aum_chart(history),
                  sub="Regulatory assets on every Form ADV filing on record")
         + ui.panel("Clients and services", clients_html,
-                   sub="Form ADV Item 5.D (clients by type) and Item 5.G (services)")
-        + ui.panel("Custody and 13F", invest_html,
-                   sub="Who holds the assets, and whether the firm files 13F")
+                   sub="Latest Form ADV, Items 5.D and 5.G")
+        + ui.panel("Custody and 13F", invest_html)
         + ui.panel("Private funds", funds_html + seg_html,
                    sub="Schedule D of the latest Form ADV filing", count=len(funds) if funds else None)
         + (ui.panel("13F holdings of interest", h13_html,
@@ -682,18 +794,26 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
 <dt>Reporting and CRM</dt><dd>{esc(", ".join(f"{k}" for k in plats)) or "Not found"}{''.join(f'<div class="meta">{esc(v)}</div>' for v in plats.values())}</dd>
 <dt>Website</dt><dd>{website or "None on file"}{f'<div class="meta">{ui.plural(web_pages, "page")} read, last {esc(ui.ago(web_state["scanned_at"]))}</div>' if web_state else ""}</dd>
 <dt>Publishes</dt><dd>{"Blog or newsletter found" if "publishes" in d["web"] else "Nothing found"}</dd>
-<dt>Advertising (Item 5.L)</dt><dd>{esc(", ".join(mkt)) or ("None reported" if x else "-")}</dd>
+<dt>Advertising (Item 5.L)</dt><dd>{esc(", ".join(mkt).capitalize()) or ("None reported" if x else "Not on file")}</dd>
 <dt>Social media</dt><dd>{esc(", ".join(socials)) or "None listed"}</dd>
 </dl>"""
 
     cco = [o for o in d["officers"] if re.search(r"CHIEF COMPLIANCE|\bCCO\b", o["title"] or "", re.I)]
+    cco_html = "".join(f'<div>{esc(_pretty_name(o["name"]))}<div class="meta">'
+                       f'{esc(roles.clean_title(o["title"]))}</div></div>' for o in cco)
+    registration = ", ".join(esc(x) for x in (f["firm_type"], f["regulator"]) if x) or "Not on file"
+    if f["registered_date"]:
+        registration += f' <span class="meta">since {esc(f["registered_date"])}</span>'
+    people_disc = (f'{(stats or {}).get("disclosure_count") or 0} of '
+                   f'{(stats or {}).get("headcount"):,} registered' if (stats or {}).get("headcount")
+                   else "Not known yet")
     comp_html = f"""<dl class="kv">
-<dt>Compliance officer</dt><dd>{"; ".join(esc(_pretty_name(o["name"])) + " <span class=meta>" + esc(roles.clean_title(o["title"])) + "</span>" for o in cco) or "Not named on Schedule A"}</dd>
+<dt>Compliance officer</dt><dd class="stack">{cco_html or "Not named on Schedule A"}</dd>
 <dt>Firm disclosures</dt><dd>{"<span class='bad'>Discloses a disciplinary event (Item 11)</span>" if f["disciplinary"] == "Y" else "None reported"}</dd>
-<dt>People with disclosures</dt><dd>{(stats or {}).get("disclosure_count") or 0} of {(stats or {}).get("headcount") or "?"} registered</dd>
-<dt>Registration</dt><dd>{esc(f['firm_type'] or '')}, {esc(f['regulator'] or '')}, since {esc(f['registered_date'] or '-')}</dd>
-<dt>Last ADV filed</dt><dd>{esc(f['filing_date'] or '-')} &middot; {d['filings_12m']} amendment{'' if d['filings_12m'] == 1 else 's'} in the past year</dd>
-<dt>SEC number</dt><dd>{esc(f['sec_number'] or '-')}</dd>
+<dt>People with disclosures</dt><dd>{people_disc}</dd>
+<dt>Registration</dt><dd>{registration}</dd>
+<dt>Last ADV filed</dt><dd>{esc(f['filing_date'] or 'Not on file')}<div class="meta">{ui.plural(d['filings_12m'], 'amendment') if d['filings_12m'] else 'No amendments'} in the past 12 months</div></dd>
+<dt>SEC number</dt><dd>{esc(f['sec_number'] or 'Not on file')}</dd>
 </dl>"""
 
     office_html = ""
@@ -714,7 +834,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     for cp in cps:
         for s_ in (cp["sources"] or cp["source"]).split(","):
             srcs[s_] = srcs.get(s_, 0) + 1
-    src_line = ", ".join(f"{n} from {SOURCE_LABEL.get(k, k)}" for k, n in sorted(srcs.items(), key=lambda kv: -kv[1]))
+    src_line = ", ".join(f"{n:,} from {SOURCE_LABEL.get(k, k)}" for k, n in sorted(srcs.items(), key=lambda kv: -kv[1]))
 
     hunts = {}
     try:
@@ -732,25 +852,31 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     from . import growth_view
     growth_html = growth_view.section(crd, f, d, stats, mv, series)
     hunting = max(0, pc["people"] - pc["email"])
-    tried = (f'{attempts["n"]:,} candidate addresses checked with the mail server for '
-             f'{attempts["p"]:,} people so far. ' if attempts and attempts["n"] else "")
-    discovery_html = f"""<div class="contact-summary"><span><b>{pc["email"]:,} / {pc["people"]:,}</b> with email</span>
-<span><b>{pc["direct"]:,}</b> direct lines</span><span><b>{pc["linkedin"]:,}</b> LinkedIn profiles</span>
+    with_email = term(f'<b>{pc["email"]:,} / {pc["people"]:,}</b> with email', "People with email",
+                      "Counts only addresses the firm published or a mail server confirmed; "
+                      "unconfirmed guesses are never shown.")
+    tried = (f'{ui.plural(attempts["n"], "address", "addresses")} checked with their mail server, '
+             f'for {ui.plural(attempts["p"], "person", "people")}' if attempts and attempts["n"] else
+             "No addresses checked with their mail server yet")
+    discovery_html = f"""<div class="contact-summary"><span>{with_email}</span>
+<span><b>{pc["direct"]:,}</b> direct line{"" if pc["direct"] == 1 else "s"}</span><span><b>{pc["linkedin"]:,}</b> LinkedIn profile{"" if pc["linkedin"] == 1 else "s"}</span>
 <button class="primary sm" data-post="/api/firm/{esc(crd)}/hunt" data-busy="Starting">{ICONS["bolt"]}Find contacts now</button></div>
 <details class="detail-section"><summary>Discovery, sources and contact tools</summary>
-<p class="small soft">{hunting:,} people without email. {tried}Emails are labelled verified or published.</p>
-<div>{fl_rows or '<p class="muted small">No firm-level phone or inbox on file.</p>'}</div>
-<p class="small soft">{n_em} email address{"es" if n_em != 1 else ""}. {esc(src_line) or "No sources yet"}.</p>
-<div class="row" style="margin-top:6px">
+<dl class="kv disc-kv">
+<dt>Firm lines and inboxes</dt><dd class="stack">{fl_rows or "None on file"}</dd>
+<dt>People without email</dt><dd>{hunting:,}<div class="meta">{tried}</div></dd>
+<dt>Contact details found</dt><dd>{len(cps):,} in all &middot; {ui.plural(n_em, "email")}<div class="meta">{esc(src_line) or "No sources yet"}</div></dd>
+</dl>
+<div class="row disc-acts">
 <button class="sm" data-post="/api/firm/{esc(crd)}/verify" data-busy="Starting">Re-check emails</button>
 <button class="sm ghost" data-post="/api/firm/{esc(crd)}/crawl" data-busy="Starting">Re-read website</button></div>
-<details class="adj" style="margin-top:12px"><summary>Add a contact you know</summary>
-<form class="row" style="margin-top:10px" data-api-form action="/api/firm/{esc(crd)}/contact" method="post">
+<details class="adj disc-form"><summary>Add a contact you know</summary>
+<form class="row" data-api-form action="/api/firm/{esc(crd)}/contact" method="post">
 <label>Name<input type="text" name="name"></label><label>Title<input type="text" name="title"></label>
 <label>Email<input type="email" name="email"></label><label>Phone<input type="text" name="phone"></label>
 <button type="submit" class="sm" data-busy="Saving">Save contact</button></form></details>
-<details class="adj" style="margin-top:6px"><summary>Website is wrong or missing</summary>
-<form class="row" style="margin-top:10px" data-api-form action="/api/firm/{esc(crd)}/crawl" method="post">
+<details class="adj disc-form"><summary>Website is wrong or missing</summary>
+<form class="row" data-api-form action="/api/firm/{esc(crd)}/crawl" method="post">
 <label>Website<input type="url" name="url" placeholder="https://their-site.com" required></label>
 <button type="submit" class="sm" data-busy="Starting">Read website</button></form></details></details>"""
 
@@ -759,12 +885,12 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     place = ", ".join(x for x in (nice_name(f["city"] or ""), f["state"] or "") if x)
     tags = []
     if ftype and ftype.get("category"):
-        core = bool(ftype.get("core"))
-        ev = "; ".join(str(e) for e in (ftype.get("evidence") or [])[:3])
-        tags.append(f'<span class="ftype {"core" if core else "out" if ftype["category"] in OUT_TYPES else ""}" title="{esc(ev)}">'
-                    f'{esc(ftype.get("label") or ftype["category"])}</span>')
+        tags.append(ui.ftype_chip(ftype, short=False))
     if f["is_era"]:
-        tags.append('<span class="chip warn">Exempt reporting adviser</span>')
+        tags.append(term("Exempt reporting adviser", "Exempt reporting adviser",
+                         "Files a short Form ADV but is not registered: it advises only venture "
+                         "funds, or private funds under $150M in the US. Its filings leave out "
+                         "clients, services and most other detail.", cls="chip"))
     cur_status = (fs["status"] or "") if fs else ""
     if cur_status:
         tags.append(f'<span class="chip lead">{esc(cur_status.capitalize())}'
@@ -786,19 +912,34 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                       f'since the {when} filing')
     clients_s = f"{f['clients_total']:,}" if f["clients_total"] is not None else "-"
     team = (stats or {}).get("headcount", f["iar_count"])
-    net = ((stats or {}).get("hires_12m") or 0) - ((stats or {}).get("departures_12m") or 0)
+    aum_l = term("Assets under management", "Regulatory assets under management",
+                 "What the firm reported managing on its latest Form ADV (Item 5.F)"
+                 + (f", filed {f['filing_date']}." if f["filing_date"] else "."))
+    staff_note = (f" Form ADV reports {f['total_employees']:,} staff in all."
+                  if f["total_employees"] else "")
+    team_l = term("Registered team", "Registered team",
+                  ("People registered with the SEC or a state as working for this firm, "
+                   "from their individual records. Unregistered support staff are not "
+                   "counted." if stats else
+                   "Advisory staff reported on Form ADV, until the individual records "
+                   "have loaded.") + staff_note)
+    team_d = ui.moves_html(stats.get("hires_12m"), stats.get("departures_12m"), "past 12 months") \
+        if stats else "&nbsp;"
     stats_html = f"""<div class="stats">
-<div><div class="l">Assets under management</div><div class="v">{money(f['raum'])}</div><div class="d">{growth or "&nbsp;"}</div></div>
+<div><div class="l">{aum_l}</div><div class="v">{money(f['raum'])}</div><div class="d">{growth or "&nbsp;"}</div></div>
 <div><div class="l">Clients</div><div class="v">{clients_s}</div><div class="d">{hs:.0f}% of assets from high-net-worth clients</div></div>
-<div><div class="l">Registered team</div><div class="v">{team if team is not None else '-'}</div><div class="d">{(_net_words(net) + " in the past year") if stats else '&nbsp;'}</div></div>
+<div><div class="l">{team_l}</div><div class="v">{team if team is not None else '-'}</div><div class="d">{team_d}</div></div>
 </div>"""
 
     fit_cards = []
     for r in sorted(results.values(), key=lambda r: ({"scored": 0, "disqualified": 1, "gated": 2}[r.status], -r.score)):
         pn = esc(products.product(r.product)["name"])
         if r.status == "scored":
-            rank = ranks.get(r.product)
             cov = f'{r.coverage:.0f}% known data'
+            if r.coverage < 99.5:
+                cov = term(cov, cov, f"{r.coverage:.0f}% of this score rests on data Bellwether "
+                           f"holds. Missing factors earn nothing until found; with them it could "
+                           f"reach {r.potential:.0f}.", focus=False)
             fit_cards.append(f'<a class="fit-summary" href="#fit-{r.product}"><span>{pn}'
                              f'<small class="{"warnc" if r.coverage < 99.5 else "muted"}">{cov}</small></span>'
                              f'<strong>{r.score:.0f}<small>/100</small></strong></a>')
@@ -910,39 +1051,27 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
         + ui.panel_grid(
             ui.panel("Recent signals",
                      ('<div class="timeline">' + "".join(recent) + '</div>') if recent
-                     else '<p class="muted">No recorded signals.</p>',
+                     else '<p class="muted">No signals recorded yet.</p>',
                      acts=more("#activity", "All activity"), cls="ov"),
             ui.panel("Growth", growth_view.glance(d, stats), acts=more("#growth", "Details"),
                      cls="ov"))
-        + (ui.panel("AI brief", brief_block, sub="A short read on this firm, written from its records")
+        + (ui.panel("AI brief", brief_block, sub="Written by AI from this firm's records")
            if brief_block else ""))
     people_tab = (ui.panel("Contact discovery", discovery_html,
-                           sub="How reachable the firm's people are, and the tools to find more")
+                           sub="How reachable their people are, and tools to find more")
                   + ui.panel("People", people_html, count=pc["people"],
-                             sub="Registered reps, Form ADV officers and the staff its website names; the people to call first are at the top"))
+                             sub="From SEC records and their website, best to call first at the top"))
     fit_tab = ui.panel("Product fit", _fit_section(crd, results, ranks, focus),
-                       sub="Each product's score with the evidence behind it. Missing factors score zero.")
+                       sub="Each product's score and the evidence behind it, best fit first")
     activity_tab = (ui.panel("Signals", trig_html, count=signals_n, anchor="signals",
                              sub="Changes Bellwether spotted in filings, people and assets")
                     + ui.panel("Recent filings", filings_html, anchor="filings",
-                               sub="Form ADV amendments and how far reported assets moved"))
-    ftype_html = ""
-    if ftype and ftype.get("category"):
-        how = esc(str(ftype.get("source_label") or ftype.get("source") or "rules").lower())
-        conf = (", " + str(ftype.get("confidence")) + "% confidence"
-                if ftype.get("confidence") is not None else "")
-        ftype_html = ui.panel(
-            "Firm type", f'<p style="margin:0 0 10px"><span class="ftype">'
-            f'{esc(ftype.get("label") or ftype.get("category") or "")}</span> '
-            f'<span class="meta">Classified by {how}{conf}</span></p><ul class="evidence-list">'
-            + "".join("<li>" + esc(str(e)) + "</li>" for e in (ftype.get("evidence") or []))
-            + "</ul>", sub="How Bellwether classified this firm, and why")
-    profile_tab = (ui.panel_grid(ui.panel("Technology", tech_html,
-                                          sub="Email, reporting and CRM, website and marketing"),
-                                 ui.panel("Compliance and registration", comp_html, anchor="compliance",
-                                          sub="Who runs compliance, disclosures and registration"))
-                   + ui.panel("In their own words", tp_html,
-                              sub="What their brochure says that matters for our products")
+                               sub="Each Form ADV filing and how far reported assets moved"))
+    ftype_html = (ui.panel("Firm type", _ftype_body(ftype), anchor="firm-type")
+                  if ftype and ftype.get("category") else "")
+    profile_tab = (ui.panel_grid(ui.panel("Technology", tech_html),
+                                 ui.panel("Compliance and registration", comp_html, anchor="compliance"))
+                   + ui.panel("In their own words", tp_html, sub=tp_sub)
                    + ftype_html + office_html)
     body = f"""<div class="pg firm-page">
 <div class="firm-top"><div class="crumb"><a href="/firms">Firms</a><span class="sep">/</span><span class="cur" title="{esc(profile_name)}">{esc(profile_name)}</span></div>

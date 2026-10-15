@@ -22,9 +22,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import products
+from . import products, ui
 from .webapp import escn, conn, current_owner, esc, page
-from .settings_view import settings_tabs
+from .settings_view import how, settings_tabs
 
 router = APIRouter()
 
@@ -86,8 +86,9 @@ def review_queue(kind: str = Query(""), page_n: int = Query(1, ge=1, alias="page
             (per, (page_n - 1) * per) if kind == "match_13f" else (per, 0)).fetchall()
         total += n_match
         for m in matches:
-            impact = (f'{m["held"]} target holdings ride on this link'
-                      if m["held"] else "no target holdings affected yet")
+            impact = (f'{ui.plural(m["held"], "target holding")} '
+                      f'{"rides" if m["held"] == 1 else "ride"} on this link'
+                      if m["held"] else "No target holdings affected yet")
             rows_html.append(f"""<tr>
 <td><span class="chip">13F match</span></td>
 <td><a href="/firm/{esc(m['crd'])}">{esc(m['name_adv'] or m['legal_name'] or '')}</a>
@@ -122,7 +123,7 @@ def review_queue(kind: str = Query(""), page_n: int = Query(1, ge=1, alias="page
 <td><b>{esc(n['tag'])}</b> via "{esc(n['phrase'])}"
   <div class="sent">{esc(n['sentence'] or '')}</div></td>
 <td class="conf">{'' if n['confidence'] is None else f"{n['confidence']:.2f}"}
-  <div class="meta">tag currently PRESENT at damped confidence</div></td>
+  <div class="meta">Tag kept at lower confidence until reviewed</div></td>
 <td><form method="post" action="/review/negation" class="act">
   <input type="hidden" name="nid" value="{n['id']}">
   <button name="decision" value="negation_confirmed"
@@ -139,45 +140,49 @@ def review_queue(kind: str = Query(""), page_n: int = Query(1, ge=1, alias="page
     else:
         pager_html = ""
 
+    tips = {
+        "": ("Review queue", "Two kinds of decision share this queue. Each decision re-scores the "
+             "firm at once."),
+        "match_13f": ("13F matches", "Uncertain links between an adviser and a 13F filer. A "
+                      "confirmed link feeds holdings on the next run; a wrong one would put someone "
+                      "else's holdings in a call opener, so nothing merges without a person."),
+        "brochure_negation": ("Brochure negations", "A brochure sentence that names a service "
+                              "next to a word like not or never. Until reviewed the tag stays, "
+                              "at lower confidence; it is never removed."),
+    }
+
     def tab(v, label, count):
         cls = "on" if kind == v else ""
-        return (f'<a class="{cls}" href="/settings/review?kind={v}&scope={scope}">{label} '
-                f'<span class="muted">{count:,}</span></a>')
+        return (f'<a class="{cls}" href="/settings/review?kind={v}&scope={scope}"'
+                f'{ui.tip_attr(*tips[v])}>{label} <span class="muted">{count:,}</span></a>')
 
     worth = n_match_c + n_neg_c
-    if scope == "called":
-        scope_line = (f'Showing the <b>{worth}</b> items that sit on a firm someone '
-                      f'will actually call (a score of 50 or more on any list). The other '
-                      f'{n_match + n_neg - worth:,} are held safely by the defaults '
-                      f'and never need a human. '
-                      f'<a href="/settings/review?kind={esc(kind)}&scope=all">Show everything '
-                      f'anyway</a>')
-        counts = (n_match_c, n_neg_c)
-    else:
-        scope_line = (f'Showing all {n_match + n_neg:,} open items. '
-                      f'<a href="/settings/review?kind={esc(kind)}&scope=called">Back to the '
-                      f'{worth} that matter</a>')
-        counts = (n_match, n_neg)
+    counts = (n_match_c, n_neg_c) if scope == "called" else (n_match, n_neg)
+    scope_tip = ui.tip_attr("Firms you will call", "A score of 50 or more on any list. Items on "
+                            "other firms are held safely by the defaults and never need a person.")
+    scopes = (f'<div class="seg set-tabs">'
+              f'<a class="{"on" if scope == "called" else ""}" href="/settings/review?kind={esc(kind)}&scope=called"'
+              f'{scope_tip}>Firms you will call <span class="muted">{worth:,}</span></a>'
+              f'<a class="{"on" if scope == "all" else ""}" href="/settings/review?kind={esc(kind)}&scope=all">'
+              f'Everything <span class="muted">{n_match + n_neg:,}</span></a></div>')
+    empty = ("Nothing to review for the firms you will call." if scope == "called"
+             else "Queue is empty.")
 
     body = f"""<div class="pg">
 <div class="head"><div><h1>Review queue</h1>
-<div class="lede">You never have to clear the review queue. An unreviewed item always
-defaults to the safe reading; reviewing sharpens the firms you are about to call.</div></div></div>
+<div class="lede">Decisions that sharpen the firms you are about to call. Never required.{how(
+        "Never required", "An unreviewed item always defaults to the safe reading: a 13F link is "
+        "not merged, and a brochure tag stays at lower confidence.")}</div></div></div>
 {settings_tabs("review")}
-<div class="seg" style="margin:0 0 6px">{tab('', 'All', sum(counts))}
-{tab('match_13f', '13F matches', counts[0])}{tab('brochure_negation', 'Brochure negations', counts[1])}</div>
-<div class="note plain">{scope_line}</div>
-<p class="meta" style="margin:0 0 12px">A confirmed 13F match feeds holdings on the next run;
-a wrong one would put someone else&rsquo;s holdings in a call opener, which is why nothing
-merges without a person. An unreviewed negation never removes a tag, it only holds its
-confidence lower. Each decision re-scores the firm at once.</p>
+<div class="set-body"><div class="set-filters">{scopes}<div class="seg set-tabs">{tab('', 'All', sum(counts))}
+{tab('match_13f', '13F matches', counts[0])}{tab('brochure_negation', 'Brochure negations', counts[1])}</div></div>
 <table><thead><tr><th style="width:110px">Type</th><th style="width:250px">Adviser</th>
 <th>Evidence</th><th style="width:150px">Confidence</th>
 <th style="width:220px">Decision</th></tr></thead>
 <tbody>{''.join(rows_html) or
-'<tr><td colspan="5" class="empty">Queue is empty.</td></tr>'}</tbody>
+f'<tr><td colspan="5" class="empty">{empty}</td></tr>'}</tbody>
 </table>
-{pager_html}
+{pager_html}</div>
 </div>"""
     return page("Review queue", "settings", body, REVIEW_CSS)
 

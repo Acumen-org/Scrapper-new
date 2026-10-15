@@ -81,16 +81,23 @@ def _every(days) -> str:
 
 
 def tabs(active: str) -> str:
-    return ('<div class="seg" style="margin:4px 0 18px">' + "".join(
+    return ('<div class="seg set-tabs">' + "".join(
         f'<a class="{"on" if k == active else ""}" href="{href}">{esc(label)}</a>'
         for k, label, href in TABS) + '</div>')
+
+
+def how(title: str, body: str = "", points: list | None = None, point_head: str = "",
+        foot: str = "", label: str = "How it works") -> str:
+    """A quiet "How it works" whose explanation lives in its hover."""
+    return f' <span class="set-how"{ui.tip_attr(title, body, points, point_head, foot)}>{esc(label)}</span>'
 
 
 def frame(title: str, tab: str, lede: str, inner: str, msg: str = "", err: str = "") -> HTMLResponse:
     flash = (f'<div class="note good">{esc(msg)}</div>' if msg else "") + \
             (f'<div class="note bad">{esc(err)}</div>' if err else "")
     body = (f'<div class="pg"><div class="head"><div><h1>{esc(title)}</h1>'
-            f'{("<p class=lede>" + lede + "</p>") if lede else ""}</div></div>{tabs(tab)}{flash}{inner}</div>')
+            f'{("<p class=lede>" + lede + "</p>") if lede else ""}</div></div>{tabs(tab)}{flash}'
+            f'<div class="set-body">{inner}</div></div>')
     return page(title, "enrichment", body)
 
 
@@ -137,8 +144,9 @@ def sources(msg: str = Query(""), err: str = Query("")):
             for s in d.list_sources(c):
                 verdict = ""
                 if s.get("needs_adapter"):
-                    verdict = (f'<span class="chip warn" title="{esc(s.get("adapter_note") or "")}">'
-                               f'needs a custom adapter</span>')
+                    note = s.get("adapter_note") or "The generic reader could not extract advisers here."
+                    verdict = (f'<span class="chip warn"{ui.tip_attr("Needs a custom adapter", note)}>'
+                               f'Needs a custom adapter</span>')
                 elif s.get("probe_json"):
                     verdict = '<span class="chip lead">Generic reader works</span>'
                 stats = (f'{ui.plural(s.get("records_found"), "record")}, '
@@ -149,7 +157,7 @@ def sources(msg: str = Query(""), err: str = Query("")):
                     f'<a class="firm" href="/enrichment/source/{s["id"]}">{esc(s["name"])}</a>'
                     f'<div class="meta">{esc((s.get("urls") or "").splitlines()[0] if s.get("urls") else "")}'
                     f'{" and more" if len((s.get("urls") or "").splitlines()) > 1 else ""}</div></td>'
-                    f'<td>{verdict} <span class="chip">{esc(s.get("status") or "")}</span>'
+                    f'<td>{verdict} <span class="chip">{esc((s.get("status") or "").capitalize())}</span>'
                     f'<div class="meta">{esc(stats)}</div></td>'
                     f'<td class="small">{esc(ui.ago(s.get("last_run_at")) or "not yet")}'
                     f'<div class="meta">{_every(s.get("schedule_days"))}</div></td></tr>')
@@ -157,28 +165,30 @@ def sources(msg: str = Query(""), err: str = Query("")):
             c.rollback()
     c.close()
     kinds = "".join(ui.opt(k, "directory", v) for k, v in KINDS.items())
+    sites_tip = how("Which sites work",
+                    "Advisor directories, association listings and conference pages. Search forms, "
+                    "login walls and blocked pages may need a custom adapter.",
+                    foot="Check each site's terms of use before adding it.", label="Which sites work")
     add = f"""<section class="s"><h2>Add directories or websites</h2>
-<p class="lede">Add source URLs. Sites that need a custom script are flagged after testing.</p>
-<details class="source-help"><summary>Supported sources</summary>
-<p>Advisor directories, association listings and conference pages. Search forms, login walls
-and blocked pages may need a custom adapter. Check each site's terms of use before adding it.</p></details>
-<form method="post" action="/enrichment/add" style="max-width:820px">
+<p class="lede">Each address is tested at once; sites that need a custom adapter are flagged.{sites_tip}</p>
+<form method="post" action="/enrichment/add" class="set-form" style="max-width:820px">
 <label>Name<input type="text" name="name" placeholder="For example: NAPFA advisor directory, Texas" required></label>
-<label style="margin-top:10px">Addresses, one per line<textarea name="urls" required placeholder="https://..."></textarea></label>
-<div class="row" style="margin-top:10px">
+<label>Addresses, one per line<textarea name="urls" required placeholder="https://..."></textarea></label>
+<div class="row">
 <label>Type<select name="kind">{kinds}</select></label>
 <label>Read again every<select name="schedule_days">{ui.opt("1", "7", "day")}{ui.opt("7", "7", "week")}{ui.opt("30", "7", "month")}{ui.opt("0", "7", "only once")}</select></label>
 <label>Pages at most<input type="number" name="max_pages" value="200" min="1" max="5000"></label>
 <label class="inline" style="margin-top:16px"><input type="checkbox" name="robots" value="1" checked> Obey the site's robots rules</label>
 </div>
-<button class="primary" type="submit" style="margin-top:12px">Add and test</button></form></section>"""
-    inner = (f'<section class="s" style="border-top:0;padding-top:0"><div class="s-head"><h2>Your sources</h2></div>'
-             f'<table><tbody>{"".join(srows) or "<tr><td class=empty>None yet. Add one below.</td></tr>"}</tbody></table></section>'
+<button class="primary" type="submit">Add and test</button></form></section>"""
+    inner = (f'<section class="s"><div class="s-head"><h2>Your sources</h2></div>'
+             f'<table class="set-stack"><tbody>{"".join(srows) or "<tr><td class=empty>None yet. Add one below.</td></tr>"}</tbody></table></section>'
              f'{add}'
              f'<section class="s"><div class="s-head"><h2>Built-in sources</h2></div>'
-             f'<table><thead><tr><th>Source</th><th>What it gives</th><th>How often</th><th>Last run</th></tr></thead>'
+             f'<table class="set-stack"><thead><tr><th>Source</th><th>What it gives</th><th>How often</th><th>Last run</th></tr></thead>'
              f'<tbody>{"".join(brow)}</tbody></table></section>')
-    return frame("Enrichment", "sources", "", inner, msg, err)
+    return frame("Enrichment", "sources", "Where Bellwether's facts come from, and the directories "
+                 "and websites your team adds.", inner, msg, err)
 
 
 @router.post("/enrichment/add")
@@ -235,7 +245,7 @@ def source_page(sid: int, msg: str = Query(""), err: str = Query(""), only: str 
         verdict = '<div class="note plain">Not tested yet. The test runs right after a source is added.</div>'
     sample = ""
     if probe.get("sample"):
-        sample = ('<h3 style="margin-top:14px">What the test read</h3><table class="tight"><tbody>' + "".join(
+        sample = ('<h3 class="set-h3">What the test read</h3><table class="tight"><tbody>' + "".join(
             f'<tr><td>{esc(x.get("person_name") or "")}</td><td>{esc(x.get("firm_name") or "")}</td>'
             f'<td>{esc(x.get("email") or "")}</td><td>{esc(x.get("phone") or "")}</td></tr>'
             for x in probe["sample"][:6]) + '</tbody></table>')
@@ -248,12 +258,12 @@ def source_page(sid: int, msg: str = Query(""), err: str = Query(""), only: str 
             f'<td>{esc(r.get("firm_name") or "")}<div class="meta">{esc(r.get("city") or "")} '
             f'{esc(r.get("state") or "")}</div></td>'
             f'<td class="small">{esc(r.get("email") or "")}<div class="meta">{esc(r.get("phone") or "")}</div></td>'
-            f'<td>{match}<div class="meta">{esc(r.get("match_method") or "")}</div></td></tr>')
+            f'<td>{match}<div class="meta">{esc((r.get("match_method") or "").replace("_", " "))}</div></td></tr>')
     rows = "".join(out)
     status = s.get("status") or "active"
     toggle = ("resume", "Resume") if status == "paused" else ("pause", "Pause")
     inner = f"""{verdict}
-<div class="row" style="margin:6px 0 18px">
+<div class="row set-actions">
 <form method="post" action="/enrichment/source/{sid}/run"><button class="primary sm" type="submit">Read it now</button></form>
 <form method="post" action="/enrichment/source/{sid}/probe"><button class="sm" type="submit">Test again</button></form>
 <form method="post" action="/enrichment/source/{sid}/{toggle[0]}"><button class="sm ghost" type="submit">{toggle[1]}</button></form>
@@ -261,7 +271,7 @@ def source_page(sid: int, msg: str = Query(""), err: str = Query(""), only: str 
 <button class="sm ghost" type="submit">Remove</button></form></div>
 <dl class="kv"><dt>Addresses</dt><dd class="small">{"<br>".join(esc(u) for u in (s.get("urls") or "").splitlines()[:20])}</dd>
 <dt>Type</dt><dd>{esc(KINDS.get(s.get("kind"), s.get("kind") or ""))}</dd>
-<dt>Schedule</dt><dd>{"Once" if not s.get("schedule_days") else "Every " + ("day" if s.get("schedule_days") == 1 else str(s.get("schedule_days")) + " days")} &middot; last read {esc(ui.ago(s.get("last_run_at")) or "never")}</dd>
+<dt>Schedule</dt><dd>{_every(s.get("schedule_days"))} &middot; last read {esc(ui.ago(s.get("last_run_at")) or "never")}</dd>
 <dt>Found</dt><dd>{ui.plural(s.get("records_found"), "record")} &middot; {ui.plural(s.get("firms_matched"), "firm")} matched &middot; {ui.plural(s.get("people_found"), "person", "people")} &middot; {ui.plural(s.get("emails_found"), "email")} &middot; {ui.plural(s.get("phones_found"), "phone")}</dd>
 <dt>Added by</dt><dd>{esc(s.get("created_by") or "")} &middot; {esc(ui.ago(s.get("created_at")))}</dd></dl>
 {sample}
@@ -333,25 +343,32 @@ def websites(msg: str = Query(""), err: str = Query("")):
     rrows = "".join(
         f'<tr class="go" data-href="/firm/{esc(r["crd"])}#contacts"><td><a class="firm" href="/firm/{esc(r["crd"])}#contacts">'
         f'{escn(r["legal_name"])}</a><div class="meta">{esc(r["website"] or "")}</div></td>'
-        f'<td><span class="chip {"lead" if r["status"] == "ok" else "warn"}">{esc(r["status"])}</span></td>'
+        f'<td><span class="chip {"lead" if r["status"] == "ok" else "warn"}">'
+        f'{"Read" if r["status"] == "ok" else esc((r["status"] or "").replace("_", " ").capitalize())}</span></td>'
         f'<td class="num">{r["pages"]}</td><td class="num">{r["people"]}</td><td class="num">{r["emails"]}</td>'
         f'<td class="small">{esc(ui.ago(r["scanned_at"]))}</td></tr>' for r in recent)
     pct = (read / total * 100) if total else 0
-    inner = f"""<div class="kpis" style="margin-bottom:18px">
-<div class="kpi"><div class="n">{pct:.0f}%</div><div class="l">Firm websites read</div><div class="d">{read:,} of {total:,}; {ok:,} answered</div></div>
+    email_tip = ui.tip_attr("Personal emails found", "Named people's addresses found on firm "
+                            "websites, in vCards or by AI research.",
+                            foot="Only verified addresses are shown in the directory.")
+    inner = f"""<div class="kpis">
+<div class="kpi"><div class="n">{pct:.0f}%</div><div class="l">Firm websites read</div><div class="d">{read:,} of {total:,} &middot; {ok:,} answered</div></div>
 <div class="kpi"><div class="n">{pages:,}</div><div class="l">Pages read</div></div>
 <div class="kpi"><div class="n">{people:,}</div><div class="l">People found on sites</div></div>
-<div class="kpi"><div class="n">{emails:,}</div><div class="l">Personal emails found</div></div>
+<div class="kpi"><div class="n">{emails:,}</div><div class="l"><span class="set-tipped"{email_tip}>Personal emails found</span></div></div>
 <div class="kpi"><div class="n">{phones:,}</div><div class="l">Direct lines found</div></div></div>
-<p class="lede">Websites, team pages and vCards supply sourced contacts. Only verified emails appear in the directory. Firms with missing contacts are revisited automatically.</p>
-<form class="row" method="post" action="/enrichment/websites/read" style="margin:12px 0 20px">
-<input type="text" name="crd" placeholder="CRD of a firm" style="min-width:160px">
-<input type="url" name="url" placeholder="Website, if different (optional)" style="min-width:300px">
-<button type="submit" class="primary">Read it now</button></form>
-<table><thead><tr><th>Recently read</th><th>Result</th><th class="num">Pages</th><th class="num">People</th>
-<th class="num">Emails</th><th>When</th></tr></thead><tbody>{rrows or '<tr><td colspan="6" class="empty">No website read yet.</td></tr>'}</tbody></table>"""
-    return frame("Firm websites", "websites", "Each firm's own website, read for its people and how to reach them.",
-                 inner, msg, err)
+<section class="s"><h2>Read one firm now</h2>
+<form class="row" method="post" action="/enrichment/websites/read">
+<input type="text" name="crd" placeholder="CRD of a firm" aria-label="CRD of a firm" style="min-width:160px">
+<input type="url" name="url" placeholder="Website, if different (optional)" aria-label="Website, if different" style="min-width:300px;max-width:100%">
+<button type="submit" class="primary">Read it now</button></form></section>
+<section class="s"><h2>Recently read</h2>
+<table><thead><tr><th>Firm</th><th>Result</th><th class="num">Pages</th><th class="num">People</th>
+<th class="num">Emails</th><th>When</th></tr></thead><tbody>{rrows or '<tr><td colspan="6" class="empty">No website read yet.</td></tr>'}</tbody></table></section>"""
+    tip = how("Firm websites", "Team, bio and contact pages and vCards are read for people, titles, "
+              "emails and direct lines.", foot="Firms still missing contacts are read again by themselves.")
+    return frame("Firm websites", "websites", "Each firm's own website, read for its people and how "
+                 "to reach them." + tip, inner, msg, err)
 
 
 @router.post("/enrichment/websites/read")
@@ -381,18 +398,33 @@ def _verify_page(results: list | None = None, msg: str = "", err: str = "",
     personal_valid = c.execute("""SELECT COUNT(*) n FROM contact_point WHERE kind='email'
         AND verify_status='valid' AND is_role=0""").fetchone()["n"]
     c.close()
+    engines = {"reacher": "Reacher server", "native": "built-in mail server check",
+               "dns": "domain check only"}
     try:
         from . import verify
         es = verify.engine_status()
-        eng = (f'Engine in use: <b>{esc(es["resolved"])}</b>; outbound port 25 '
+        eng = (f'Checking with the {esc(engines.get(es["resolved"], es["resolved"]))} &middot; '
+               f'outbound port 25 '
                f'{"open" if es.get("port25_ok") else "closed" if es.get("port25_ok") is False else "not tested"}'
-               f'{"; Reacher answering" if es.get("reacher_ok") else ""}.')
+               f'{" &middot; Reacher answering" if es.get("reacher_ok") else ""} &middot; '
+               f'<a href="/settings/verify">Settings</a>')
     except Exception:
-        eng = "The verification engine did not load."
+        eng = 'The verification engine did not load. <a href="/settings/verify">Settings</a>'
     total = sum(counts.values()) or 1
+
+    def meter_cls(k: str) -> str:
+        # Green only for confirmed addresses; red for bounces; amber for
+        # answers that prove nothing; grey for everything not yet known.
+        if k == "valid":
+            return ""
+        if k in ("invalid", "no_mail_server"):
+            return " red"
+        if k in ("risky", "catch_all"):
+            return " amber"
+        return " soft"
     bars = "".join(
         f'<div class="mrow"><div><span class="chip v-{esc(k)}">{esc(contacts.VERIFY_LABEL.get(k, k))}</span></div>'
-        f'<div class="meter{" red" if k in ("invalid", "no_mail_server") else " amber" if k in ("risky", "catch_all") else ""}">'
+        f'<div class="meter{meter_cls(k)}">'
         f'<i style="width:{n / total * 100:.1f}%"></i></div><div class="num">{n:,}</div></div>'
         for k, n in sorted(counts.items(), key=lambda kv: -kv[1]))
     res_html = ""
@@ -402,24 +434,27 @@ def _verify_page(results: list | None = None, msg: str = "", err: str = "",
             f'{esc(contacts.VERIFY_LABEL.get(r["status"], r["status"]))}</span></td>'
             f'<td class="small soft">{esc(r.get("reason") or "")}</td></tr>' for r in results)
             + '</tbody></table></section>')
-    inner = f"""<p class="lede">{eng} Verified means the firm&rsquo;s mail server accepted that exact
-mailbox and turned away a made-up one at the same domain. Accept-all domains say yes to everything,
-so their answers prove nothing and are never shown as verified. The verification job checks every
-address by itself, personal addresses first, and re-checks after 90 days.</p>
-<div class="kpis" style="margin-bottom:16px"><div class="kpi"><div class="n">{counts.get("valid", 0):,}</div>
-<div class="l">Verified addresses</div><div class="d">{personal_valid:,} of them named people</div></div>
+    verified_tip = ui.tip_attr(
+        "Verified", "The firm's mail server accepted that exact mailbox and turned away a made-up "
+        "one at the same domain.",
+        foot="Accept-all domains say yes to everything, so their answers prove nothing and are "
+             "never shown as verified.")
+    job_tip = how("The verification job", "Checks every address by itself, personal addresses "
+                  "first, and re-checks each after 90 days.", label="How it runs")
+    inner = f"""<div class="kpis"><div class="kpi"><div class="n">{counts.get("valid", 0):,}</div>
+<div class="l"><span class="set-tipped"{verified_tip}>Verified addresses</span></div><div class="d">{personal_valid:,} of them named people</div></div>
 <div class="kpi"><div class="n">{counts.get("unverified", 0) + counts.get("queued", 0):,}</div><div class="l">Waiting to be checked</div></div>
 <div class="kpi"><div class="n">{counts.get("invalid", 0) + counts.get("no_mail_server", 0):,}</div><div class="l">Known to bounce</div></div></div>
-{bars}
-<div class="row" style="margin:16px 0"><form method="post" action="/settings/jobs/email_verify/run">
-<button class="sm" type="submit">Run the verification job now</button></form></div>
+<section class="s"><h2>Addresses by result</h2>{bars or '<p class="muted">No addresses yet.</p>'}
+<div class="row set-actions"><form method="post" action="/settings/jobs/email_verify/run">
+<button class="sm" type="submit">Run the verification job now</button></form>{job_tip}</div></section>
 <section class="s"><h2>Check addresses now</h2>
 <p class="lede">Paste up to 15 addresses, one per line or separated by commas. Nothing is stored.</p>
-<form method="post" action="/enrichment/verify" style="max-width:640px">
-<textarea name="emails" placeholder="jane.doe@firm.com">{esc(pasted)}</textarea>
-<button class="primary" type="submit" style="margin-top:10px">Check</button></form></section>{res_html}"""
-    return frame("Email verification", "verify", "Confirming that an address will reach a person.",
-                 inner, msg, err)
+<form method="post" action="/enrichment/verify" class="set-form" style="max-width:640px">
+<textarea name="emails" aria-label="Addresses to check" placeholder="jane.doe@firm.com">{esc(pasted)}</textarea>
+<button class="primary" type="submit">Check</button></form></section>{res_html}"""
+    return frame("Email verification", "verify", "Confirming that an address will reach a person."
+                 f'<span class="set-lede-meta">{eng}</span>', inner, msg, err)
 
 
 @router.post("/enrichment/verify", response_class=HTMLResponse)

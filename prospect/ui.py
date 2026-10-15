@@ -91,26 +91,66 @@ def contact_flags(c, crds: list[str]) -> dict[str, dict]:
     return out
 
 
-def contact_cell(f: dict) -> str:
+# What the reach words mean, the same on every screen that shows them.
+REACH_HELP = {
+    "verified": ("Verified email", "Email addresses a mail server confirmed will deliver."),
+    "named": ("Named people", "People at this firm with their own email address, found on the "
+              "firm's website, its filings or a directory. Shared inboxes such as info@ and "
+              "guessed addresses are not counted."),
+    "guess": ("Guessed addresses", "Addresses built from the firm's email pattern that no mail "
+              "server has confirmed yet. Not used for outreach until one does."),
+    "inbox": ("Inbox only", "Only shared inboxes such as info@ so far, no named person."),
+    "direct": ("Direct lines", "Phone numbers that reach one person: a direct or mobile line, "
+               "not the office switchboard."),
+    "main": ("Main line", "The office number the firm filed. No direct line to a person yet."),
+    "hunting": ("Hunting", "No named person's email yet. Bellwether keeps looking on the firm's "
+                "website, in web search, by checking address patterns with the mail server, "
+                "and with AI research."),
+}
+
+
+REACH_COLUMN_HELP = (
+    "Reach", "How Bellwether can reach the firm. Verified: email addresses a mail server "
+    "confirmed. Named: people with their own published address. Direct lines reach one person. "
+    "Hunting: no named person's email yet, Bellwether is still looking.")
+
+
+def reach_cell(f: dict, compact: bool = False) -> str:
+    """How reachable a firm is, as pills that explain themselves on hover:
+    verified addresses, named people with an address, direct lines; and when
+    there is no named person yet, that Bellwether is still hunting. Lists and
+    Firms both use this, so the same words always mean the same thing.
+    compact (the product lists, where the row is already full) shows named
+    people only when there is no verified address, and gives their number in
+    the verified pill's hover instead."""
+    def pill(text, key, cls="pill", foot=""):
+        title, body = REACH_HELP[key]
+        return f'<span class="{cls}"{tip_attr(title, body, foot=foot, focus=False)}>{text}</span>'
+
     bits = []
     if f["verified"]:
-        bits.append(f'<span class="chip lead" title="Addresses a mail server confirmed">'
-                    f'{f["verified"]} verified</span>')
+        named = (f'{plural(f["personal"], "named person", "named people")} at this firm.'
+                 if compact and f["personal"] else "")
+        bits.append(pill(f'{f["verified"]:,} verified', "verified", "pill ok", named))
     if f["personal"]:
-        bits.append(f'<span class="chip line" title="Named people with an address the firm '
-                    f'published">{plural(f["personal"], "person", "people")}</span>')
-    elif f["guess"]:
-        bits.append(f'<span class="chip" title="Addresses built from the firm\'s pattern, '
-                    f'not yet confirmed">{f["guess"]} guessed</span>')
-    elif f["inbox"]:
-        bits.append('<span class="chip" title="Only shared inboxes such as info@">Inbox only'
-                    '</span>')
+        if not (compact and f["verified"]):
+            bits.append(pill(f'{f["personal"]:,} named', "named"))
+    elif f.get("guess"):
+        bits.append(pill(f'{f["guess"]:,} guessed', "guess"))
+    elif f.get("inbox"):
+        bits.append(pill("Inbox only", "inbox"))
     if f["direct"]:
-        bits.append(f'<span class="meta" style="display:block">{f["direct"]:,} direct line'
-                    f'{"s" if f["direct"] > 1 else ""}</span>')
-    elif f["phone"]:
-        bits.append('<span class="meta" style="display:block">main phone</span>')
-    return " ".join(bits) or '<span class="muted small">none yet</span>'
+        bits.append(pill(f'{f["direct"]:,} direct line{"s" if f["direct"] != 1 else ""}', "direct"))
+    elif f["phone"] and not bits:
+        bits.append(pill("Main line", "main"))
+    if not f["verified"] and not f["personal"]:
+        bits.append(pill("Hunting", "hunting", "hunt"))
+    return f'<div class="pills">{"".join(bits)}</div>'
+
+
+def contact_cell(f: dict) -> str:
+    """Kept for callers of the old name; the same pills as reach_cell."""
+    return reach_cell(f)
 
 
 def detail(detail_json: str | None) -> dict:
@@ -140,21 +180,54 @@ def why_line(detail_json: str | None, n: int = 2) -> str:
     return f'<details class="evidence"><summary>{labels[0]}<span>{hint}</span></summary><div>{"".join(parts)}</div></details>'
 
 
+FBARS_HELP = ("One segment per factor, as wide as its weight. Solid is what the firm earned, "
+              "hatched is a factor with no data yet (it scores zero), empty is known and not met.")
+
+
 def fbars(components: list[dict], hi: bool = False) -> str:
     """Why a firm scores, at a glance: one segment per factor, as wide as its
     weight. The solid part is what the firm earned, a hatched segment is a
-    factor Bellwether has no data for yet, an empty one is known and not met."""
-    segs = []
+    factor Bellwether has no data for yet, an empty one is known and not met.
+    Hovering it lists every factor's points."""
+    segs, lines = [], []
     for c in components:
         w = float(c.get("weight") or 0)
         if w <= 0:
             continue
         known = c.get("known", True)
         pts = max(0.0, min(100.0, float(c.get("points") or 0)))
-        tip = f'{c.get("label", "")}: ' + (f'{pts:.0f}/100' if known else "no data yet")
+        lines.append(f'{c.get("label", "")} ({w:g}%): '
+                     + (f'{pts:.0f} of 100' if known else "no data yet"))
         inner = f'<u style="width:{pts:.0f}%"></u>' if known and pts else ""
-        segs.append(f'<i class="{"" if known else "unk"}" style="flex:{w:g}" title="{esc(tip)}">{inner}</i>')
-    return f'<div class="fbars{" hi" if hi else ""}">{"".join(segs)}</div>' if segs else ""
+        segs.append(f'<i class="{"" if known else "unk"}" style="flex:{w:g}">{inner}</i>')
+    if not segs:
+        return ""
+    tip = tip_attr("Why it scores", FBARS_HELP, lines, "Points per factor (weight)")
+    return f'<div class="fbars{" hi" if hi else ""}"{tip}>{"".join(segs)}</div>'
+
+
+_MOVES_RE = None
+
+
+def evidence_html(text: str | None, limit: int = 0) -> str:
+    """A factor's evidence in plain words, with people moves pulled out of the
+    sentence as two labelled figures ("Joined 9", "Left 4") instead of
+    "9 joined, 4 left" run together. limit shortens the wording before them."""
+    import re as _re
+    global _MOVES_RE
+    if _MOVES_RE is None:
+        _MOVES_RE = _re.compile(r"[:;,]?\s*(\d[\d,]*) joined,? (?:and )?(\d[\d,]*) left\.?\s*$")
+    t = (text or "").strip()
+    m = _MOVES_RE.search(t)
+    head = t[:m.start()].rstrip(" :;,") if m else t
+    if limit and len(head) > limit:
+        head = head[:limit - 3].rstrip(" ,;:") + "..."
+    out = esc(head)
+    if m:
+        out += ((" &middot; " if head else "")
+                + f'<span class="mv-i">Joined <b>{esc(m.group(1))}</b></span> &middot; '
+                  f'<span class="mv-i">Left <b>{esc(m.group(2))}</b></span>')
+    return out
 
 
 def why_cell(detail_json: str | None, score: float | None = None) -> str:
@@ -169,9 +242,8 @@ def why_cell(detail_json: str | None, score: float | None = None) -> str:
     if best:
         c = best[0]
         ev = (c.get("evidence") or c.get("level") or "").strip()
-        if len(ev) > 70:
-            ev = ev[:67].rstrip() + "..."
-        top = f'<div class="whytop"><b>{esc(c["label"])}</b>{": " + esc(ev) if ev else ""}</div>'
+        top = (f'<div class="whytop"><b>{esc(c["label"])}</b>'
+               f'{": " + evidence_html(ev, 70) if ev else ""}</div>')
     return fbars(comps, hi=bool(score is not None and score >= 60)) + top
 
 
@@ -321,18 +393,97 @@ def plural(n, word: str, many: str | None = None) -> str:
     return f"{n:,} {word if n == 1 else (many or word + 's')}"
 
 
-def moves_text(joined, left) -> str:
-    """A firm's people moves over the last 12 months, in plain words:
-    "5 joined, 2 left in the past year", "3 joined in the past year"."""
+def moves_html(joined, left, period: str = "past 12 months") -> str:
+    """A firm's people moves as two figures, each with its own label, never
+    run together in one sentence: "Joined 5" and "Left 2", with the period
+    under them."""
     j, l_ = int(joined or 0), int(left or 0)
-    if not j and not l_:
-        return "No one joined or left in the past year"
+    return (f'<div class="mv"><span><span class="mv-l">Joined</span><b>{j:,}</b></span>'
+            f'<span><span class="mv-l">Left</span><b>{l_:,}</b></span></div>'
+            + (f'<div class="meta">{esc(period)}</div>' if period else ""))
+
+
+def moves_text(joined, left) -> str:
+    """Kept for callers that still want one line; prefer moves_html."""
+    return moves_html(joined, left)
+
+
+def tip_attr(title: str = "", body: str = "", points: list | None = None, point_head: str = "",
+             foot: str = "", focus: bool = True) -> str:
+    """A hover explanation, as attributes to put on any element: a heading,
+    a sentence or two, an optional short list under its own heading, and a
+    quiet last line. Shown by the shared tooltip (data-tip, charts.js), and
+    read out by screen readers through aria-label. focus=False is for an
+    element that is already focusable and named, such as a link or a summary:
+    it keeps its own name and takes no extra tab stop."""
     parts = []
-    if j:
-        parts.append(f'<span class="ok">{j:,} joined</span>')
-    if l_:
-        parts.append(f'<span class="bad">{l_:,} left</span>')
-    return ", ".join(parts) + " in the past year"
+    if title:
+        parts.append(f'<span class="tip-h">{esc(title)}</span>')
+    if body:
+        parts.append(f'<span class="tip-p">{esc(body)}</span>')
+    pts = [p for p in (points or []) if p]
+    if pts:
+        if point_head:
+            parts.append(f'<span class="tip-s">{esc(point_head)}</span>')
+        parts.append('<span class="tip-ul">' + "".join(f'<span class="tip-li">{esc(p)}</span>' for p in pts)
+                     + '</span>')
+    if foot:
+        parts.append(f'<span class="tip-f">{esc(foot)}</span>')
+    if not focus:
+        return f' data-tip="{esc("".join(parts))}"'
+    plain = ". ".join(x.rstrip(". ") for x in
+                      [title, body, ((point_head + ": ") if point_head else "") + "; ".join(pts)
+                       if pts else "", foot]
+                      if x and x.rstrip(". ")) + "."
+    return f' data-tip="{esc("".join(parts))}" aria-label="{esc(plain)}" tabindex="0"'
+
+
+# Signal types in plain words, for the hover on a signal chip wherever one
+# shows (Signals, Home, the list rows). A "reason not to call" is marked so.
+SIGNAL_HELP = {
+    "new_registration": "The firm registered as an investment adviser for the first time.",
+    "reregistration_or_gap": "The firm registered again after a gap in its filings.",
+    "aum_jump": "Assets under management rose sharply from one filing to the next.",
+    "aum_drop": "Assets under management fell sharply from one filing to the next.",
+    "iar_growth": "The firm added registered advisors since its last filing.",
+    "custodian_change_to_platform": "The firm moved its main custodian to Schwab.",
+    "custodian_change_from_platform": "The firm moved its main custodian away from Schwab.",
+    "custodian_change_other": "The firm changed its main custodian.",
+    "first_private_fund": "The firm reported its first private fund.",
+    "first_real_estate_fund": "The firm reported its first real estate fund.",
+}
+
+
+def signal_chip(ttype: str, label: str, warn: bool = False) -> str:
+    """A signal type as a chip that says on hover what it means. warn marks a
+    reason not to call (red), every other signal is a lead (green)."""
+    return (f'<span class="chip {"dis" if warn else "lead"}"'
+            f'{tip_attr(label, SIGNAL_HELP.get(ttype, ""), foot="A reason not to call" if warn else "A reason to call")}>'
+            f'{esc(label)}</span>')
+
+
+FTYPE_OUT = {"custodian", "wirehouse", "independent_bd", "bank_trust", "insurance"}
+
+
+def ftype_chip(ft: dict | None, short: bool = True) -> str:
+    """A firm's type as a chip that explains itself on hover: what the type
+    means, the evidence that put this firm in it, and how sure Bellwether is."""
+    if not ft or not ft.get("category"):
+        return ""
+    from . import firmtype
+    cat = next((c for c in firmtype.categories() if c["key"] == ft["category"]), {}) or {}
+    label = ft.get("label") or cat.get("label") or ft["category"]
+    shown = (ft.get("short") or label) if short else label
+    ev = [str(e) for e in (ft.get("evidence") or [])][:4]
+    src = str(ft.get("source_label") or "").lower()
+    conf = ft.get("confidence")
+    if ft.get("source") == "manual":
+        foot = "Set by hand by someone on the team"
+    else:
+        foot = (f"Classified by {src or 'rules'}" + (f", {conf}% sure" if conf is not None else ""))
+    cls = "core" if ft.get("core") else "out" if ft["category"] in FTYPE_OUT else ""
+    tip = tip_attr(label, cat.get("description") or "", ev, "Why this firm", foot)
+    return f'<span class="ftype {cls}"{tip}>{esc(shown)}</span>'
 
 
 def pitch_of(detail_json: str | None) -> str:

@@ -25,7 +25,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import ai, products, ui
-from .webapp import (ICONS, TYPE_LABEL, conn, current_owner,
+from .webapp import (ICONS, PRODUCTS, TYPE_LABEL, conn, current_owner,
                      esc, escn, money, page, qs_join, score_cell, signal_cutoff)
 
 router = APIRouter()
@@ -91,8 +91,10 @@ def _gather() -> dict:
     d["phones"] = _one(c, "SELECT COUNT(*) FROM usable_contact_point WHERE kind='phone'") or 0
     d["sites"] = _one(c, "SELECT COUNT(*) FROM web_enrich_state WHERE status='ok'") or 0
     d["brochures"] = _one(c, "SELECT COUNT(*) FROM brochure WHERE status='ok'") or 0
-    d["signals_30"] = _one(c, "SELECT COUNT(*) FROM trigger_event WHERE suppressed=0"
-                              " AND detected_date >= ?",
+    # The same count Signals shows for the past 30 days, any state: firms on a
+    # product list only, as the tile opens that page.
+    d["signals_30"] = _one(c, "SELECT COUNT(*) FROM trigger_event t JOIN firm_scope s ON s.crd=t.crd"
+                              " WHERE t.suppressed=0 AND t.detected_date >= ?",
                            ((date.today() - timedelta(days=30)).isoformat(),)) or 0
 
     # Product lists: size, distribution, coverage, best firms, fresh signals.
@@ -138,7 +140,8 @@ def _gather() -> dict:
         WHERE t.suppressed=0 AND t.detected_date >= ?
         ORDER BY t.detected_date DESC, s.priority DESC LIMIT 14""", (since,))
     d["moves"], d["sigs"] = moves, sigs
-    d["hire_firms"] = _all(c, """SELECT ps.crd, ps.hires_12m, ps.net_12m, ps.headcount, f.legal_name,
+    d["hire_firms"] = _all(c, """SELECT ps.crd, ps.hires_12m, ps.net_12m, ps.departures_12m,
+            ps.headcount, f.legal_name,
             f.state FROM firm_people_stats ps JOIN firm_scope s ON s.crd=ps.crd
         JOIN firm_current f ON f.crd=ps.crd
         WHERE ps.hires_12m >= 2 AND ps.headcount <= ?
@@ -218,11 +221,35 @@ def data() -> dict:
     return d
 
 
-def _kpi(n, label, sub="", href=None, accent=False) -> str:
+def _kpi(n, label, sub="", href=None, accent=False, tip="") -> str:
     inner = (f'<div class="l">{esc(label)}</div><div class="n">{n}</div>'
              + (f'<div class="d">{sub}</div>' if sub else ""))
     cls = "kpi accent" if accent else "kpi"
-    return f'<a class="{cls}" href="{href}">{inner}</a>' if href else f'<div class="{cls}">{inner}</div>'
+    attr = ui.tip_attr(label, tip, focus=not href) if tip else ""
+    return (f'<a class="{cls}" href="{href}"{attr}>{inner}</a>' if href
+            else f'<div class="{cls}"{attr}>{inner}</div>')
+
+
+# The same words for the same numbers on every screen, explained on hover.
+HELP = {
+    "firms": "Investment adviser firms registered with the SEC or a state. Exempt reporting "
+             "advisers are not counted.",
+    "people": "Everyone the People screen lists: registered reps, officers on Form ADV, and "
+              "staff named on firm websites.",
+    "email": "People with their own email address that the firm published or a mail server "
+             "confirmed.",
+    "verified": "People whose email address a mail server confirmed will deliver.",
+    "direct": "People with a direct or mobile line, not the office switchboard.",
+    "phone": "People with any phone number, the office line included.",
+    "linkedin": "People with a LinkedIn profile matched to them.",
+    "signals": "Changes at firms on a product list in the past 30 days: filings, people and "
+               "assets.",
+}
+COV_TIP = ui.tip_attr("Known data", "On average, the share of each firm's scoring weight that "
+                      "rests on data Bellwether holds. A factor with no data yet scores zero.")
+FIT_TIP = ui.tip_attr("Fit out of 100", "The firm's score on that product's list. % known is "
+                      "the share of the scoring weight that rests on data Bellwether holds; a "
+                      "factor with no data yet scores zero.")
 
 
 def _compact(n: int) -> str:
@@ -241,9 +268,10 @@ def _map(by_state: dict) -> str:
         n = by_state.get(st, 0)
         a = 0.08 + 0.82 * (math.log1p(n) / math.log1p(top)) if n else 0
         bg = f"rgba(198,84,84,{a:.2f})" if n else "var(--raise)"
+        tip = esc(f'<b>{st}</b><span>{ui.plural(n, "priority firm")}</span>')
         cells.append(f'<a class="st" href="/firms?{qs_join(st=st, on="any")}" '
                      f'style="grid-column:{x + 1};grid-row:{y + 1};background:{bg}" '
-                     f'data-tip="<b>{st}</b><span>{n:,} firms on a product list</span>">{st}</a>')
+                     f'data-tip="{tip}">{st}</a>')
     return f'<div class="usmap">{"".join(cells)}</div>'
 
 
@@ -259,18 +287,21 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
     # People means the same everywhere: everyone the People screen lists.
     people_n = (d.get("reach") or {}).get("total") or d["people"]
 
+    rc = d.get("reach") or {}
     kpis = "".join([
         _kpi(_compact(d["firms"]), "Adviser firms",
-             f'{money(d["aum"])} under management', "/firms"),
-        _kpi(f'{d["scope"]:,}', "Priority firms", "on a product list; ATS from a score of 50",
-             "/firms?on=any"),
+             f'{money(d["aum"])} in assets', "/firms", tip=HELP["firms"]),
+        _kpi(f'{d["scope"]:,}', "Priority firms", "On a product list; ATS from 50",
+             "/firms?on=any", tip=ui.PRIORITY_HELP),
         _kpi(_compact(people_n), "People",
-             f'{d["hires_12m"] or 0:,} joined a new firm in 12 months', "/people"),
-        _kpi(f'{(d.get("reach") or {}).get("email", d["named_email"]):,}', "People with email",
-             f'{(d.get("reach") or {}).get("verified", 0):,} people with verified email', "/people?view=email", accent=True),
-        _kpi(f'{(d.get("reach") or {}).get("phone", d["phones"]):,}', "People with a phone",
-             f'{(d.get("reach") or {}).get("direct", 0):,} direct lines', "/people?view=direct"),
-        _kpi(f'{d["signals_30"]:,}', "Signals in 30 days", "filings, people, assets", "/signals"),
+             f'{d["hires_12m"] or 0:,} joined a new firm in 12 months', "/people", tip=HELP["people"]),
+        _kpi(f'{rc.get("email", d["named_email"]):,}', "People with email",
+             f'{rc.get("verified", 0):,} with verified email', "/people?view=email", accent=True,
+             tip=HELP["email"]),
+        _kpi(f'{rc.get("phone", d["phones"]):,}', "People with a phone",
+             f'{rc.get("direct", 0):,} with a direct line', "/people?view=direct", tip=HELP["phone"]),
+        _kpi(f'{d["signals_30"]:,}', "Recent signals", "Past 30 days", "/signals?window=30&state=",
+             tip=HELP["signals"]),
     ])
 
     cards = []
@@ -283,11 +314,11 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
             f'<div class="product-entry"><div class="product-summary">'
             f'<a class="product-name" href="/lists/{L["key"]}">{esc(p["name"])}</a>'
             f'<span><b>{L["n"]:,}</b> firms</span><span><b>{L["hi"]:,}</b> scoring 60+</span>'
-            f'<span class="{"warnc" if L["cov"] < 70 else "soft"}">{L["cov"]:.0f}% known data</span>'
+            f'<span class="{"warnc" if L["cov"] < 70 else "soft"}"{COV_TIP}>{L["cov"]:.0f}% known data</span>'
             f'<a class="more" href="/lists/{L["key"]}">Open list</a></div>'
             f'<details class="product-preview"><summary>Audience and leading firms</summary>'
             f'<p>{esc(p["audience"])}</p><div class="tops">{top or "<span class=muted>No scores yet</span>"}</div>'
-            f'<p class="meta">{L["fresh"]:,} new signals</p></details></div>')
+            f'<p class="meta">{ui.plural(L["fresh"], "firm")} with a new signal</p></details></div>')
     lists_html = "".join(cards)
 
     # Feed: people moves and signals merged.
@@ -302,19 +333,24 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
                              f'{"+" if joined else "-"}</div><div>{txt}</div>'
                              f'<div class="when">{esc(ui.ago(m["d"]))}</div></div>'))
     for s in d["sigs"]:
+        chip = ui.signal_chip(s["trigger_type"], TYPE_LABEL.get(s["trigger_type"], s["trigger_type"]),
+                              PRODUCTS.get(s["trigger_type"], {}).get("kind") == "disqualifier")
         feed.append((s["d"], f'<div class="it"><div class="ic amb">{ICONS["bolt"]}</div><div>'
                              f'<a href="/firm/{esc(s["crd"])}"><b>{escn(s["legal_name"])}</b></a> '
-                             f'<span class="chip lead">{esc(TYPE_LABEL.get(s["trigger_type"], s["trigger_type"]))}</span>'
+                             f'{chip}'
                              f'<div class="meta">{esc(s["description"])}</div></div>'
                              f'<div class="when">{esc(ui.ago(s["d"]))}</div></div>'))
     feed.sort(key=lambda x: x[0] or "", reverse=True)
     feed_html = ("".join(x[1] for x in feed[:6]) or
                  '<p class="empty">No new signals in the last 60 days.</p>')
 
+    # Who joined and who left, as two labelled figures per firm; the bar is
+    # the joins, against the busiest firm.
     hire_rows = "".join(
         f'<div class="r"><a href="/firm/{esc(h["crd"])}#activity">{escn(h["legal_name"])}</a>'
         f'<div class="b"><i style="width:{min(100, h["hires_12m"] / max(1, d["hire_firms"][0]["hires_12m"]) * 100):.0f}%;background:var(--ok)"></i></div>'
-        f'<div class="num nowrap">{h["hires_12m"]} joined</div></div>' for h in d["hire_firms"])
+        f'{ui.moves_html(h["hires_12m"], h.get("departures_12m") if h.get("departures_12m") is not None else max(0, (h["hires_12m"] or 0) - (h["net_12m"] or 0)), "")}</div>'
+        for h in d["hire_firms"])
 
     cov_rows = "".join(
         f'<div class="mrow"><div>{esc(lbl)}</div><div class="meter{" amber" if n / of < .5 else ""}">'
@@ -381,14 +417,11 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
         f' &middot; {esc(ui.SOURCE_LABEL.get(f_["source"], f_["source"]))}</div></div><div class="when">{esc(ui.ago(f_["at"]))}</div></div>'
         for f_ in (d.get("finds") or [])[:6])
     discovery = f"""<div class="card"><div class="card-head"><div><h2>Contact discovery</h2>
-<div class="sub">People at firms on our lists with a usable email</div></div>
+<div class="sub">People at priority firms with an email</div></div>
 <a class="more" href="/people?on=any&amp;view=hunting">Still hunting</a></div>
 <div class="row" style="align-items:flex-end;gap:14px"><div class="big">{pct:.1f}%</div>
 <div class="small soft" style="padding-bottom:6px">{rc.get('listed_email', 0):,} of {listed:,} people</div></div>
-<div class="meter" style="margin:18px 0"><i style="width:{pct:.1f}%"></i></div>
-<div class="legend" style="margin-bottom:14px"><span><i style="background:var(--ok)"></i>email {rc.get('email', 0):,}</span>
-<span>LinkedIn {rc.get('linkedin', 0):,}</span>
-<span><i style="background:var(--soft)"></i>direct line {rc.get('direct', 0):,}</span></div>
+<div class="meter" style="margin:18px 0 4px"><i style="width:{pct:.1f}%"></i></div>
 <details class="detail-section"><summary>Discovery jobs</summary><div class="engine">{engine}</div></details>
 {('<details class="detail-section"><summary>Latest finds</summary><div class="feed">' + finds + '</div></details>') if finds else ''}</div>"""
 
@@ -426,7 +459,8 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
         f'<td class="num"><a class="contact-state {"ok" if r["verified_contact"] else "soft"}" href="/firm/{esc(r["crd"])}#people">'
         f'{"Verified email" if r["verified_contact"] else "View people"}</a></td></tr>' for r in leading)
     shortlist = ('<div class="table-scroll"><table class="dash-shortlist"><thead><tr><th>Firm</th>'
-                 '<th class="num">Fit / 100</th><th class="num">Contact</th></tr></thead><tbody>'
+                 f'<th class="num"><span class="th-tip"{FIT_TIP}>Fit / 100</span></th>'
+                 '<th class="num">Contact</th></tr></thead><tbody>'
                  + shortlist + '</tbody></table></div>') if shortlist else (
                  '<p class="empty">No ranked firms yet. <a href="/firms">Explore all firms</a></p>')
     options = ui.opt('', focus, 'All products') + ''.join(
@@ -440,9 +474,14 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
         f'<b>{item["n"]:,}</b></a>' for item in d['lists'])
     total_people = rc.get('total', 0)
     contact_rows = ''.join(
-        f'<a class="dash-contact" href="/people?view={view}"><span>{label}</span><b>{rc.get(key, 0):,}</b>'
+        f'<a class="dash-contact" href="/people?view={view}"{ui.tip_attr(label, HELP[key], focus=False)}>'
+        f'<span>{label}</span><b>{rc.get(key, 0):,}</b>'
         f'<span class="meter"><i style="width:{min(100, rc.get(key, 0) / max(1, total_people) * 100):.1f}%"></i></span></a>'
-        for key, label, view in [('verified', 'Verified email', 'verified'), ('direct', 'Direct phone', 'direct'), ('linkedin', 'LinkedIn', 'linkedin')])
+        for key, label, view in [('email', 'With email', 'email'), ('verified', 'Verified email', 'verified'),
+                                 ('direct', 'Direct line', 'direct'), ('linkedin', 'LinkedIn', 'linkedin')])
+    contact_tip = ui.tip_attr("Contact coverage", f"How many of the {total_people:,} people "
+                              f"Bellwether lists can be reached each way. Each bar is a share of "
+                              f"everyone.")
     score_time = f'Scores updated {esc(ui.ago(d["scored_at"]))}' if d.get('scored_at') else 'Scoring pending'
     ranked_link = f'/lists/{focus}' if focus else '/firms?on=any'
     body = f"""<div class="pg dashboard">
@@ -453,23 +492,20 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
 <button type="button" data-panel="home-workspace">Your workspace</button>
 <button type="button" data-panel="home-coverage">Data coverage</button></nav>
 <section id="home-overview">
-<div class="dashboard-summary"><a href="/firms"><span>Adviser firms</span><strong>{d['firms']:,}</strong><small>{money(d['aum'])} in assets</small></a>
-<a href="/firms?on=any" title="{esc(ui.PRIORITY_HELP)}"><span>Priority firms</span><strong>{d['scope']:,}</strong><small>On a product list; ATS from 50</small></a>
-<a href="/people"><span>People</span><strong>{people_n:,}</strong><small>{rc.get('verified', 0):,} with verified email</small></a>
-<a href="/signals"><span>Recent signals</span><strong>{d['signals_30']:,}</strong><small>Past 30 days</small></a></div>
+<div class="dashboard-summary"><a href="/firms"{ui.tip_attr("Adviser firms", HELP["firms"], focus=False)}><span>Adviser firms</span><strong>{d['firms']:,}</strong><small>{money(d['aum'])} in assets</small></a>
+<a href="/firms?on=any"{ui.tip_attr("Priority firms", ui.PRIORITY_HELP, focus=False)}><span>Priority firms</span><strong>{d['scope']:,}</strong><small>On a product list; ATS from 50</small></a>
+<a href="/people"{ui.tip_attr("People", HELP["people"], focus=False)}><span>People</span><strong>{people_n:,}</strong><small>{rc.get('verified', 0):,} with verified email</small></a>
+<a href="/signals?window=30&amp;state="{ui.tip_attr("Recent signals", HELP["signals"], focus=False)}><span>Recent signals</span><strong>{d['signals_30']:,}</strong><small>Past 30 days</small></a></div>
 <div class="dashboard-main">
 <section class="dashboard-leading"><div class="s-head"><h2>Leading firms</h2><a class="more" href="{ranked_link}">Open ranking</a></div>
-{focus_form}{shortlist}<p class="meta dash-updated">{score_time} · Missing factors score zero.</p></section>
+{focus_form}{shortlist}<p class="meta dash-updated">{score_time}</p></section>
 <aside class="dashboard-aside"><section><div class="s-head"><h2>Product opportunities</h2><a class="more" href="#home-products">Details</a></div>{product_rows}</section>
-<section><div class="s-head"><h2>Contact coverage</h2><a class="more" href="#home-coverage">Details</a></div>{contact_rows}<p class="meta">Of {total_people:,} people in the contact index</p></section></aside>
+<section><div class="s-head"><h2><span class="th-tip"{contact_tip}>Contact coverage</span></h2><a class="more" href="#home-coverage">Details</a></div>{contact_rows}</section></aside>
 </div>
 <div class="overview-columns">
 <section class="overview-section"><div class="s-head"><h2>Latest intelligence</h2><a href="/signals" class="more">All activity</a></div><div class="feed">{feed_html}</div></section>
-<section class="overview-section"><div class="s-head"><h2>Hiring activity</h2><a href="/firms?sort=hires&amp;on=any" class="more">View firms</a></div><div class="hbars">{hire_rows or '<p class="empty">No recorded hiring activity.</p>'}</div><p class="meta">Joins in the past 12 months</p></section>
+<section class="overview-section home-hire"><div class="s-head"><h2>Hiring activity <span class="h-sub">past 12 months</span></h2><a href="/firms?sort=hires&amp;on=any" class="more">View firms</a></div><div class="hbars">{hire_rows or '<p class="empty">No recorded hiring activity.</p>'}</div></section>
 </div>
-<div class="home-shortcuts"><a href="/people?view=email">{rc.get('email', d['named_email']):,} people with email</a>
-<a href="/people?view=direct">{rc.get('direct', 0):,} people with a direct line</a>
-<a href="#home-coverage">View data coverage</a></div>
 </section>
 <section id="home-products"><div class="product-index">{lists_html}</div></section>
 <section id="home-workspace"><div class="overview-columns">

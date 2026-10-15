@@ -613,6 +613,7 @@ def score_cell(score, coverage=None, potential=None, show_cov: bool = True) -> s
     """A score with its foundation: the solid bar is what the firm earned on
     data we hold, the hatched part is what is still unknown, and the label says
     how much of the scoring rests on known data."""
+    from .ui import tip_attr
     if score is None:
         return '<span class="muted">-</span>'
     score = float(score)
@@ -620,29 +621,35 @@ def score_cell(score, coverage=None, potential=None, show_cov: bool = True) -> s
     pot = float(potential) if potential is not None else score
     unk = max(0.0, min(100.0 - score, pot - score))
     hi = " hi" if score >= 60 and cov >= 80 else ""
-    tip = (f"{score:.0f} of 100, earned on known data. {cov:.0f}% of the scoring rests on "
-           f"data Bellwether holds" + (f"; with the missing {100 - cov:.0f}% it could reach "
-                                       f"{pot:.0f}." if cov < 99.5 else "."))
-    cov_html = ""
     if coverage is None:
         # A score from before coverage was recorded: say nothing rather than
         # claim it rests on complete data. The next rescore fills it in.
-        tip = f"{score:.0f} of 100."
-    elif show_cov:
+        tip = tip_attr(f"Score {score:.0f} of 100", "Out of 100 on this product's scoring.")
+    else:
+        tip = tip_attr(
+            f"Score {score:.0f} of 100",
+            f"Earned on the data Bellwether holds. {cov:.0f}% known means {cov:.0f}% of the "
+            f"scoring weight rests on known data; a factor with no data yet scores zero.",
+            foot=(f"If the missing {100 - cov:.0f}% were met, it could reach {pot:.0f}."
+                  if cov < 99.5 else "Every factor is known."))
+    cov_html = ""
+    if coverage is not None and show_cov:
         cov_html = (f'<span class="cov{" part" if cov < 80 else ""}">'
                     f'{cov:.0f}% known</span>')
-    return (f'<div class="score{hi}" title="{esc(tip)}"><span class="v">{score:.0f}</span>'
+    return (f'<div class="score{hi}"{tip}><span class="v">{score:.0f}</span>'
             f'<span class="sbar"><i class="k" style="width:{score:.0f}%"></i>'
             f'<i class="u" style="width:{unk:.0f}%"></i></span>{cov_html}</div>')
 
 
 def missing_chip(missing: str | None, max_items: int = 3) -> str:
+    from .ui import tip_attr
     items = [m for m in (missing or "").split("|") if m]
     if not items:
         return ""
     shown = ", ".join(items[:max_items]) + (f" +{len(items) - max_items}" if len(items) > max_items else "")
-    return (f'<span class="missing" title="Missing data: {esc(", ".join(items))}">'
-            f'Missing: {esc(shown)}</span>')
+    tip = tip_attr("Missing data", "Factors Bellwether has no data for yet. Each scores zero "
+                   "until the data arrives.", items)
+    return f'<span class="missing"{tip}>Missing: {esc(shown)}</span>'
 
 
 # ---------------------------------------------------------------- static assets
@@ -814,9 +821,12 @@ def nav(active: str) -> str:
     n = _nav_counts()
     acct = current_account()
 
-    def item(key, href, label, cnt=None, hot=False, icon=None):
+    from .ui import tip_attr
+
+    def item(key, href, label, cnt=None, hot=False, icon=None, tip=""):
         ic = ICONS.get(icon or key, "")
-        c =(f'<span class="cnt{" hot" if hot else ""}">{cnt:,}</span>' if cnt else "")
+        t = tip_attr(tip, focus=False) if tip and cnt else ""
+        c = (f'<span class="cnt{" hot" if hot else ""}"{t}>{cnt:,}</span>' if cnt else "")
         return (f'<a class="i{" on" if key == active else ""}" href="{href}">'
                 f'{ic}{esc(label)}{c}</a>')
 
@@ -824,7 +834,7 @@ def nav(active: str) -> str:
     # where the work starts, so they must never be one click away or below the fold.
     plist = "".join(
         item(f"list:{k}", f"/lists/{k}", products.product(k)["name"], n["lists"].get(k),
-             icon="lists")
+             icon="lists", tip=f'{n["lists"].get(k) or 0:,} firms ranked')
         for k in products.product_keys())
     data = ""
     if users.can_manage_enrichment(acct):
@@ -832,7 +842,9 @@ def nav(active: str) -> str:
     if users.is_admin(acct):
         # A job that needs a person outranks the review queue on this count.
         data += item("settings", "/settings/jobs" if n.get("alerts") else "/settings", "Settings",
-                     n.get("alerts") or n.get("review"), hot=bool(n.get("alerts")))
+                     n.get("alerts") or n.get("review"), hot=bool(n.get("alerts")),
+                     tip=(f'{n.get("alerts"):,} background job problems need a person'
+                          if n.get("alerts") else f'{n.get("review") or 0:,} items waiting for review'))
     if data:
         data = '<div class="grp">Data</div>' + data
     who = ""
@@ -862,7 +874,8 @@ def nav(active: str) -> str:
             + '<div class="grp">Explore</div>'
             + item("firms", "/firms", "Firms")
             + item("people", "/people", "People")
-            + item("signals", "/signals", "Signals", n.get("signals"), hot=True)
+            + item("signals", "/signals", "Signals", n.get("signals"), hot=True,
+                   tip=f'{n.get("signals") or 0:,} open signals at priority firms, last 60 days')
             + item("saved", "/saved", "Saved lists")
             + data
             + f'<div class="foot">{who}<div class="fresh">SEC data of {feed}{quit_link}</div></div>'
@@ -891,7 +904,7 @@ def forbidden(what: str = "this page") -> HTMLResponse:
     return page("Not available", "", f"""<div class="pg narrow">
 <h1>Not available to you</h1><p class="lede">{esc(what.capitalize())} is for admins. If you
 need it, ask an admin to change your role in Settings, Users.</p>
-<p><a class="btn" href="/">Back to Home</a></p></div>""", status=403)
+<p><a class="btn" href="/">Back to home</a></p></div>""", status=403)
 
 
 # --- who is signed in -----------------------------------------------------

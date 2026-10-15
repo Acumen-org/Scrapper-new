@@ -41,6 +41,18 @@ VIEWS = {
     "linkedin": ("LinkedIn", "has_linkedin = 1"),
     "hunting": ("Still hunting", "has_email = 0"),
 }
+# What each tab holds, on hover.
+VIEW_HELP = {
+    "": "Everyone Bellwether knows at adviser firms: registered reps, officers on Form ADV, and "
+        "staff named on firm websites.",
+    "email": "People with their own email address that the firm published or a mail server "
+             "confirmed. Guesses no server confirmed are not counted.",
+    "verified": "People whose email address a mail server confirmed will deliver.",
+    "direct": "People with a direct or mobile line, not the office switchboard.",
+    "linkedin": "People with a LinkedIn profile matched to them.",
+    "hunting": "People with no email yet. Bellwether keeps looking on the firm's website, in web "
+               "search and by checking address patterns with the mail server.",
+}
 JOINED = [("", "Joined any time"), ("90", "Joined in 90 days"), ("365", "Joined in 12 months"),
           ("1095", "Joined in 3 years")]
 ROLE = [("", "Any role"), ("leader", "Leadership"), ("officer", "Officers on Form ADV")]
@@ -196,6 +208,14 @@ def _vals(f: dict, **change) -> dict:
     return v
 
 
+DISC_TIP = ui.tip_attr("Disclosure", "This person has a disclosure on their SEC record, such as "
+                       "a customer complaint, regulatory action or financial matter.",
+                       foot="The SEC's adviser search (IAPD) has the details.")
+HUNT_TIP = ui.tip_attr("Finding email", "No email for this person yet. Bellwether "
+                       "keeps looking on the firm's website, in web search, by checking address "
+                       "patterns with the mail server, and with AI research.")
+
+
 def _person_row(r, prod_tags: list, active: tuple = ()) -> str:
     title = roles.clean_title(r["title"]) or ("Officer" if r["is_officer"] else "Registered representative")
     src = r.get("src") or "sec"
@@ -210,13 +230,12 @@ def _person_row(r, prod_tags: list, active: tuple = ()) -> str:
     if r["cfa"]:
         badges.append('<span class="chip">CFA</span>')
     if r["has_disclosure"]:
-        badges.append('<span class="chip warn" title="Has a disclosure on record">Disclosure</span>')
+        badges.append(f'<span class="chip warn"{DISC_TIP}>Disclosure</span>')
     place = " ".join(x for x in (nice_name(r["bcity"] or r["firm_city"]), r["bstate"] or r["state"]) if x)
     reach = ui.contact_pills(email=r["email"], phone=r["phone"], phone_label=r["phone_label"],
                              linkedin=r["linkedin"], email_ok=r["email_status"] == "valid")
     if not r["email"]:
-        reach = (reach or "") + '<div class="hunt" title="Bellwether keeps looking: website, search, ' \
-                                'patterns checked against the mail server, and AI research">Finding email</div>'
+        reach = (reach or "") + f'<div class="hunt"{HUNT_TIP}>Finding email</div>'
     lists = ""
     if r["products"]:
         names = []
@@ -267,12 +286,15 @@ def _designation_menu(f: dict, cols: set, minute: int) -> tuple[str, list]:
     # A title picked under another list stays in force until removed.
     others = "".join(f'<input type="hidden" name="des" value="{esc(t)}">'
                      for t in f["des"] if t not in tags)
+    what = ui.tip_attr("Designation", "A job title a product sells to, matched across the "
+                       "different ways firms write it. Tick any number to see everyone who "
+                       "holds one.")
     if prod == designations.GENERAL:
-        head = ('<b>Common titles</b><span class="meta">Choose a product list to see the titles '
-                'it sells to.</span>')
+        head = (f'<b><span class="th-tip"{what}>Common titles</span></b><span class="meta">Pick a '
+                f'product list for the titles it sells to.</span>')
     else:
-        head = (f'<b>Titles {esc(products.product(prod)["name"])} sells to</b>'
-                f'<span class="meta">Choose any number to see anyone who holds one of them.</span>')
+        head = (f'<b><span class="th-tip"{what}>Titles {esc(products.product(prod)["name"])} '
+                f'sells to</span></b>')
     n = len(f["des"]) + (1 if f["title"] else 0)
     clear = "/people?" + qs_join(**_vals(f, des="", title=""))
     html = (f'<details class="fmore fdes{" set" if n else ""}"><summary>Designation'
@@ -348,7 +370,8 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
     vals = _vals(f)
     qs = qs_join(**vals)
     tabs = "".join(
-        f'<a href="/people?{qs_join(**_vals(f, view=k))}" class="{"on" if f["view"] == k else ""}">'
+        f'<a href="/people?{qs_join(**_vals(f, view=k))}" class="{"on" if f["view"] == k else ""}"'
+        f'{ui.tip_attr(label, VIEW_HELP[k], focus=False)}>'
         f'{esc(label)}<span class="cnt">{tab_counts[k]:,}</span></a>'
         for k, (label, _) in VIEWS.items())
     lists = ([("", "Any firm"), ("any", "Priority firms")]
@@ -381,8 +404,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
              'Remove a filter above, or try a broader title.</div></td></tr>')
     body = f"""<div class="pg wide">
 <div class="head"><div><h1>People</h1>
-<p class="lede">Everyone at every adviser firm: registered reps, the officers on Form ADV, and the
-staff firm websites name. Filter by the titles your product sells to.</p></div>
+<p class="lede">Everyone at every adviser firm, and how to reach them.</p></div>
 <div class="acts"><details class="save-view"><summary>Save view</summary>
 <form method="post" action="/views/save"><input type="hidden" name="page" value="people">
 <input type="hidden" name="qs" value="{esc(qs)}"><input type="text" name="name" placeholder="Name this view" required>
@@ -392,7 +414,7 @@ staff firm websites name. Filter by the titles your product sells to.</p></div>
 {bar}
 <div class="resbar"><span><b>{total:,}</b> {"person" if total == 1 else "people"}</span>
 <span class="muted small">Page {page_n} of {pages:,}</span></div>
-<div class="table-scroll"><table><thead><tr><th style="width:28%">Person</th><th>First name</th><th style="width:26%">Firm</th>
+<div class="table-scroll"><table class="people-table"><thead><tr><th style="width:28%">Person</th><th>First name</th><th style="width:26%">Firm</th>
 <th>Contact</th><th style="width:14%">Joined firm</th></tr></thead>
 <tbody>{"".join(_person_row(r, prod_tags, f["des"]) for r in rows) or empty}</tbody></table></div>
 <div class="pager"><span>{total:,} people</span><span class="acts">{prev}{nxt}</span></div></div>"""

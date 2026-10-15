@@ -29,6 +29,12 @@ tr.krow.sel td{background:var(--red-bg)}
 WINDOWS = {"15": "Last 15 days", "30": "Last 30 days", "60": "Last 60 days",
            "365": "Last 12 months", "": "Any time"}
 
+SIG_TH = ui.tip_attr("Signal", "What kind of change it was. Green is a reason to call; red is a "
+                     "reason not to, such as a firm that left Schwab or assets that fell.",
+                     foot="Hover a signal to see what it means.")
+BEST_TH = ui.tip_attr("Best list", "The firm's best score out of 100 across the product lists, "
+                      "and which list it is.")
+
 
 @router.get("/signals", response_class=HTMLResponse)
 def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
@@ -116,8 +122,7 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
             f'<tr class="krow go{done}" data-tid="{r["id"]}" data-href="/firm/{esc(r["crd"])}">'
             f'<td><span class="nowrap">{esc(r["detected_date"])}</span>'
             f'<div class="meta">{esc(ui.ago(r["detected_date"]))}{old}</div></td>'
-            f'<td><span class="chip {kchip}">'
-            f'{esc(TYPE_LABEL.get(r["trigger_type"], r["trigger_type"]))}</span></td>'
+            f'<td>{ui.signal_chip(r["trigger_type"], TYPE_LABEL.get(r["trigger_type"], r["trigger_type"]), kchip == "dis")}</td>'
             f'<td><div class="firm"><a href="/firm/{esc(r["crd"])}">'
             f'{escn(r["legal_name"] or "(unnamed)")}</a></div>'
             f'<div class="meta">{ui.firm_meta(dict(r, state=r["st"]))}</div></td>'
@@ -126,13 +131,16 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
 
     alerts_html = ""
     if alerts:
-        alerts_html = ('<div class="panel" style="margin:6px 0 14px"><h3>Firms you watch</h3>'
+        alerts_html = ('<div class="panel watch-panel"><h3>Firms you watch</h3>'
                        + "".join(
-                           f'<div class="small" style="padding:4px 0"><a class="firm" '
+                           f'<div class="small watch-row"><a class="firm" '
                            f'href="/firm/{esc(a["crd"])}">{escn(a["legal_name"])}</a> '
                            f'<span class="soft">{esc(a["description"])}</span> &middot; '
                            f'<span class="muted nowrap">{esc(a["detected_date"])}</span></div>'
                            for a in alerts) + "</div>")
+    keys = ui.tip_attr("Keyboard shortcuts", "", ["j and k move between signals",
+                                                  "d marks done, s snoozes, x dismisses",
+                                                  "Enter opens the firm"])
 
     type_opts = "".join(ui.opt(k, ttype, f"{v} ({counts.get(k, 0):,})")
                         for k, v in TYPE_LABEL.items())
@@ -145,14 +153,11 @@ def signals(ttype: str = Query("", alias="type"), product: str = Query(""),
     pages = max(1, -(-total // per))
     prev = f'<a href="/signals?{qs}&page={page_n-1}">Previous</a>' if page_n > 1 else ""
     nxt = f'<a href="/signals?{qs}&page={page_n+1}">Next</a>' if page_n < pages else ""
-    empty = ('<tr><td colspan="6" class="empty">Nothing matches. Signals arrive with '
-             'each weekly SEC feed: a new registration, an assets jump, advisors added, '
-             'a custodian move.</td></tr>')
+    empty = ('<tr><td colspan="6"><div class="empty"><b>No signals match</b>New ones arrive with '
+             'each weekly SEC feed.</div></td></tr>')
     body_html = f"""<div class="pg">
 <div class="head"><div><h1>Signals</h1>
-<div class="lede">What changed at firms on your product lists, newest first.
-A red chip is a reason <b>not</b> to call (a firm that left Schwab, assets that fell).
-Keys: <b>j</b>/<b>k</b> move, <b>d</b> done, <b>s</b> snooze, <b>x</b> dismiss, <b>Enter</b> opens.</div></div></div>
+<div class="lede">What changed at firms on your product lists, newest first.</div></div></div>
 {alerts_html}
 <form class="filters" method="get" action="/signals">
 <label>Product list<select name="product">{ui.opt("", product, "All lists")}{prod_opts}</select></label>
@@ -163,17 +168,17 @@ Keys: <b>j</b>/<b>k</b> move, <b>d</b> done, <b>s</b> snooze, <b>x</b> dismiss, 
 <button class="primary" type="submit">Apply</button>
 <a class="btn ghost" href="/signals">Clear</a>
 </form>
-<div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 0;gap:12px;flex-wrap:wrap">
-<div class="small soft"><b style="color:var(--ink)">{total:,}</b> signals</div>
-<form method="post" action="/views/save" class="acts">
+<div class="resbar"><span><b>{total:,}</b> signal{"s" if total != 1 else ""}</span>
+<span class="acts"><span class="lede-tip"{keys}>Keyboard shortcuts</span>
+<details class="save-view"><summary>Save view</summary><form method="post" action="/views/save">
 <input type="hidden" name="page" value="signals"><input type="hidden" name="qs" value="{esc(qs)}">
-<input type="text" name="name" placeholder="Name this view to save it" style="min-width:210px">
-<button type="submit" class="sm">Save view</button></form></div>
+<input type="text" name="name" placeholder="Name this view" required>
+<button type="submit" class="primary sm">Save</button></form></details></span></div>
 <div class="table-scroll"><table class="signals-table wide"><colgroup><col style="width:108px"><col style="width:156px">
 <col style="width:22%"><col><col class="col-list" style="width:116px"><col style="width:104px"></colgroup>
-<thead><tr><th>When</th><th>Signal</th><th>Firm</th><th>What happened</th><th class="col-list">Best list</th><th></th></tr></thead>
+<thead><tr><th>When</th><th><span class="th-tip"{SIG_TH}>Signal</span></th><th>Firm</th><th>What happened</th><th class="col-list"><span class="th-tip"{BEST_TH}>Best list</span></th><th></th></tr></thead>
 <tbody>{"".join(body) or empty}</tbody></table></div>
-<div class="pager">{prev} Page {page_n} of {pages} {nxt}</div>
+<div class="pager"><span>Page {page_n} of {pages:,}</span><span class="acts">{prev}{nxt}</span></div>
 </div>"""
     return page("Signals", "signals", body_html, SIG_CSS, js=KEYS_JS)
 
