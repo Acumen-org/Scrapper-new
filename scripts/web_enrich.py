@@ -26,8 +26,13 @@ came back with info@ and compliance@. This one:
     or on their bio page becomes that person's LinkedIn, and the company page
     (usually in the footer) the firm's. Both are stored as kind 'linkedin',
     verify_status 'matched', since the firm's own site put them side by side.
-  - optionally asks the AI extractor about a team page the rules could not
-    parse, when the AI module is configured for it.
+  - leaves the team pages the rules could not parse to the AI extractor, when
+    one is connected and switched on: the page goes into a queue (web_ai_page)
+    that the "AI page reading" job works through in the Search and AI lane,
+    best firms first, within its share of the day's AI allowance. A model call
+    takes most of a minute, and made inline it held a website slot for that
+    long. A page whose text has not changed since the model read it is not
+    sent again: the answer it gave is stored, and replayed here at no cost.
 
 Every page fetched is cached to disk, and pages that yielded nothing have
 their bytes dropped after the firm is done (the web_page row stays). Firms are
@@ -37,12 +42,15 @@ site said before, since a person no longer on the team page has usually left.
 Commits happen after every page and nothing is ever written while a page is
 being fetched: see enrich_one for why.
 
-Several sites are read at once with --parallel N: the firms due are split
-into N shards by CRD, and each shard is read by its own process (its own
-crawler, browser and database connection), so no two ever read the same
-firm and one stuck site holds up only its own shard.
+Several sites are read at once with --parallel N, each shard in its own
+process (its own crawler, browser and database connection). The shards take
+firms one at a time from the same list, best first, through a claim in
+web_enrich_claim, and keep taking them until --seconds is up, so they finish
+together instead of the slice waiting on whichever shard drew the slow sites.
+No two ever read the same firm; a claim a shard stops renewing (it died) is
+free again after CLAIM_MINUTES.
 
-    python -m scripts.web_enrich [--limit N] [--parallel N] [--crd CRD] [--url URL]
+    python -m scripts.web_enrich [--limit N] [--seconds S] [--parallel N] [--crd CRD] [--url URL]
 """
 
 from __future__ import annotations
@@ -50,7 +58,10 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import json
+import os
 import re
+import socket
 import sys
 import time
 from collections import Counter
@@ -96,6 +107,34 @@ CREATE TABLE IF NOT EXISTS web_enrich_state (
     emails     INTEGER NOT NULL,
     status     TEXT NOT NULL       -- ok | unreachable | no_website | error
 );
+-- Which shard is reading which firm right now. A shard renews its claim as it
+-- reads; one it stops renewing (the shard died) lapses at expires_at.
+CREATE TABLE IF NOT EXISTS web_enrich_claim (
+    crd        TEXT PRIMARY KEY,
+    holder     TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+-- Team pages left to the AI extractor, and the answer it gave for each. The
+-- hash is of the text the model is sent, so an unchanged page is never sent
+-- twice; the text itself is dropped once read.
+CREATE TABLE IF NOT EXISTS web_ai_page (
+    crd          TEXT NOT NULL,
+    url          TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    page_text    TEXT,
+    bare         INTEGER NOT NULL DEFAULT 0,  -- names the rules found with no title or email
+    context      TEXT,                        -- what storing the answer needs from the crawl
+    status       TEXT NOT NULL,               -- queued | done | failed
+    queued_at    TEXT NOT NULL,
+    done_at      TEXT,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    answer       TEXT,                        -- the people the model read off it (JSON)
+    stored       INTEGER,
+    error        TEXT,
+    PRIMARY KEY (crd, url)
+);
+CREATE INDEX IF NOT EXISTS ix_webai_status ON web_ai_page (status);
 """
 
 # Columns added after the table first shipped. Added through db.add_column,
@@ -112,12 +151,34 @@ STATE_COLUMNS = (
 )
 
 AI_PAGES_MAX = 2          # AI extraction calls per firm, at most
+AI_TEXT_CHARS = 14000     # what ai.extract_people sends of a page; the hash covers the same
+AI_TRIES = 3              # failed calls on one text before it is set aside
+AI_RETRY_DAYS = 30        # then a site read queues that same text again only after this long
+AI_ERRORS_IN_A_ROW = 2    # failed calls in a row before a run stops: the provider is unwell
+EXTRACT_SHARE = 0.5       # of ai.daily_limit, the most the extraction job uses in a day
+CALLS_PER_PAGE = 2        # one call, and one repair when the JSON comes back broken
+CLAIM_MINUTES = 15        # a claim not renewed this long is free again
 GUESSES_MAX = 60          # pattern guesses per firm, at most
 FIRM_PHONES_PER_PAGE = 3  # firm-level numbers kept from any one page
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _later(minutes: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
+def init(conn) -> None:
+    """This job's tables and late columns. The app runs SCHEMA and the columns
+    at startup too, so a request never meets a missing table; each slice runs
+    this as well, for a worker that started before the app did."""
+    conn.executescript(SCHEMA)
+    conn.executescript(websignals.SCHEMA)
+    for col, decl in STATE_COLUMNS:
+        db.add_column(conn, "web_enrich_state", col, decl)
+    conn.commit()
 
 
 # ------------------------------------------------------------------ optional modules
@@ -146,6 +207,17 @@ def _ai_module():
         return ai if ai.enabled("extract") else None
     except Exception:
         return None
+
+
+def _ai_wanted() -> bool:
+    """An AI extractor is connected and switched on. Pages are queued for it
+    even when today's allowance is spent: the extraction job reads them once
+    there is allowance again."""
+    try:
+        from prospect import ai
+        return ai.configured() and "extract" in settings.get_list("ai.features")
+    except Exception:
+        return False
 
 
 # ------------------------------------------------------------------ roster
@@ -297,6 +369,9 @@ class FirmRun:
     personal: set = field(default_factory=set)
     direct: set = field(default_factory=set)
     ai_pages: list = field(default_factory=list)
+    ai_answers: list = field(default_factory=list)          # (url, people) the model gave
+    ai_errors: list = field(default_factory=list)           # (url, why) for calls that failed
+    known: object = None                                    # harvest.KnownNames of the roster
 
     def key_for(self, conn, name: str, known: str | None) -> str:
         """'i:<indvl_pk>' when the person can be tied to an IAPD record, else
@@ -362,19 +437,26 @@ def store_page(conn, run: FirmRun, page: Page) -> None:
         websignals.record(conn, run.crd, url, page.html, run.now)
     conn.commit()
 
-    known = run.roster.names
-    hits = harvest.extract_people(page.html, url, known, site_domain=run.site_domain)
+    # One parse of the page serves every reader below; the crawler made it
+    # when it fetched the page. A vCard is not HTML and is never parsed.
+    doc = None
+    if not vcard:
+        doc = getattr(page, "doc", None)
+        if doc is None or doc.url != url:
+            doc = harvest.parse_page(page.html, url)
+    known = run.known if run.known is not None else run.roster.names
+    hits = harvest.extract_people(page.html, url, known, site_domain=run.site_domain, doc=doc)
     emails = [] if vcard else harvest.extract_emails(page.html, run.site_domain)
-    phones = [] if vcard else harvest.extract_phones(page.html)
+    phones = [] if vcard else harvest.extract_phones(page.html, doc=doc)
     for p in phones:
         run.phone_pages[p["phone"]] += 1
     if not vcard:
-        run.sitewide |= harvest.chrome_phones(page.html)
+        run.sitewide |= harvest.chrome_phones(page.html, doc=doc)
 
     # Every read first: the person keys need lookups, and a failed statement
     # would roll back anything written before it.
     keyed = [(h, run.key_for(conn, h.name, h.known)) for h in hits]
-    li_links = {} if vcard else harvest.linkedin_links(page.html, url)
+    li_links = {} if vcard else harvest.linkedin_links(page.html, url, doc=doc)
     for u in li_links.get("company", []):
         run.company_li[u] += 1
         run.company_src.setdefault(u, url)
@@ -490,61 +572,322 @@ def store_page(conn, run: FirmRun, page: Page) -> None:
     conn.commit()
 
     # A team page whose names came without titles or emails is what the AI
-    # extractor is for; remember it and ask after the crawl, not during it.
-    # Kept as candidates ranked by how many names lack both; the best few are
-    # sent once the crawl is done.
+    # extractor is for; remember it and hand it over after the crawl, not
+    # during it. Kept as candidates ranked by how many names lack both; the
+    # best few are queued (queue_ai) once the crawl is done.
     bare = sum(1 for h in hits if not h.title and not h.email)
     if page.kind in ("team", "about", "bio") and bare:
-        run.ai_pages.append((bare, page.text or harvest.visible_text(page.html), url))
+        run.ai_pages.append((bare, page.text or harvest.visible_text(page.html, doc=doc), url))
         run.ai_pages.sort(key=lambda x: -x[0])
         del run.ai_pages[AI_PAGES_MAX * 3:]   # bounded memory on large sites
 
 
 def ask_ai(conn, run: FirmRun) -> int:
-    """Store what the AI extractor reads off the pages the rules struggled
-    with. Silent when the module is missing or switched off."""
+    """Ask the AI extractor about the pages in run.ai_pages and store what it
+    reads off them. Silent when the module is missing or switched off. The
+    crawl itself no longer calls this: it queues those pages (queue_ai), and
+    the extraction job (run_ai_queue) calls this one page at a time."""
     ai = _ai_module()
     if ai is None or not run.ai_pages:
         return 0
     n = 0
     for _bare, text, url in run.ai_pages[:AI_PAGES_MAX]:
-        source_phones = {row['phone'] for row in harvest.extract_phones(text or '')}
         try:
             found = ai.extract_people(text, url, run.roster.names)
-        except Exception:
+        except Exception as e:
+            run.ai_errors.append((url, f"{type(e).__name__}: {getattr(e, 'detail', None) or e}"[:300]))
             continue
-        rows = []
-        for d in found or []:
-            name = harvest.normalise_name(d.get("name"))
-            if not name:
-                continue
-            known = harvest.match_known(name, run.roster.names)
-            rows.append((name, known, harvest.clean_title(d.get("title"), name),
-                         (d.get("email") or "").strip().lower(), d.get("phone") or ""))
-        keyed = [(r, run.key_for(conn, r[0], r[1])) for r in rows]
-        conn.commit()
-        for (name, known, title, email, phone), key in keyed:
-            if not key:
-                continue
-            run.persons.setdefault(key, name)
-            if email:
-                ok, cat, _ = harvest.classify(email, run.site_domain)
-                if ok and cat == "personal" and email in (text or "").lower():
-                    pin(conn, run.crd, "email", email, "ai", person_key=key,
-                        person_name=name, title=title, source_ref=url)
-                    run.person_email.setdefault(key, email)
-                    n += 1
-            p = contacts.norm_phone(phone)
-            if p and p in source_phones and not _shared(run, p, key):
-                pin(conn, run.crd, "phone", p, "ai", person_key=key, person_name=name,
-                    title=title, label=_phone_label(run, p, None, key), source_ref=url)
-                n += 1
-            if title:
-                run.person_title.setdefault(key, title)
-                conn.execute("UPDATE contact_point SET title=? WHERE crd=? AND person_key=?"
-                             " AND title IS NULL", (title, run.crd, key))
-        conn.commit()
+        run.ai_answers.append((url, found or []))
+        n += store_ai(conn, run, found, text, url)
     return n
+
+
+def store_ai(conn, run: FirmRun, found, text: str, url: str) -> int:
+    """Store the people the AI extractor read off one page: what ask_ai did
+    with each answer when it ran inside the crawl, unchanged. An address is
+    kept only when it is printed on the page, a number only when it is the
+    page's and not the firm's shared line; both go in as source 'ai', so an
+    email stays hidden until a mail server confirms it."""
+    n = 0
+    source_phones = {row['phone'] for row in harvest.extract_phones(text or '')}
+    roster = run.known if run.known is not None else run.roster.names
+    rows = []
+    for d in found or []:
+        name = harvest.normalise_name(d.get("name"))
+        if not name:
+            continue
+        known = harvest.match_known(name, roster)
+        rows.append((name, known, harvest.clean_title(d.get("title"), name),
+                     (d.get("email") or "").strip().lower(), d.get("phone") or ""))
+    keyed = [(r, run.key_for(conn, r[0], r[1])) for r in rows]
+    conn.commit()
+    for (name, known, title, email, phone), key in keyed:
+        if not key:
+            continue
+        run.persons.setdefault(key, name)
+        if email:
+            ok, cat, _ = harvest.classify(email, run.site_domain)
+            if ok and cat == "personal" and email in (text or "").lower():
+                pin(conn, run.crd, "email", email, "ai", person_key=key,
+                    person_name=name, title=title, source_ref=url)
+                run.person_email.setdefault(key, email)
+                n += 1
+        p = contacts.norm_phone(phone)
+        if p and p in source_phones and not _shared(run, p, key):
+            pin(conn, run.crd, "phone", p, "ai", person_key=key, person_name=name,
+                title=title, label=_phone_label(run, p, None, key), source_ref=url)
+            n += 1
+        if title:
+            run.person_title.setdefault(key, title)
+            conn.execute("UPDATE contact_point SET title=? WHERE crd=? AND person_key=?"
+                         " AND title IS NULL", (title, run.crd, key))
+    conn.commit()
+    return n
+
+
+# ------------------------------------------------------------------ AI queue
+
+def _ai_text(text: str) -> str:
+    """The part of a page the model is sent (ai.extract_people reads no
+    further), so it is also all the queue stores and hashes."""
+    return (text or "")[:AI_TEXT_CHARS]
+
+
+def content_hash(text: str) -> str:
+    return hashlib.sha256(_ai_text(text).encode("utf-8", "replace")).hexdigest()
+
+
+def _ai_context(run: FirmRun, text: str) -> str:
+    """What store_ai needs from the crawl to judge a number the model reads
+    off this page: the firm's filed line, which of the page's numbers sit in
+    the site's header or footer, and who else each was printed beside."""
+    phones = {r["phone"] for r in harvest.extract_phones(text or "")}
+    return json.dumps({
+        "site_domain": run.site_domain, "main_phone": run.main_phone,
+        "sitewide": sorted(phones & run.sitewide),
+        "person_phone": {p: sorted(run.person_phone[p]) for p in sorted(phones)
+                         if p in run.person_phone}})
+
+
+def queue_ai(conn, run: FirmRun, complete: bool = True) -> dict:
+    """Hand the pages the rules struggled with to the AI extraction job.
+
+    A page whose text the model already read is not sent again: the answer it
+    gave is stored with it and applied here, exactly as a fresh one would be,
+    at no cost. Anything else (new, changed, or failed before) is queued for
+    the job, except text the model kept failing on in the last AI_RETRY_DAYS.
+    Pages this read no longer ranks lose their queued text, and once a read
+    was complete, their stored answers too."""
+    out = {"replayed": 0, "queued": 0, "stored": 0}
+    if not _ai_wanted():
+        return out
+    keep = []
+    for bare, text, url in run.ai_pages[:AI_PAGES_MAX]:
+        keep.append(url)
+        h = content_hash(text)
+        row = conn.execute("SELECT status, content_hash, answer, done_at FROM web_ai_page"
+                           " WHERE crd=? AND url=?", (run.crd, url)).fetchone()
+        conn.commit()
+        if (row and row["status"] == "failed" and row["content_hash"] == h
+                and (row["done_at"] or "") > _later(-AI_RETRY_DAYS * 24 * 60)):
+            continue          # the model kept failing on this very text lately
+        if row and row["status"] == "done" and row["content_hash"] == h:
+            try:
+                found = json.loads(row["answer"] or "[]")
+            except ValueError:
+                found = None
+            if isinstance(found, list):
+                out["stored"] += store_ai(conn, run, found, _ai_text(text), url)
+                out["replayed"] += 1
+                continue
+        now = _now()
+        conn.execute(
+            "INSERT INTO web_ai_page (crd, url, content_hash, page_text, bare, context, status,"
+            " queued_at, attempts) VALUES (?,?,?,?,?,?,'queued',?,0)"
+            " ON CONFLICT (crd, url) DO UPDATE SET content_hash=excluded.content_hash,"
+            " page_text=excluded.page_text, bare=excluded.bare, context=excluded.context,"
+            " status='queued', answer=NULL, stored=NULL, done_at=NULL, error=NULL,"
+            # Still waiting with the same text: it keeps its place and its tries.
+            " queued_at=CASE WHEN web_ai_page.status='queued' AND web_ai_page.content_hash"
+            "=excluded.content_hash THEN web_ai_page.queued_at ELSE excluded.queued_at END,"
+            " attempts=CASE WHEN web_ai_page.status='queued' AND web_ai_page.content_hash"
+            "=excluded.content_hash THEN web_ai_page.attempts ELSE 0 END",
+            (run.crd, url, h, _ai_text(text), int(bare), _ai_context(run, text), now))
+        out["queued"] += 1
+    gone = "" if complete else " AND status != 'done'"
+    if keep:
+        marks = ",".join("?" * len(keep))
+        conn.execute(f"DELETE FROM web_ai_page WHERE crd=? AND url NOT IN ({marks}){gone}",
+                     (run.crd, *keep))
+    else:
+        conn.execute(f"DELETE FROM web_ai_page WHERE crd=?{gone}", (run.crd,))
+    conn.commit()
+    return out
+
+
+def extract_room(conn) -> tuple[int, str]:
+    """Calls the extraction job may still make today, and what limits it:
+    its own share of ai.daily_limit, or what is left above the reserve AI
+    research keeps for people asking questions in the app. Matches the
+    backlog the job registry counts, so a job out of room is not restarted."""
+    from prospect import ai, research
+    limit = settings.get_int("ai.daily_limit", 400)
+    day = datetime.now(timezone.utc).date().isoformat()
+    r = conn.execute("SELECT COUNT(*) n FROM ai_call WHERE at >= ? AND feature='extract'",
+                     (day,)).fetchone()
+    conn.commit()
+    used = int(r["n"] or 0)
+    share = int(limit * EXTRACT_SHARE) - used
+    overall = ai.budget_left() - research.reserve()
+    return (share, "its share of today's AI allowance is used") if share <= overall else \
+        (overall, "the rest of today's AI allowance is kept for research and questions")
+
+
+def _queued_run(conn, row, people, rosters: dict) -> FirmRun:
+    """A FirmRun carrying what the crawl that queued this page knew."""
+    ctx = json.loads(row["context"] or "{}")
+    run = FirmRun(crd=row["crd"], now=_now(), people_mod=people,
+                  site_domain=ctx.get("site_domain") or "", main_phone=ctx.get("main_phone"))
+    run.sitewide = set(ctx.get("sitewide") or [])
+    run.person_phone = {p: set(v) for p, v in (ctx.get("person_phone") or {}).items()}
+    if row["crd"] not in rosters:
+        rosters[row["crd"]] = load_roster(conn, row["crd"], people)
+        conn.commit()
+    run.roster = rosters[row["crd"]]
+    run.known = harvest.KnownNames(run.roster.names)
+    run.ai_pages = [(row["bare"], row["page_text"] or "", row["url"])]
+    return run
+
+
+def settle_ai_people(conn, run: FirmRun, url: str) -> None:
+    """What the end of a crawl did with the people the model found, when it
+    asked inline: their web_contact rows (finish_people), so the email hunt
+    sees them before the site is read again; and no pattern guess for anyone
+    the model gave an address, since learn_and_guess never guesses for a
+    person who has one. The next read replays the stored answer and does all
+    of this itself. A person already in web_contact only gains a missing title."""
+    for key in run.person_email:
+        # Only this job's own unchecked guesses, as prune_stale would retire them.
+        conn.execute("DELETE FROM contact_point WHERE crd=? AND person_key=? AND kind='email'"
+                     " AND source='pattern' AND sources='pattern' AND source_ref LIKE 'pattern:%'"
+                     " AND verify_status IN ('unverified','queued')", (run.crd, key))
+    have: dict[str, list[int]] = {}
+    for r in conn.execute("SELECT id, person FROM web_contact WHERE crd=? AND person IS NOT NULL",
+                          (run.crd,)).fetchall():
+        have.setdefault(contacts.name_key(r["person"]), []).append(r["id"])
+    for key, name in run.persons.items():
+        title, email = run.person_title.get(key), run.person_email.get(key)
+        if not (title or email):
+            continue
+        ids = have.get(contacts.name_key(name))
+        if ids:
+            if title:
+                conn.execute(f"UPDATE web_contact SET title=? WHERE id IN ({','.join('?' * len(ids))})"
+                             " AND title IS NULL", (title, *ids))
+        else:
+            web_contact_row(conn, run.crd, name, title, email, None, url, run.now)
+    conn.commit()
+
+
+def run_ai_queue(conn, *, limit: int = 30, seconds: float = 600, crd: str | None = None) -> Counter:
+    """Read queued pages with the AI extractor, best firms first, within the
+    job's share of the day's allowance. Each answer is stored exactly as the
+    crawl used to store it (store_ai) and kept with the page, so the next read
+    of an unchanged site replays it instead of asking again."""
+    stats: Counter = Counter()
+    if _ai_module() is None:
+        stats["not_enabled"] = 1
+        return stats
+    started = time.monotonic()
+    rows = conn.execute(
+        "SELECT q.crd, q.url FROM web_ai_page q LEFT JOIN firm_scope s ON s.crd = q.crd"
+        " WHERE q.status = 'queued'" + (" AND q.crd = ?" if crd else "") +
+        " ORDER BY s.priority DESC NULLS LAST, q.bare DESC, q.queued_at LIMIT ?",
+        ((crd, limit) if crd else (limit,))).fetchall()
+    conn.commit()
+    people = _people_module(conn)
+    conn.commit()
+    rosters: dict = {}
+    errors_in_a_row = 0
+    for ref in rows:
+        if time.monotonic() - started > seconds:
+            stats["stopped_for_time"] = 1
+            break
+        room, why = extract_room(conn)
+        if room < CALLS_PER_PAGE:
+            stats["stopped_for_budget"] = 1
+            stats["why:" + why] = 1
+            break
+        row = conn.execute("SELECT * FROM web_ai_page WHERE crd=? AND url=? AND status='queued'",
+                           (ref["crd"], ref["url"])).fetchone()
+        conn.commit()
+        if row is None:
+            continue          # the site was read again meanwhile and it went
+        try:
+            run = _queued_run(conn, row, people, rosters)
+            n = ask_ai(conn, run)
+        except Exception as e:  # one page must not sink the run
+            conn.rollback()
+            run = None
+            n, err = 0, f"{type(e).__name__}: {e}"[:300]
+        else:
+            err = run.ai_errors[0][1] if run.ai_errors else None
+            if not err and not run.ai_answers:
+                stats["stopped_for_budget"] = 1      # switched off, or the allowance ran out
+                break
+        if err:
+            tries = int(row["attempts"] or 0) + 1
+            conn.execute("UPDATE web_ai_page SET attempts=?, error=?, status=?, done_at=?"
+                         " WHERE crd=? AND url=? AND content_hash=?",
+                         (tries, err, "failed" if tries >= AI_TRIES else "queued", _now(),
+                          row["crd"], row["url"], row["content_hash"]))
+            conn.commit()
+            stats["errors"] += 1
+            errors_in_a_row += 1
+            if errors_in_a_row >= AI_ERRORS_IN_A_ROW:
+                stats["stopped_for_error"] = 1
+                stats["error:" + err[:120]] = 1
+                break
+            continue
+        errors_in_a_row = 0
+        found = run.ai_answers[0][1]
+        if not found and _ai_module() is None:
+            # ai.extract_people answers [] without asking once the allowance
+            # is gone; that is not the page's answer, so it stays queued.
+            stats["stopped_for_budget"] = 1
+            break
+        settle_ai_people(conn, run, row["url"])
+        # Only the text that was read is marked read: a newer read of the
+        # site may have queued different text for this page meanwhile.
+        conn.execute("UPDATE web_ai_page SET status='done', answer=?, stored=?, done_at=?,"
+                     " page_text=NULL, error=NULL, attempts=attempts+1"
+                     " WHERE crd=? AND url=? AND content_hash=?",
+                     (json.dumps(found), n, _now(), row["crd"], row["url"], row["content_hash"]))
+        conn.commit()
+        stats["pages"] += 1
+        stats["people"] += len(found)
+        stats["stored"] += n
+    stats["seconds"] = int(time.monotonic() - started)
+    return stats
+
+
+def ai_summary(stats: Counter) -> str:
+    if stats.get("not_enabled"):
+        return ("AI page reading is off: no provider, the feature is switched off, or today's"
+                " allowance is used")
+    parts = [f"{stats.get('pages', 0)} pages read", f"{stats.get('people', 0)} people named",
+             f"{stats.get('stored', 0)} emails and phones stored"]
+    if stats.get("errors"):
+        parts.append(f"{stats['errors']} calls failed")
+    why = next((k[4:] for k in stats if k.startswith("why:")), None)
+    if stats.get("stopped_for_budget"):
+        parts.append(f"stopped: {why}" if why else "stopped for budget")
+    if stats.get("stopped_for_time"):
+        parts.append("stopped for time")
+    err = next((k[6:] for k in stats if k.startswith("error:")), None)
+    if err:
+        parts.append(f"stopped: {err}")
+    return f"AI page reading in {stats.get('seconds', 0)}s: " + ", ".join(parts)
 
 
 def attribute_leftovers(conn, run: FirmRun) -> int:
@@ -782,7 +1125,7 @@ def prune_stale(conn, run: FirmRun) -> None:
     conn.commit()
 
 
-def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
+def enrich_one(conn, crawler: Crawler, crd: str, website: str, people, renew=None) -> dict:
     """Read one firm's site and store what it says.
 
     Commits after every page and never writes while a page is being fetched.
@@ -790,13 +1133,18 @@ def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
     reader for the length of the crawl; on Postgres it would hold row locks
     and a connection slot just as long. So the crawler calls back between
     fetches (store_page), each callback commits before returning, and every
-    database read a page needs happens before that page's writes."""
+    database read a page needs happens before that page's writes.
+
+    `renew()`, when given, is called between pages to keep this shard's claim
+    on the firm alive."""
     run = FirmRun(crd=crd, now=_now(), people_mod=people)
     r = conn.execute("SELECT phone, business_name, legal_name FROM firm_current WHERE crd=?",
                      (crd,)).fetchone()
     run.main_phone = contacts.norm_phone(r["phone"]) if r and r["phone"] else None
     run.firm_names = [n for n in ((r["business_name"], r["legal_name"]) if r else ()) if n]
     run.roster = load_roster(conn, crd, people)
+    # Matched against every page of the site: names' parts and patterns once.
+    run.known = harvest.KnownNames(run.roster.names)
     host = urlparse(website if "://" in website else "https://" + website).hostname or ""
     run.site_domain = harvest.registrable(host)
     conn.commit()
@@ -806,17 +1154,22 @@ def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
             final = urlparse(page.final_url).hostname or ""
             run.site_domain = harvest.registrable(final) or run.site_domain
         store_page(conn, run, page)
+        if renew:
+            renew()
 
     pages = crawler.crawl_site(website, on_page=on_page)
     conn.commit()
+    if renew:
+        renew()
     err = crawler.root_error or ""
     if err == "no website" or err.startswith("website forwards to a client login"):
         status = "no_website"
     else:
         status = "ok" if run.pages_ok else "unreachable"
     guesses = 0
+    handed = {"queued": 0, "replayed": 0}
     if status == "ok":
-        ask_ai(conn, run)
+        handed = queue_ai(conn, run, complete=not crawler.root_error)
         attribute_leftovers(conn, run)
         settle_shared_phones(conn, run)
         settle_shared_linkedin(conn, run)
@@ -833,7 +1186,8 @@ def enrich_one(conn, crawler: Crawler, crd: str, website: str, people) -> dict:
     return {"status": status, "pages": run.pages_ok, "people": len(run.persons),
             "emails": len(run.emails), "personal": len(run.personal),
             "phones": len(run.direct), "guesses": guesses, "method": method,
-            "linkedin": len(run.person_li),
+            "linkedin": len(run.person_li), "ai_queued": handed["queued"],
+            "ai_replayed": handed["replayed"],
             "site": pages[0].final_url if pages else website,
             "error": crawler.root_error}
 
@@ -878,13 +1232,97 @@ def save_state(conn, crd: str, res: dict) -> None:
     conn.commit()
 
 
+# ------------------------------------------------------------------ claims
+
+def holder_id(label: str = "") -> str:
+    """Who holds a claim: this process, on this machine."""
+    return f"{socket.gethostname()}:{os.getpid()}" + (f"/{label}" if label else "")
+
+
+def claim(conn, crd: str, holder: str, since: str) -> bool:
+    """Take a firm for this shard. False when another shard holds a live
+    claim on it, or read it after `since`, the moment this shard's list of
+    due firms was drawn (that list cannot know). A lapsed claim is taken over:
+    its shard stopped renewing it, so it died."""
+    now = _now()
+    got = conn.execute(
+        "INSERT INTO web_enrich_claim (crd, holder, claimed_at, expires_at) VALUES (?,?,?,?)"
+        " ON CONFLICT (crd) DO UPDATE SET holder=excluded.holder,"
+        " claimed_at=excluded.claimed_at, expires_at=excluded.expires_at"
+        " WHERE web_enrich_claim.expires_at < ? RETURNING crd",
+        (crd, holder, now, _later(CLAIM_MINUTES), now)).fetchone()
+    if got:
+        r = conn.execute("SELECT scanned_at FROM web_enrich_state WHERE crd=?", (crd,)).fetchone()
+        if r and (r["scanned_at"] or "") >= since:
+            conn.execute("DELETE FROM web_enrich_claim WHERE crd=? AND holder=?", (crd, holder))
+            got = None
+    conn.commit()
+    return bool(got)
+
+
+def renew(conn, crd: str, holder: str) -> None:
+    conn.execute("UPDATE web_enrich_claim SET expires_at=? WHERE crd=? AND holder=?",
+                 (_later(CLAIM_MINUTES), crd, holder))
+    conn.commit()
+
+
+def release(conn, crd: str, holder: str) -> None:
+    conn.execute("DELETE FROM web_enrich_claim WHERE crd=? AND holder=?", (crd, holder))
+    conn.commit()
+
+
+def _renewer(conn, crd: str, holder: str, every_s: float = 60.0):
+    """renew(), at most once a minute: pages come every second or two."""
+    last = [time.monotonic()]
+
+    def go() -> None:
+        if time.monotonic() - last[0] >= every_s:
+            renew(conn, crd, holder)
+            last[0] = time.monotonic()
+    return go
+
+
+def claimed_todo(conn, holder: str, limit: int, seconds: float | None):
+    """Firms for this shard, one at a time, best first, while it has time.
+
+    Every shard walks the same list (todo) and takes the next firm nobody
+    holds, so a shard that drew quick sites simply takes more of them instead
+    of the slice waiting on the one that drew slow ones. The list is drawn
+    again when it runs out and time is left."""
+    t0 = time.monotonic()
+    taken = 0
+    batch = min(max(limit * 3, 60), 300)
+    while taken < limit:
+        since = _now()
+        rows = todo(conn, batch)
+        conn.commit()
+        got_one = False
+        for r in rows:
+            if taken >= limit or (seconds is not None and time.monotonic() - t0 >= seconds):
+                return
+            if not claim(conn, r["crd"], holder, since):
+                continue
+            got_one = True
+            taken += 1
+            yield r
+        if not got_one or len(rows) < batch:
+            return            # nothing due that another shard is not already reading
+        if seconds is not None and time.monotonic() - t0 >= seconds:
+            return
+
+
+# ------------------------------------------------------------------ run
+
 def run_shards(args) -> int:
     """Read --parallel shards at once, one process each, and wait for all.
-    Each shard prints its own firm lines; the last line here sums them up."""
+    Each shard prints its own firm lines; the last line here sums them up.
+    The shards share one list through claims and stop taking firms at the
+    same moment (--seconds), so they finish within a site of each other."""
     import subprocess
     n = args.parallel
+    extra = ["--seconds", str(args.seconds)] if args.seconds is not None else []
     procs = [subprocess.Popen([sys.executable, "-m", "scripts.web_enrich", "--limit", str(args.limit),
-                               "--shard", f"{k}/{n}"], cwd=str(config.ROOT),
+                               "--shard", f"{k}/{n}", *extra], cwd=str(config.ROOT),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                               encoding="utf-8", errors="replace")
              for k in range(n)]
@@ -902,80 +1340,108 @@ def run_shards(args) -> int:
     return 1 if failed == n else 0
 
 
+def read_firm(conn, crawler: Crawler, crd: str, website: str, people, renew_fn=None) -> dict:
+    """One firm, end to end, never raising: what the slice prints and saves."""
+    if not website:
+        return {"status": "no_website", "pages": 0, "people": 0, "emails": 0,
+                "personal": 0, "phones": 0, "guesses": 0, "method": None,
+                "site": None, "error": None}
+    try:
+        return enrich_one(conn, crawler, crd, website, people, renew=renew_fn)
+    except Exception as e:  # one bad site must not end the slice
+        conn.rollback()
+        return {"status": "error", "pages": 0, "people": 0, "emails": 0,
+                "personal": 0, "phones": 0, "guesses": 0, "method": None,
+                "site": website, "error": f"{type(e).__name__}: {e}"[:200]}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=8)
+    ap.add_argument("--limit", type=int, default=8, help="firms per shard, at most")
+    ap.add_argument("--seconds", type=float, default=None,
+                    help="each shard stops taking new firms after this long")
     ap.add_argument("--crd", help="read this one firm now, whatever the schedule says")
     ap.add_argument("--url", help="with --crd: read this address instead of the filed one")
     ap.add_argument("--parallel", type=int, default=1, help="read this many shards at once")
-    ap.add_argument("--shard", help="k/n: read only shard k of n (set by --parallel)")
+    ap.add_argument("--shard", help="k/n: this process is shard k of n (set by --parallel)")
     args = ap.parse_args()
     if args.parallel > 1 and not args.crd and not args.shard:
         return run_shards(args)
-    shard = None
-    if args.shard:
-        k, n = (int(x) for x in args.shard.split("/"))
-        shard = (k, n)
+    holder = holder_id(args.shard or "")
 
     cfg = config.load()
     conn = db.connect()
-    conn.executescript(SCHEMA)
-    conn.executescript(websignals.SCHEMA)
-    for col, decl in STATE_COLUMNS:
-        db.add_column(conn, "web_enrich_state", col, decl)
-    conn.commit()
+    init(conn)
     contacts.init(conn)
     from prospect import jobs
     jobs.init(conn)
+    # Claims a shard left behind more than a day ago: nobody will renew them.
+    conn.execute("DELETE FROM web_enrich_claim WHERE expires_at < ?", (_later(-24 * 60),))
+    conn.commit()
 
     with runlog.Run(conn, "web_enrich", "scrape", cfg.stamp) as run:
         if args.crd:
             r = conn.execute("SELECT crd, website FROM firm_current WHERE crd=?",
                              (args.crd,)).fetchone()
             website = args.url or (r["website"] if r else None)
-            rows = [{"crd": args.crd, "website": website}]
+            # Someone asked for this firm now: hold it so no shard starts on it
+            # meanwhile, whatever claim was there.
+            conn.execute(
+                "INSERT INTO web_enrich_claim (crd, holder, claimed_at, expires_at)"
+                " VALUES (?,?,?,?) ON CONFLICT (crd) DO UPDATE SET holder=excluded.holder,"
+                " claimed_at=excluded.claimed_at, expires_at=excluded.expires_at",
+                (args.crd, holder, _now(), _later(CLAIM_MINUTES)))
+            conn.commit()
+            rows = iter([{"crd": args.crd, "website": website}])
         else:
-            rows = todo(conn, args.limit, shard)
-        conn.commit()
-        if not rows:
-            print("nothing left to enrich")
-            run.skip("all websites read recently")
-            return 0
+            rows = claimed_todo(conn, holder, args.limit, args.seconds)
         people = _people_module(conn)
         conn.commit()
         tot = Counter()
+        n = 0
         with Crawler() as crawler:
             for r in rows:
                 crd, website = r["crd"], (r["website"] or "").strip()
                 t0 = time.monotonic()
-                if not website:
-                    res = {"status": "no_website", "pages": 0, "people": 0, "emails": 0,
-                           "personal": 0, "phones": 0, "guesses": 0, "method": None,
-                           "site": None, "error": None}
-                else:
+                try:
+                    res = read_firm(conn, crawler, crd, website, people,
+                                    _renewer(conn, crd, holder))
+                    save_state(conn, crd, res)
+                finally:
                     try:
-                        res = enrich_one(conn, crawler, crd, website, people)
-                    except Exception as e:  # one bad site must not end the slice
+                        release(conn, crd, holder)
+                    except Exception:
                         conn.rollback()
-                        res = {"status": "error", "pages": 0, "people": 0, "emails": 0,
-                               "personal": 0, "phones": 0, "guesses": 0, "method": None,
-                               "site": website, "error": f"{type(e).__name__}: {e}"[:200]}
-                save_state(conn, crd, res)
-                for k in ("pages", "people", "personal", "phones", "guesses", "linkedin"):
+                n += 1
+                for k in ("pages", "people", "personal", "phones", "guesses", "linkedin",
+                          "ai_queued", "ai_replayed"):
                     tot[k] += res.get(k, 0)
                 why = f" ({res['error']})" if res["status"] != "ok" and res.get("error") else ""
                 via = f", {res['method']}" if res["method"] and res["method"] != "static" else ""
+                q = res.get("ai_queued") or 0
+                left = f", {q} page{'s' if q != 1 else ''} left to the AI" if q else ""
                 print(f"  {crd}: {res['status']}{why}, {res['pages']} pages{via},"
                       f" {res['people']} people, {res['personal']} personal emails,"
                       f" {res['phones']} direct phones, {res['guesses']} guesses,"
-                      f" {res.get('linkedin', 0)} LinkedIn profiles"
+                      f" {res.get('linkedin', 0)} LinkedIn profiles{left}"
                       f" [{time.monotonic() - t0:.0f}s]", flush=True)
+        if not n:
+            print("nothing left to enrich")
+            run.skip("all websites read recently")
+            return 0
+        if args.crd and tot["ai_queued"]:
+            # A person is waiting on this firm: its pages are read now, through
+            # the same queue and within the same share of the allowance. No new
+            # call starts after four minutes (find_contacts allows this step 900s).
+            stats = run_ai_queue(conn, crd=args.crd, limit=AI_PAGES_MAX, seconds=240)
+            print(ai_summary(stats), flush=True)
         jobs.request_run(conn, 'email_verify')
         jobs.request_run(conn, 'rescore')
-        run.rows_out = len(rows)
-        run.note(f"{len(rows)} firms, {tot['pages']} pages, {tot['people']} people,"
+        run.rows_out = n
+        run.note(f"{n} firms, {tot['pages']} pages, {tot['people']} people,"
                  f" {tot['personal']} personal emails, {tot['phones']} direct phones,"
-                 f" {tot['guesses']} pattern guesses, {tot['linkedin']} LinkedIn profiles")
+                 f" {tot['guesses']} pattern guesses, {tot['linkedin']} LinkedIn profiles,"
+                 f" {tot['ai_queued']} pages left to the AI, {tot['ai_replayed']} AI answers reused")
     return 0
 
 

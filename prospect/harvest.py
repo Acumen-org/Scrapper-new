@@ -775,6 +775,57 @@ def _same_last(a: str, b: str) -> bool:
     return bool(pa & pb) and (len(pa) > 1 or len(pb) > 1) or a.replace("-", "") == b.replace("-", "")
 
 
+def _surname_tokens(last: str) -> set[str]:
+    """Every form _same_last can match a surname by: as written, with its
+    hyphens dropped, and each hyphenated part. Two surnames _same_last calls
+    the same always share one of these."""
+    a = last.replace("'", "")
+    return {a, a.replace("-", ""), *a.split("-")}
+
+
+def _fold(s: str) -> str:
+    """Lowercased the way re.IGNORECASE matches ASCII letters: the dotted
+    capital I and the dotless i fold to i, the long s to s. A surname a
+    pattern finds in some text is then always a substring of this."""
+    return s.replace("\u0130", "i").lower().replace("\u0131", "i").replace("\u017f", "s")
+
+
+class KnownNames(list):
+    """A firm's roster names, with what matching them needs worked out once.
+
+    The roster is matched against every page of the firm's site. Working out
+    each name's parts and search pattern again on every page, and trying every
+    name against every line, made large rosters slow (quadratic in the
+    roster). It is still a list of the names, so anything that takes the list
+    takes this; build it once the roster is complete."""
+
+    def __init__(self, names=()):
+        super().__init__(names)
+        self._n = len(self)
+        self.parts = {n: _parts(n) for n in self}
+        self.keys = {n: contacts.name_key(n) for n in self}
+        self.rx = {n: _variant_regex(n) for n in self}
+        # Surname pieces that must all be on a page for a name's pattern to
+        # match anywhere on it (the pattern allows a space for a hyphen).
+        self.pieces = {n: [x for x in p[2].split("-") if x] if p else None
+                       for n, p in self.parts.items()}
+        self.by_last: dict[str, list[int]] = {}
+        for i, n in enumerate(self):
+            p = self.parts[n]
+            if p:
+                for t in _surname_tokens(p[2]):
+                    self.by_last.setdefault(t, []).append(i)
+
+    def fresh(self) -> bool:
+        """False once names were added after it was built: then the slow
+        path runs, so a stale cache can never change an answer."""
+        return len(self) == self._n
+
+
+def _cached(known_names) -> KnownNames | None:
+    return known_names if isinstance(known_names, KnownNames) and known_names.fresh() else None
+
+
 def match_known(name: str, known_names: list[str]) -> str | None:
     """The roster name this page name refers to, when exactly one fits."""
     p = _parts(name)
@@ -783,8 +834,14 @@ def match_known(name: str, known_names: list[str]) -> str | None:
     hits = []
     # "W. Kirk Dunk" goes by Kirk: an initial first means the next name counts.
     givens = [p[0]] + [m for m in p[1] if len(m) > 1] if len(p[0]) == 1 else [p[0]]
-    for k in known_names:
-        q = _parts(k)
+    kn = _cached(known_names)
+    pool = known_names
+    if kn is not None:
+        # Only names sharing a surname form can fit, in roster order as before.
+        pool = [kn[i] for i in sorted({i for t in _surname_tokens(p[2])
+                                       for i in kn.by_last.get(t, ())})]
+    for k in pool:
+        q = kn.parts[k] if kn is not None else _parts(k)
         if not q or not _same_last(p[2], q[2]):
             continue
         if any(_given_ok(g, [q[0]] + q[1]) for g in givens if len(g) > 1):
@@ -910,18 +967,19 @@ def _card_linkedin(links: list[tuple[str, str]], name: str) -> str | None:
     return None
 
 
-def linkedin_links(html: str, url: str = "") -> dict:
+def linkedin_links(html: str, url: str = "", doc=None) -> dict:
     """LinkedIn links on one page, split for the caller:
         company        company pages anywhere on the page (usually the footer)
         company_chrome the subset of those in the header, footer or menus
         people         profile links in the page body
         chrome_people  profile links in the header, footer or menus, which on
                        a one-adviser site are often the founder's own
-    All canonical (contacts.norm_linkedin)."""
+    All canonical (contacts.norm_linkedin). `doc` is the page already parsed
+    (parse_page), so a page is parsed once however many readers it has."""
     out: dict = {"company": [], "company_chrome": [], "people": [], "chrome_people": []}
     if not html or "linkedin" not in html.lower():
         return out
-    doc = _Doc(html, url)
+    doc = doc if doc is not None else _Doc(html, url)
     if doc.root is None:
         return out
     for p, _el, href, _ in doc.anchors:
@@ -1322,12 +1380,13 @@ def extract_emails(html: str, site_domain: str = "", *, _text: str | None = None
     return out
 
 
-def extract_phones(html_or_text: str) -> list[dict]:
+def extract_phones(html_or_text: str, doc=None) -> list[dict]:
     """[{phone, label}] from tel: links and visible text. US numbers only,
-    normalised to (555) 555-5555 with any extension; fax numbers dropped."""
+    normalised to (555) 555-5555 with any extension; fax numbers dropped.
+    `doc`: the page already parsed (parse_page)."""
     s = html_or_text or ""
     if "<" in s and ">" in s:
-        doc = _Doc(s)
+        doc = doc if doc is not None else _Doc(s)
         if doc.root is not None:
             tels = [(href, _anchor_label(doc, el)) for _, el, href, _ in doc.anchors
                     if href.lower().startswith("tel:")]
@@ -1335,10 +1394,11 @@ def extract_phones(html_or_text: str) -> list[dict]:
     return _phones_from(s.splitlines(), [])
 
 
-def chrome_phones(html: str) -> set[str]:
+def chrome_phones(html: str, doc=None) -> set[str]:
     """Numbers printed in the site's header, footer or menus. Those are the
-    firm's own lines, repeated on every page, never one person's direct dial."""
-    doc = _Doc(html)
+    firm's own lines, repeated on every page, never one person's direct dial.
+    `doc`: the page already parsed (parse_page)."""
+    doc = doc if doc is not None else _Doc(html)
     if doc.root is None:
         return set()
     lines = [t for p, t in doc.lines if p in doc.chrome]
@@ -1461,12 +1521,12 @@ def email_fits(email: str, name: str) -> bool:
     return _email_fits(email, name)
 
 
-def _email_fits(email: str, name: str) -> bool:
+def _email_fits(email: str, name: str, known=None) -> bool:
     """Does the local part fit this person's name under a known pattern? The
     page name, its nicknames and middle names are all tried, so jim.smith@
-    fits James Smith."""
+    fits James Smith. `known` (a KnownNames) supplies parts worked out once."""
     local = email.split("@", 1)[0].lower()
-    p = _parts(name)
+    p = known.parts[name] if known is not None and name in known.parts else _parts(name)
     if not p:
         return False
     first, middles, last = p
@@ -1715,10 +1775,11 @@ def _title_near(lines: list[str], name: str, inline: str | None,
     return None
 
 
-def _best_email(personal: list[str], name: str, others=()) -> str | None:
+def _best_email(personal: list[str], name: str, others=(), known=None) -> str | None:
     """The card's own address: one that fits the name, else the only personal
     address in the card, unless that one fits somebody else's name (a deal
-    page naming its partner contact, an assistant's card)."""
+    page naming its partner contact, an assistant's card). `known` (a
+    KnownNames) supplies roster keys and parts worked out once."""
     if not personal:
         return None
     for e in personal:
@@ -1727,7 +1788,9 @@ def _best_email(personal: list[str], name: str, others=()) -> str | None:
     if len(personal) != 1:
         return None
     me = contacts.name_key(name)
-    if any(_email_fits(personal[0], o) for o in others if contacts.name_key(o) != me):
+    keys = known.keys if known is not None else {}
+    if any(_email_fits(personal[0], o, known) for o in others
+           if (keys[o] if o in keys else contacts.name_key(o)) != me):
         return None
     return personal[0]
 
@@ -1749,7 +1812,7 @@ _BIO_LINK_TEXT = re.compile(r"\b(bio|biography|profile|read more|learn more|view
 
 def _person_from_region(doc: _Doc, el, name: str, inline: str | None, start: int,
                         end: int, site_domain: str, url: str, method: str,
-                        others=()) -> PersonHit:
+                        others=(), known=None) -> PersonHit:
     """One person read from the region [start, end] around their name element:
     title from the lines after the name (or just before it), the address that
     fits them, their best phone, and a link to their bio page."""
@@ -1758,7 +1821,7 @@ def _person_from_region(doc: _Doc, el, name: str, inline: str | None, start: int
     after = [t for p, t in doc.lines_in(name_pos, end)]
     before = [t for p, t in doc.lines_in(start, name_pos - 1)] if name_pos > start else []
     title = _title_near(after, name, inline, before)
-    email = _best_email(personal, name, others)
+    email = _best_email(personal, name, others, known)
     phone, label, more_phones = _pick_phone(phones)
     bio = None
     page = urlparse(url)
@@ -1811,7 +1874,7 @@ def _card_people(doc: _Doc, site_domain: str, url: str, known_names: list[str]) 
                 start, end = doc.pos[card], doc.end[card]
             hits.append(_person_from_region(doc, c.el, c.name, c.inline_title,
                                             start, end, site_domain, url, "card",
-                                            peers + known_names))
+                                            peers + known_names, _cached(known_names)))
         # A group counts only if it looks like a team: some members carry a
         # title, a personal email, or a name we already know.
         good = sum(1 for h in hits if h.title or h.email or match_known(h.name, known_names))
@@ -1864,7 +1927,7 @@ def _bio_person(doc: _Doc, site_domain: str, url: str, known_names: list[str],
         start = doc.pos[card]
         end = doc.end[card]
         h = _person_from_region(doc, el, name, inline, start, end, site_domain, url,
-                                "card", known_names)
+                                "card", known_names, _cached(known_names))
         if h.title or h.email or match_known(name, known_names):
             if not h.linkedin:
                 # A bio page's LinkedIn icon often sits outside the text
@@ -1902,11 +1965,26 @@ def name_regex(full: str) -> re.Pattern | None:
 def _known_people(doc: _Doc, site_domain: str, url: str, known_names: list[str],
                   have: set[str]) -> list[PersonHit]:
     out = []
-    rxs = {k: _variant_regex(k) for k in known_names}
-    for full in known_names:
-        if contacts.name_key(full) in have:
+    kn = _cached(known_names)
+    rxs = kn.rx if kn is not None else {k: _variant_regex(k) for k in known_names}
+    # A name whose surname is nowhere on the page cannot match any line of it,
+    # so only the names that pass this cheap test have their patterns run.
+    page = _fold(doc.text())
+    present = {}
+    for k, r in rxs.items():
+        if r is None:
             continue
-        rx = rxs.get(full)
+        if kn is not None:
+            pieces = kn.pieces[k]
+        else:
+            p = _parts(k)
+            pieces = [x for x in p[2].split("-") if x] if p else None
+        if pieces is not None and all(x in page for x in pieces):
+            present[k] = r
+    for full in known_names:
+        if (kn.keys[full] if kn is not None else contacts.name_key(full)) in have:
+            continue
+        rx = present.get(full)
         if rx is None:
             continue
         best = None
@@ -1934,7 +2012,7 @@ def _known_people(doc: _Doc, site_domain: str, url: str, known_names: list[str],
             if doc.text_len(cur) > 900:
                 break
             blob = " ".join(t for _, t in doc.lines_in(doc.pos[cur], doc.end[cur]))
-            if any(k != full and r is not None and r.search(blob) for k, r in rxs.items()):
+            if any(k != full and r.search(blob) for k, r in present.items()):
                 break
             card = cur
             cur = cur.getparent()
@@ -1943,7 +2021,7 @@ def _known_people(doc: _Doc, site_domain: str, url: str, known_names: list[str],
         else:
             start, end = doc.pos[card], doc.end[card]
         h = _person_from_region(doc, el, shown_name, None, start, end, site_domain,
-                                url, "known_name", known_names)
+                                url, "known_name", known_names, kn)
         h.known = full
         out.append(h)
     return out
@@ -1969,12 +2047,13 @@ def _vcard_hit(text: str, url: str, known_names: list[str]) -> list[PersonHit]:
 
 
 def extract_people(html: str, url: str, known_names: list[str] | None = None,
-                   site_domain: str | None = None) -> list[PersonHit]:
+                   site_domain: str | None = None, *, doc=None) -> list[PersonHit]:
     """People on one page, merged so each person appears once.
 
     `known_names` are roster display names ("Jane A. Doe"); a page name that
-    fits one is tagged with it in `known`. A vCard body is recognised and read
-    as one."""
+    fits one is tagged with it in `known`. Pass a KnownNames built once per
+    firm when reading many pages of one site. A vCard body is recognised and
+    read as one. `doc` is the page already parsed (parse_page)."""
     known_names = known_names or []
     if not html:
         return []
@@ -1984,7 +2063,7 @@ def extract_people(html: str, url: str, known_names: list[str] | None = None,
 
     hits: list[PersonHit] = _jsonld_people(html, url)
     hits = [h for h in hits if h.has_data() or match_known(h.name, known_names)]
-    doc = _Doc(html, url)
+    doc = doc if doc is not None else _Doc(html, url)
     if doc.root is not None:
         cards, used = _card_people(doc, site_domain, url, known_names)
         hits += cards
@@ -2022,14 +2101,15 @@ def extract_people(html: str, url: str, known_names: list[str] | None = None,
     emails = extract_emails(html, site_domain, _text=doc.text() if doc.root is not None else None)
     claimed = {h.email for h in merged.values() if h.email}
     people = list(merged.values())
+    kn = _cached(known_names)
     candidates = [(h.known or h.name, h) for h in people]
     candidates += [(k, None) for k in known_names
-                   if contacts.name_key(k) not in merged]
+                   if (kn.keys[k] if kn is not None else contacts.name_key(k)) not in merged]
     for e in emails:
         if e["category"] != "personal" or e["email"] in claimed:
             continue
-        fits = [(n, h) for n, h in candidates if _email_fits(e["email"], n)
-                or (h is not None and _email_fits(e["email"], h.name))]
+        fits = [(n, h) for n, h in candidates if _email_fits(e["email"], n, kn)
+                or (h is not None and _email_fits(e["email"], h.name, kn))]
         keys = {contacts.name_key(n) for n, _ in fits}
         if len(keys) != 1:
             continue
@@ -2048,10 +2128,19 @@ def extract_people(html: str, url: str, known_names: list[str] | None = None,
     return list(merged.values())
 
 
-def visible_text(html: str) -> str:
+def parse_page(html: str, url: str = "") -> _Doc:
+    """One page parsed for every reader here. The crawler parses each page it
+    fetches once and hands this to extract_people, extract_phones,
+    chrome_phones, linkedin_links and visible_text as `doc`; each used to
+    parse the same page again for itself."""
+    return _Doc(html, url)
+
+
+def visible_text(html: str, doc=None) -> str:
     """The page's visible text, one block per line. Used by the crawler to
-    decide whether a page is an empty JavaScript shell."""
-    doc = _Doc(html)
+    decide whether a page is an empty JavaScript shell. `doc`: the page
+    already parsed (parse_page)."""
+    doc = doc if doc is not None else _Doc(html)
     if doc.root is None:
         return _visible_text_cheap(html or "")
     return doc.text()

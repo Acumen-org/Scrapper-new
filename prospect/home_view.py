@@ -436,7 +436,7 @@ def home(type: str = "", product: str = "", state: str = "", focus: str = ""):
     fresh.append(f"{d['brochures']:,} brochures read")
     fresh.append(f"{d['sites']:,} firm websites read")
     if d.get("scored_at"):
-        fresh.append(f"scores computed {esc(ui.ago(d['scored_at']))}")
+        fresh.append(f"scores last changed {esc(ui.ago(d['scored_at']))}")
 
     # One useful shortlist, scoped without losing the rest of the dashboard.
     candidates = []

@@ -1223,7 +1223,7 @@ SOURCE_LABEL = {
     "growth": "Growth", "directories": "Directories", "open_roles": "Open roles",
     "email_hunt": "Email hunt", "contacts": "Contacts", "diff_snapshots": "Change detection",
     "firm_overlay": "Firm overlay", "custodian_share": "Custodian share",
-    "firm_history": "Firm history", "ai_research": "AI contact research",
+    "firm_history": "Firm history", "ai_research": "AI contact research", "ai_extract": "AI page reading",
     "firm_adv_extra": "Form ADV extra answers", "firm_adv_profile": "Form ADV profile",
     "firm_refresh": "Custodian refresh", "adv_filing_crosswalk": "ADV filing archive",
     "schedule_a_b": "Schedule A and B", "schedule_d_archive": "Schedule D archive",

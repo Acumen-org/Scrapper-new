@@ -12,11 +12,17 @@ prospect/products.py; this is only the command that runs them over the whole
 universe and prints what came out, so a change in the rules shows up as a
 change in these numbers the same day.
 
-    python -m scripts.score_products
+Every firm is evaluated, but only the rows whose result changed are written
+(usually those of the few firms whose data moved since the last run), and the
+run note says how many rows were added, updated and removed. --full deletes
+and rewrites both tables the old way; the result is the same.
+
+    python -m scripts.score_products [--full]
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -26,13 +32,19 @@ from prospect import config, db, products, runlog  # noqa: E402
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--full", action="store_true",
+                    help="delete and rewrite every row instead of only the changed ones")
+    args = ap.parse_args()
     cfg = config.load()
     conn = db.connect()
     products.init(conn)
 
     with runlog.Run(conn, "product_score", "score", products.stamp()) as run:
+        wrote: dict = {}
         counts = products.score_all(
-            conn, progress=lambda i, n: print(f"  {i:,}/{n:,} firms", flush=True))
+            conn, progress=lambda i, n: print(f"  {i:,}/{n:,} firms", flush=True),
+            stats=wrote, full=args.full)
         lines = []
         for key in products.product_keys():
             p = products.product(key)
@@ -53,11 +65,17 @@ def main() -> int:
                          f"   removed={dq:,} ({by_type:,} by firm type)"
                          f"   lowered as not a usual buyer={lowered:,}")
         scope = conn.execute("SELECT COUNT(*) n FROM firm_scope").fetchone()["n"]
+        changed = (f"rows written: {wrote.get('added', 0):,} added, {wrote.get('updated', 0):,}"
+                   f" updated, {wrote.get('removed', 0):,} removed,"
+                   f" {wrote.get('unchanged', 0):,} unchanged; {wrote.get('scope_changed', 0):,}"
+                   f" firm scope rows changed; {wrote.get('reranked', 0)} lists re-ranked"
+                   + (" (full rewrite)" if args.full else ""))
         for ln in lines:
             print(ln)
         print(f"{scope:,} firms are on at least one product list")
+        print(changed)
         run.rows_out = scope
-        run.note("; ".join(lines))
+        run.note("; ".join(lines + [changed]))
     return 0
 
 

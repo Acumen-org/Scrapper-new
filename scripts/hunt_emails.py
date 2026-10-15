@@ -12,7 +12,12 @@ exit.
     add --engine auto|reacher|native to override the Settings choice
 
 Prints one line of aggregate numbers. Never an address or a name: the output
-lands in job logs and CI.
+lands in job logs and CI. "stopped: our DNS resolvers are failing" means
+this machine's resolvers stopped answering (even for a domain that always
+resolves) or reported more broken domains than ever happen by chance: the
+run ended at once and recorded nothing more, and the firms keep their place
+for the next run. firms_dns_broken counts firms whose own domain's DNS gives
+no answer; they are asked again after 7, 30, then 90 days.
 """
 
 from __future__ import annotations

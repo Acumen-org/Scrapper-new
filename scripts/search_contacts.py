@@ -1,14 +1,23 @@
 """Find people's public LinkedIn profiles, and addresses their firm's people
 published on the open web, through free search engines (prospect.websearch).
 
-Order: in-scope firms by priority, best first; within a firm, Schedule A
-officers first, then everyone else on the roster. A first pass gives every
-firm its leadership and first PER_FIRM people before going deeper at any one
-firm, so a 25,000-person firm near the top of the list cannot hold the queue
-for weeks. Any missing verified email, personal phone or matched LinkedIn
-keeps a person eligible. The retry interval is editable in Crawling (14 days
-by default); blank search responses are retried after 7 days. Unranked firms
-are included after the prioritised first pass.
+Order: the engines answer only a dozen or so queries before they start
+refusing, so each slice goes to the people who matter most. In-scope firms by
+priority, best first, a firm's people together (its firm-wide searches serve
+all of them); within a firm, the people a list sells to first: Schedule A
+officers, then holders of a designation (an HR leader, a COO, a compliance
+chief: the People index has them tagged), then other leaders, then everyone
+else. A first pass gives every firm those first PER_FIRM people before going
+deeper at any one firm, so a 25,000-person firm near the top of the list
+cannot hold the queue for weeks. People who already have a matched LinkedIn
+profile come after everyone without one: the search finds profiles best,
+and their other channels are the email hunt's and AI research's. Any missing
+verified email, personal phone or matched LinkedIn still keeps a person
+eligible. The retry interval is editable in Crawling (14 days by default);
+blank search responses are retried after 7 days. Unranked firms are included
+after the prioritised first pass. Nobody waits for ever: first searches go
+before retries, retries oldest first, and every tier ahead of a person is
+finite.
 
 For each firm, before its people:
   - one pair of searches for addresses published at the firm's mail domain,
@@ -42,25 +51,27 @@ RESEARCH_DAYS = 60
 EMPTY_RETRY_DAYS = 7     # every search came back blank: as likely a hiccup as a fact
 PER_FIRM = 25            # people per firm in the first pass over all firms
 
-# Everyone at an in-scope firm, ranked within the firm (officers first) over
-# the whole roster, so the rank does not shift as people are searched. Then
-# only those not searched lately and missing at least one channel, first pass
-# (rank <= PER_FIRM) before second, best firms first within each pass.
-# First-time searches precede retries; retries are oldest first.
+# Everyone at a firm, ranked within the firm by role (ROLE) over the whole
+# roster, so the rank does not shift as people are searched. Then only those
+# not searched lately and missing at least one channel: people without a
+# matched LinkedIn profile before people with one; first-time searches before
+# retries, retries oldest first; first pass (rank <= PER_FIRM) before second;
+# best firms first, a firm's people together.
 TODO_SQL = """
 WITH ranked AS (
   SELECT e.org_pk AS crd, e.indvl_pk, p.name, p.first_name, p.middle_name, p.last_name,
          p.other_names, s.priority,
-         row_number() OVER (PARTITION BY e.org_pk ORDER BY
-           EXISTS (SELECT 1 FROM schedule_a a WHERE a.crd = e.org_pk AND a.is_individual = 1
-                   AND upper(a.name) LIKE upper(p.last_name) || ',%' || upper(p.first_name) || '%')
-           DESC, p.name, e.indvl_pk) AS rn
+         row_number() OVER (PARTITION BY e.org_pk ORDER BY {role}, p.name, e.indvl_pk) AS rn
     FROM person_employment e
     LEFT JOIN firm_scope s ON s.crd = e.org_pk
     JOIN person p ON p.indvl_pk = e.indvl_pk
+    {join}
    WHERE e.kind = 'current' {crd_filter}
 )
-SELECT r.* FROM ranked r
+SELECT r.*, EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd = r.crd
+                    AND c.person_key = 'i:' || r.indvl_pk AND c.kind = 'linkedin'
+                    AND c.verify_status = 'matched') AS linked
+  FROM ranked r
  LEFT JOIN contact_search_state previous ON previous.crd=r.crd
       AND previous.person_key='i:' || r.indvl_pk
  WHERE NOT EXISTS (SELECT 1 FROM contact_search_state x WHERE x.crd = r.crd
@@ -76,10 +87,21 @@ SELECT r.* FROM ranked r
      OR NOT EXISTS (SELECT 1 FROM usable_contact_point c WHERE c.crd = r.crd
                    AND c.person_key = 'i:' || r.indvl_pk AND c.kind = 'phone'
                    AND COALESCE(c.label, '') NOT IN ('main','office','toll_free')))
- ORDER BY previous.searched_at NULLS FIRST, (r.rn > ?),
+ ORDER BY linked, previous.searched_at NULLS FIRST, (r.rn > ?),
           r.priority DESC NULLS LAST, r.crd, r.rn
  LIMIT ?
 """
+
+# Who a list sells to, first. The People index has each person's Schedule A
+# match, designations (ATS's HR leader, talent acquisition and COO among them)
+# and leadership title worked out already, so reading them costs one join.
+ROLE = ("COALESCE(pi.is_officer, 0) DESC, (pi.desig IS NOT NULL) DESC,"
+        " COALESCE(pi.is_leader, 0) DESC")
+ROLE_JOIN = "LEFT JOIN people_index pi ON pi.crd = e.org_pk AND pi.indvl_pk = e.indvl_pk"
+# Before the index exists (or while a rebuild swaps it in): officers only.
+ROLE_SCHEDULE_A = ("EXISTS (SELECT 1 FROM schedule_a a WHERE a.crd = e.org_pk"
+                   " AND a.is_individual = 1 AND upper(a.name) LIKE upper(p.last_name)"
+                   " || ',%' || upper(p.first_name) || '%') DESC")
 
 
 def _now() -> datetime:
@@ -199,16 +221,28 @@ def todo(conn, limit: int, crd: str | None) -> list:
     cutoff = _iso(_now() - timedelta(days=days))
     empty = _iso(_now() - timedelta(days=EMPTY_RETRY_DAYS))
     error = _iso(_now() - timedelta(days=1))
+    args = (error, empty, cutoff, PER_FIRM, limit)
     if crd:
         # One firm, now: everyone on it, whatever the 60-day rule says.
         cutoff = empty = error = _iso(_now() + timedelta(days=1))
-        sql = TODO_SQL.format(crd_filter="AND e.org_pk = ?")
-        rows = conn.execute(sql, (crd, error, empty, cutoff, PER_FIRM, limit)).fetchall()
-    else:
-        rows = conn.execute(TODO_SQL.format(crd_filter=""),
-                            (error, empty, cutoff, PER_FIRM, limit)).fetchall()
-    conn.commit()
-    return rows
+        args = (crd, error, empty, cutoff, PER_FIRM, limit)
+    ways = [(ROLE, ROLE_JOIN), (ROLE_SCHEDULE_A, "")]
+    if not conn.execute("SELECT to_regclass('people_index') IS NOT NULL ok").fetchone()["ok"]:
+        ways = ways[1:]
+    for role, join in ways:
+        sql = (TODO_SQL.replace("{role}", role).replace("{join}", join)
+               .replace("{crd_filter}", "AND e.org_pk = ?" if crd else ""))
+        try:
+            rows = conn.execute(sql, args).fetchall()
+        except Exception:
+            # The index swapped out under the query: the order without it.
+            conn.rollback()
+            if not join:
+                raise
+            continue
+        conn.commit()
+        return rows
+    return []
 
 
 def main() -> int:

@@ -354,6 +354,24 @@ def _consistency(conn):
     except Exception as exc:
         conn.rollback()
         print('Runtime people sources: unavailable', type(exc).__name__)
+    # The 2026-10-16 efficiency work, as counts: what the hunt's firms are
+    # waiting on (and when the old DNS pile-up was stamped), custodian reads by
+    # outcome and reader, domains in verify backoff, and the people index's mode.
+    for label, sql in (
+            ('hunt firm states', "SELECT state, COUNT(*) n FROM email_hunt_firm GROUP BY 1 ORDER BY 2 DESC"),
+            ('hunt dns stamped', """SELECT substr(checked_at,1,13) h, COUNT(*) n FROM email_hunt_firm
+                WHERE state='dns' GROUP BY 1 ORDER BY 2 DESC LIMIT 6"""),
+            ('custodian reads', """SELECT status, COUNT(*) n, SUM(CASE WHEN COALESCE(fails,0) > 0 THEN 1 ELSE 0 END) failing,
+                SUM(CASE WHEN detail LIKE '%read by pdfplumber%' THEN 1 ELSE 0 END) by_pdfplumber,
+                MAX(fetched_at) latest FROM firm_refresh GROUP BY 1 ORDER BY 2 DESC"""),
+            ('verify backoff', """SELECT COUNT(*) FILTER (WHERE retry_at > to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS')) backed_off,
+                COUNT(*) FILTER (WHERE mx_state='broken') broken, COUNT(*) domains FROM mail_domain"""),
+            ('people index state', "SELECT k, LEFT(v, 80) v FROM people_index_state ORDER BY k")):
+        try:
+            print(f'Runtime {label}:', json.dumps([dict(r) for r in conn.execute(sql).fetchall()], default=str))
+        except Exception as exc:
+            conn.rollback()
+            print(f'Runtime {label}: unavailable', type(exc).__name__)
     print('Runtime counts firms:', json.dumps(one("""SELECT
         (SELECT COUNT(*) FROM firm_current WHERE is_era=0) AS firms,
         (SELECT COUNT(*) FROM firm_scope) AS scope,

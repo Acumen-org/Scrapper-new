@@ -142,6 +142,9 @@ class Page:
     error: str | None = None
     kind: str = "other"          # why it was fetched: home team vcard about contact bio other
     social: list = field(default_factory=list)   # off-site social profile links on it
+    # The page parsed once (harvest.parse_page), for whoever stores it to read
+    # without parsing it again. crawl_site drops it once on_page is done.
+    doc: object = field(default=None, repr=False, compare=False)
 
     @property
     def ok(self) -> bool:
@@ -340,6 +343,14 @@ def page_links(html: str, base: str) -> list[tuple[str, str]]:
         except ValueError:
             continue
     return out
+
+
+def _parse_once(page: Page) -> None:
+    """Parse a fetched page once: its visible text for the shell check, and
+    the parsed document kept on the page for the extractors, which used to
+    parse the same page four or five times between them."""
+    page.doc = harvest.parse_page(page.html, page.final_url or page.url)
+    page.text = harvest.visible_text(page.html, doc=page.doc)
 
 
 # ---------------------------------------------------------------- crawler
@@ -562,16 +573,16 @@ class Crawler:
         if prefer_browser and self.use_browser and kind != "vcard":
             page = self._render(url)
             if page is not None and page.ok:
-                page.text = harvest.visible_text(page.html)
+                _parse_once(page)
         if page is None or not page.ok:
             page = self._static(url)
             if page.ok and not page.is_vcard:
-                page.text = harvest.visible_text(page.html)
+                _parse_once(page)
                 if (self.use_browser and "html" in (page.content_type or "text/html")
                         and looks_like_shell(page.html, page.text)):
                     rendered = self._render(url)
                     if rendered is not None and rendered.ok:
-                        rendered.text = harvest.visible_text(rendered.html)
+                        _parse_once(rendered)
                         if len(rendered.text) > len(page.text):
                             page = rendered
             elif page.ok:
@@ -638,6 +649,14 @@ class Crawler:
         budget = max_pages + 15          # robots, sitemaps, probes and failures
         started = time.monotonic()
         pages: list[Page] = []
+
+        def emit(page: Page) -> None:
+            if on_page:
+                on_page(page)
+            # Stored: the parsed tree is most of a page's memory, and a site's
+            # pages are kept until the crawl ends.
+            page.doc = None
+
         try:
             home, _ = self._start(root_url)
             if home is None:
@@ -646,12 +665,10 @@ class Crawler:
             if not home.ok:
                 self.root_error = home.error or f"HTTP {home.status}"
                 pages.append(home)
-                if on_page:
-                    on_page(home)
+                emit(home)
                 return pages
             pages.append(home)
-            if on_page:
-                on_page(home)
+            emit(home)
             final = urlparse(home.final_url)
             orig = urlparse(home.url)
             domains = {harvest.registrable(final.hostname or ""),
@@ -803,8 +820,7 @@ class Crawler:
                         self.root_error = self.root_error or "site stopped answering"
                         if not probe:
                             pages.append(page)
-                            if on_page:
-                                on_page(page)
+                            emit(page)
                         break
                 else:
                     strikes = 0
@@ -822,8 +838,7 @@ class Crawler:
                 if fk:
                     seen.add(fk)
                 pages.append(page)
-                if on_page:
-                    on_page(page)
+                emit(page)
                 if not page.ok:
                     continue
                 n_ok += 1

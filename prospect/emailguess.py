@@ -94,6 +94,31 @@ NICK_FORMS = {
 }
 
 MAX_CANDIDATES = 18      # per person: a dozen patterns plus the likeliest variants
+
+# The middle-initial form that goes with a firm's pattern: a firm that writes
+# jsmith@ gives a second J. Smith jqsmith@, one that writes john.smith@ gives
+# john.q.smith@.
+MIDDLE_FORM = {"flast": "fmlast", "first.last": "first.m.last"}
+
+
+def family(pattern: str | None) -> set[str]:
+    """The pattern names that are a firm's pattern in some form."""
+    if pattern not in PATTERNS:
+        return set()
+    return {pattern, MIDDLE_FORM[pattern]} if pattern in MIDDLE_FORM else {pattern}
+
+
+def pattern_first(cands: list[tuple[str, str, str]], pattern: str | None
+                  ) -> list[tuple[str, str, str]]:
+    """Candidates with the firm's own pattern first in every form it comes in
+    (the filed name, a nickname, a middle name or initial, either half of a
+    double surname), then the rest in their order. Once a firm's pattern is
+    seen on a real address, its other patterns are long shots: candidates()
+    alone would ask all twelve patterns before a single nickname."""
+    mine = family(pattern)
+    if not mine:
+        return list(cands)
+    return [c for c in cands if c[1] in mine] + [c for c in cands if c[1] not in mine]
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v", "2nd", "3rd"}
 # Surname particles: part of the whole surname (vanderberg), never a surname
 # on their own, so never offered as the half a firm might have kept.

@@ -20,7 +20,18 @@ Picked for a slice: never checked, queued from a firm page, last checked more
 than 90 days ago, or "unknown" more than 7 days ago. The last one is there
 because unknown is usually temporary (greylisting, a server that was down),
 and without a shorter retry those rows would wait three months for a second
-try.
+try. But a domain whose server keeps giving no clear answer is backed off as
+a whole (7, then 30, then 90 days; 30 when it refused our check: mail_domain
+retry_at, see prospect.verify), and its addresses wait with it.
+
+Best value first, without starving anyone: a row counts as due 3 days later
+for each band its firm sits below the top (BANDS on firm_scope.priority; a
+shared inbox two bands lower still), and rows are taken in that order.
+
+A slice asks at most --limit mail servers. Rows whose answer is already known
+(an accept-all domain learned within 30 days, a domain with no mail server)
+are settled on top of that at no cost, from a window MEMORY_WINDOW times as
+large.
 
     python -m scripts.verify_emails [--limit 60]          one bulk slice
     python -m scripts.verify_emails --crd 123456          every email at one firm
@@ -44,6 +55,9 @@ from prospect import config, contacts, db, runlog, verify  # noqa: E402
 
 RECHECK_DAYS = 90
 RETRY_UNKNOWN_DAYS = 7
+BANDS = (75.0, 50.0)       # firm_scope.priority from which a firm is band 0, band 1
+BAND_DAYS = 3              # each band down counts as due this many days later
+MEMORY_WINDOW = 4          # rows read per slice, per mail server asked
 
 
 def _ago(days: int) -> str:
@@ -51,35 +65,56 @@ def _ago(days: int) -> str:
 
 
 def todo(conn, limit: int) -> list[int]:
-    args = (_ago(RECHECK_DAYS), _ago(RETRY_UNKNOWN_DAYS), limit)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # A domain in backoff keeps its addresses out of the slice, except those
+    # queued from a firm page, where someone asked for them by hand.
     due = """cp.kind = 'email'
           AND (cp.source NOT IN ('pattern', 'ai_web') OR cp.verify_status = 'valid')
-          AND (cp.verify_status IN ('unverified', 'queued')
-               OR cp.verified_at < ?
-               OR (cp.verify_status = 'unknown' AND cp.verified_at < ?))"""
+          AND (cp.verify_status = 'queued'
+               OR ((md.retry_at IS NULL OR md.retry_at <= ?)
+                   AND (cp.verify_status = 'unverified'
+                        OR cp.verified_at < ?
+                        OR (cp.verify_status = 'unknown' AND cp.verified_at < ?))))"""
+    # When the row became due: found, or its re-check came round.
+    since = f"""(CASE WHEN cp.verify_status IN ('unverified', 'queued') THEN cp.found_at::timestamptz
+                 WHEN cp.verify_status = 'unknown'
+                   THEN cp.verified_at::timestamptz + INTERVAL '{RETRY_UNKNOWN_DAYS} days'
+                 ELSE cp.verified_at::timestamptz + INTERVAL '{RECHECK_DAYS} days' END)"""
+    args = (now, _ago(RECHECK_DAYS), _ago(RETRY_UNKNOWN_DAYS))
     try:
         rows = conn.execute(f"""
             SELECT cp.id FROM contact_point cp
             LEFT JOIN firm_scope s ON s.crd = cp.crd
+            LEFT JOIN mail_domain md ON md.domain = split_part(cp.value, '@', 2)
             WHERE {due}
-            ORDER BY (cp.verify_status = 'queued') DESC, cp.is_role,
-                     (s.crd IS NULL), s.priority DESC, cp.confidence DESC, cp.id
-            LIMIT ?""", args).fetchall()
+            ORDER BY (cp.verify_status = 'queued') DESC,
+                     {since} + ((CASE WHEN s.priority >= ? THEN 0 WHEN s.priority >= ? THEN 1
+                                      WHEN s.crd IS NOT NULL THEN 2 ELSE 3 END)
+                                + 2 * cp.is_role) * ? * INTERVAL '1 day',
+                     s.priority DESC NULLS LAST, cp.confidence DESC, cp.id
+            LIMIT ?""", (*args, BANDS[0], BANDS[1], BAND_DAYS, limit)).fetchall()
     except Exception:
-        # No product lists built yet on this install: plain order still works.
+        # No product lists built yet on this install: the same without bands.
         conn.rollback()
         rows = conn.execute(f"""
-            SELECT cp.id FROM contact_point cp WHERE {due}
-            ORDER BY (cp.verify_status = 'queued') DESC, cp.is_role,
-                     cp.confidence DESC, cp.id
-            LIMIT ?""", args).fetchall()
+            SELECT cp.id FROM contact_point cp
+            LEFT JOIN mail_domain md ON md.domain = split_part(cp.value, '@', 2)
+            WHERE {due}
+            ORDER BY (cp.verify_status = 'queued') DESC,
+                     {since} + 2 * cp.is_role * ? * INTERVAL '1 day', cp.confidence DESC, cp.id
+            LIMIT ?""", (*args, BAND_DAYS, limit)).fetchall()
     return [r["id"] for r in rows]
 
 
 def summary(res: dict) -> str:
     parts = [f"{s} {res[s]}" for s in verify.STATUSES if res.get(s)]
+    more = [f"{res[k]} {label}" for k, label in (
+        ("from_memory", "answered from memory"), ("deferred", "left for a backed-off domain"),
+        ("left", "left for the next slice")) if res.get(k)]
+    if res.get("outage"):
+        more.append("stopped: our DNS resolvers are not answering")
     return (f"checked {res.get('checked', 0)} via {res.get('engine')}: "
-            + (", ".join(parts) if parts else "nothing to check"))
+            + (", ".join(parts + more) if parts or more else "nothing to check"))
 
 
 def main() -> int:
@@ -127,7 +162,7 @@ def main() -> int:
                 print(str(e)[:300])
         return 0
 
-    ids = todo(conn, args.limit)
+    ids = todo(conn, args.limit * MEMORY_WINDOW)
     conn.commit()
     cfg = config.load()
     with runlog.Run(conn, "verify_emails", "verify", cfg.stamp) as run:
@@ -136,7 +171,10 @@ def main() -> int:
             run.skip("nothing due for a check")
             line = "checked 0: nothing due for a check"
         else:
-            res = verify.verify_contacts(conn, ids, args.engine)
+            # --limit is what a slice may ask of mail servers; answers already
+            # in hand come on top of it (prospect.verify._known).
+            res = verify.verify_contacts(conn, ids, args.engine, network_limit=args.limit)
+            run.rows_in = len(ids) - res.get("left", 0)
             run.rows_out = res.get("checked", 0)
             line = summary(res)
             run.note(line)

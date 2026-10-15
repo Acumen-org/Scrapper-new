@@ -147,9 +147,16 @@ def add_column(conn, table: str, column: str, decl: str) -> bool:
     run on every slice of a job it waits behind any open reader, and every page
     that reads the table then queues behind it. Asking the catalogue first
     costs nothing and takes no lock."""
+    # Look at the very table ALTER TABLE would change (the name resolved
+    # through the search path), not any table of that name: a test schema's
+    # copy must not look complete because the public one has the column, and
+    # a table that is not there at all has nothing to add.
+    rel = conn.execute("SELECT to_regclass(?)::oid AS oid", (table,)).fetchone()["oid"]
+    if rel is None:
+        return False
     have = conn.execute(
-        "SELECT 1 FROM information_schema.columns WHERE table_name=? AND column_name=?",
-        (table, column)).fetchone()
+        "SELECT 1 FROM pg_attribute WHERE attrelid=? AND attname=? AND NOT attisdropped",
+        (rel, column)).fetchone()
     if have:
         return False
     conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {decl}")

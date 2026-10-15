@@ -11,6 +11,16 @@ What is proved:
              run, never counted as a refusal; an accept-all domain stores
              nothing; no address is asked about twice; one conversation asks
              several questions; colleagues with the same name get no address.
+  waste      (mail-lane rules, 2026-10-16) at most FIRST_PASS questions per
+             person per visit, the rest only for officers and ATS buyers; the
+             firm's own pattern in every form first; an outage of our
+             resolvers (told by the canary) stops a run and records nothing,
+             while a domain whose own DNS is broken waits 7, 30, 90 days;
+             stored mail servers are reused for a week; best firms first with
+             nobody starved; email_verify answers known accept-all domains
+             from memory, keeps to its limit of servers asked, and backs off
+             domains that give no clear answer. A FakeDNS stands in for the
+             resolvers, so no DNS question leaves the machine.
   database   (needs BELLWETHER_DSN; runs in a throwaway schema) old guesses are
              asked first and removed when refused, confirmed ones are stored as
              pattern/valid, the screens' view shows no unconfirmed guess, and a
@@ -132,6 +142,65 @@ def serve_domain(domain: str, server: FakeSMTP) -> None:
     verify._MX_OVERRIDE[domain] = [f"127.0.0.1:{server.port}"]
 
 
+class FakeDNS:
+    """Stands in for the resolvers (mailcheck.mx_records and a_records), so
+    no DNS question leaves this machine. `up` False is an outage of ours: no
+    answer for anything, the canary included. Per domain: 'mx' answers with
+    a mail server, 'none' with nothing, 'broken' with SERVFAIL, 'slow' with
+    silence the first time and an answer the second."""
+
+    def __init__(self, domains=None, up=True):
+        self.domains = dict(domains or {})
+        self.up = up
+        self.asked: list[str] = []
+
+    def mx(self, domain, timeout=None, fail=None):
+        self.asked.append(domain)
+        how = "mx" if domain == verify.CANARY_DOMAIN else self.domains.get(domain, "none")
+        if not self.up or how == "broken" or (how == "slow" and self.asked.count(domain) == 1):
+            if fail is not None:
+                fail.append("silent" if not self.up or how == "slow" else "error")
+            return None
+        return [(10, f"mx.{domain}")] if how in ("mx", "slow") else []
+
+    def a(self, domain, timeout=None, ipv6=False, fail=None):
+        if not self.up:
+            if fail is not None:
+                fail.append("silent")
+            return None
+        return []
+
+    def __enter__(self):
+        verify._MX_CACHE.clear()
+        self._patches = [patch.object(verify.mailcheck, "mx_records", self.mx),
+                         patch.object(verify.mailcheck, "a_records", self.a),
+                         patch.dict(verify._CANARY, {"t": -1e9, "ok": True})]
+        for p in self._patches:
+            p.start()
+        return self
+
+    def __exit__(self, *exc):
+        for p in self._patches:
+            p.stop()
+        verify._MX_CACHE.clear()
+        return False
+
+
+class Asker:
+    """A mail server that turns every address away, for walking a plan."""
+
+    def __init__(self, valid=()):
+        self.valid = set(valid)
+        self.asked: list[str] = []
+        self.hosts = ["mx.qa"]
+
+    def ask(self, address, need=1, same=False):
+        self.asked.append(address)
+        if same:
+            return ("invalid", 550, "user unknown")      # the made-up address
+        return ("ok", 250, "OK") if address in self.valid else ("invalid", 550, "user unknown")
+
+
 def no_pacing():
     """Fakes answer instantly; the politeness waits would only slow the test."""
     return patch.multiple(verify, HOST_GAP_S=0, _per_minute=lambda: 0)
@@ -246,10 +315,20 @@ class HunterChecks(unittest.TestCase):
         asked = list(srv.rcpts)
         self.assertEqual(len(asked), len(set(asked)))
         self.assertEqual(out1.people["i:1"]["state"], "exhausted")
-        self.assertGreaterEqual(out1.people["i:1"]["tried"], 12)
-        out2 = hunt.hunt_firm(task("none-qa.test", [p], attempts=carry(t1, out1)))
+        # The short list only: the likeliest FIRST_PASS, then 60 days' rest.
+        self.assertEqual(out1.people["i:1"]["tried"], hunt.FIRST_PASS)
+        self.assertEqual(len(asked), hunt.FIRST_PASS)
+        self.assertGreater(out1.people["i:1"]["next_try_at"], hunt._later(days=hunt.EXHAUSTED_DAYS - 1))
+        # Visited again anyway (the firm page's button): only addresses never
+        # asked, until there are none left, and then nothing at all.
+        t2 = task("none-qa.test", [p], attempts=carry(t1, out1))
+        out2 = hunt.hunt_firm(t2)
+        self.assertFalse(set(srv.rcpts[len(asked):]) & set(asked))
+        asked = list(srv.rcpts)
+        self.assertEqual(len(asked), len(hunt._plan(p, t2, None)))
+        out3 = hunt.hunt_firm(task("none-qa.test", [p], attempts=carry(t2, out2)))
         self.assertEqual(srv.rcpts, asked)             # nothing asked again
-        self.assertEqual(out2.people["i:1"]["state"], "exhausted")
+        self.assertEqual(out3.people["i:1"]["state"], "exhausted")
 
     def test_namesakes_get_no_address(self):
         srv = FakeSMTP(valid={"ann.lee@twin-qa.test"})
@@ -288,6 +367,162 @@ class HunterChecks(unittest.TestCase):
         self.assertEqual(len({a for a, _p, _v in c}), len(c))
         self.assertEqual(emailguess.parse_full("SMITH, JOHN, Q")[:3], ("john", "q", "smith"))
         self.assertEqual(emailguess.parse_full("Maria De La Cruz")[2], "delacruz")
+
+    # ---- the mail-lane efficiency rules (2026-10-16)
+
+    def test_firm_pattern_is_asked_in_every_form_first(self):
+        # flast confirmed at the firm: wbrown, then the middle initial and the
+        # nickname in that same pattern, before any other pattern is tried.
+        srv = FakeSMTP(valid={"bbrown@form-qa.test"})
+        serve_domain("form-qa.test", srv)
+        p = person("i:1", "William", "Brown", middle="James")
+        out = hunt.hunt_firm(task("form-qa.test", [p], pattern="flast"))
+        self.assertEqual(out.people["i:1"]["found"]["address"], "bbrown@form-qa.test")
+        self.assertEqual(srv.rcpts[:3], ["wbrown@form-qa.test", "wjbrown@form-qa.test",
+                                         "bbrown@form-qa.test"])
+        self.assertEqual(srv.asked("william.brown@form-qa.test"), 0)
+        plan = [a for a, _p, _v in hunt._plan(p, task("form-qa.test", [p]), "flast")]
+        self.assertEqual(plan[:4], ["wbrown@form-qa.test", "wjbrown@form-qa.test",
+                                    "bbrown@form-qa.test", "jbrown@form-qa.test"])
+
+    def test_short_list_then_the_rest_only_for_officers_and_designated(self):
+        roster, officer = person("i:1", "Tom", "Reed"), person("n:ann wolfe", "Ann", "Wolfe", rank=0)
+        hr = person("n:sue kemp", "Sue", "Kemp", rank=1)
+        hr.designated = True
+        for p in (roster, officer, hr):
+            t = task("short-qa.test", [p])
+            a = Asker()
+            res = hunt._hunt_person(p, t, hunt.Outcome("QA1", "short-qa.test"), a, None, {})
+            self.assertEqual(len(a.asked), hunt.FIRST_PASS, p.name)
+            self.assertEqual(res["state"], "exhausted")
+            days = hunt.EXHAUSTED_DAYS if p is roster else hunt.TAIL_DAYS
+            self.assertTrue(hunt._later(days=days - 1) < res["next_try_at"] < hunt._later(days=days + 1),
+                            p.name)
+        # The officer's next visit asks the next FIRST_PASS, never one already
+        # refused, until the list runs out; then 60 days.
+        t = task("short-qa.test", [officer])
+        seen: list[str] = []
+        for _ in range(5):
+            out = hunt.Outcome("QA1", "short-qa.test")
+            a = Asker()
+            res = hunt._hunt_person(officer, t, out, a, None, {})
+            self.assertFalse(set(a.asked) & set(seen))
+            seen += a.asked
+            t.attempts = carry(t, out)
+            if res["next_try_at"] > hunt._later(days=hunt.TAIL_DAYS + 1):
+                break
+        self.assertEqual(len(seen), len(hunt._plan(officer, t, None)))
+        self.assertGreater(res["next_try_at"], hunt._later(days=hunt.EXHAUSTED_DAYS - 1))
+
+    def test_acceptance_inside_the_short_list_still_needs_a_refused_probe(self):
+        srv = FakeSMTP(accept_all=True)
+        serve_domain("cap-all-qa.test", srv)
+        out = hunt.hunt_firm(task("cap-all-qa.test", [person("i:1", "Ida", "Moss")]))
+        self.assertEqual(out.firm, "accept_all")
+        self.assertEqual(out.people, {})
+
+    def test_resolver_outage_says_nothing_about_the_firm(self):
+        with FakeDNS({"down-qa.test": "mx"}, up=False) as dns:
+            self.assertEqual(verify.mail_hosts("down-qa.test"), ([], "dns"))
+            out = hunt.hunt_firm(task("down-qa.test", [person("i:1", "Max", "Ford")]))
+            self.assertEqual(out.firm, "dns")
+            self.assertEqual((out.checks, out.people), ([], {}))
+            self.assertIn(verify.CANARY_DOMAIN, dns.asked)
+            # Never remembered: the next lookup asks again.
+            self.assertNotIn("down-qa.test", verify._MX_CACHE)
+
+    def test_broken_domain_is_told_from_an_outage_by_the_canary(self):
+        with FakeDNS({"broken-qa.test": "broken", "slow-qa.test": "slow"}) as dns:
+            self.assertEqual(verify.mail_hosts("broken-qa.test"), ([], "broken"))
+            out = hunt.hunt_firm(task("broken-qa.test", [person("i:1", "Max", "Ford")]))
+            self.assertEqual(out.firm, "dns_broken")
+            # Lookups that failed together share one canary question; one that
+            # began after it gets a fresh one.
+            began = time.perf_counter()
+            n = dns.asked.count(verify.CANARY_DOMAIN)
+            self.assertTrue(verify._resolver_ok(began))
+            self.assertTrue(verify._resolver_ok(began))
+            self.assertEqual(dns.asked.count(verify.CANARY_DOMAIN), n + 1)
+            self.assertTrue(verify._resolver_ok(time.perf_counter()))
+            self.assertEqual(dns.asked.count(verify.CANARY_DOMAIN), n + 2)
+            # Silence, while the resolvers answer, is asked once more: a slow
+            # domain's answer is usually waiting the second time.
+            self.assertEqual(verify.mail_hosts("slow-qa.test"), (["mx.slow-qa.test"], "ok"))
+            # A name no resolver can be asked about has no mail server.
+            self.assertEqual(verify.mail_hosts("firm..qa.test"), ([], "none"))
+            self.assertEqual(verify.mail_hosts("-bad-.qa.test"), ([], "none"))
+            self.assertNotIn("firm..qa.test", dns.asked)
+
+    def test_stored_mail_servers_are_used_for_a_week(self):
+        with FakeDNS({"kept-qa.test": "mx", "old-qa.test": "mx"}) as dns:
+            verify._DOMAINS["kept-qa.test"] = dict(verify._new_rec(), mx=["mx1.kept-qa.test"],
+                                                   mx_state="ok", mx_at=hunt._ago(6))
+            verify._DOMAINS["old-qa.test"] = dict(verify._new_rec(), mx=["mx1.old-qa.test"],
+                                                  mx_state="ok", mx_at=hunt._ago(8))
+            self.assertEqual(verify.mail_hosts("kept-qa.test"), (["mx1.kept-qa.test"], "ok"))
+            self.assertNotIn("kept-qa.test", dns.asked)
+            self.assertEqual(verify.mail_hosts("old-qa.test"), (["mx.old-qa.test"], "ok"))
+            self.assertIn("old-qa.test", dns.asked)
+            # The fresh answer is written back for the next slice.
+            rec = verify._DOMAINS["old-qa.test"]
+            self.assertEqual((rec["mx"], rec["mx_state"]), (["mx.old-qa.test"], "ok"))
+            self.assertGreater(rec["mx_at"], hunt._ago(1))
+            self.assertIn("old-qa.test", verify._DIRTY)
+            # So is "no mail server", which then needs no DNS at all.
+            verify._DOMAINS["gone-qa.test"] = dict(verify._new_rec(), mx_state="none",
+                                                   mx_at=hunt._ago(1))
+            self.assertEqual(verify.mail_hosts("gone-qa.test"), ([], "none"))
+            self.assertNotIn("gone-qa.test", dns.asked)
+
+    def test_known_accept_all_domain_is_answered_without_a_server(self):
+        srv = FakeSMTP(valid={"kim.lo@known-all-qa.test"})
+        serve_domain("known-all-qa.test", srv)
+        verify._DOMAINS["known-all-qa.test"] = dict(verify._new_rec(), catch_all=True,
+                                                    checked_at=hunt._now())
+        with patch.object(verify.requests, "post", side_effect=AssertionError("asked Reacher")):
+            for eng in ("reacher", "native"):
+                r = verify.check_one("kim.lo@known-all-qa.test", eng, False)
+                self.assertEqual((r["status"], r.get("memory")), ("catch_all", True), eng)
+        self.assertEqual(srv.connections, 0)
+        self.assertTrue(verify._known("kim.lo@known-all-qa.test"))
+        # Too old to trust: asked again, and the strict rule still decides.
+        verify._DOMAINS["known-all-qa.test"]["checked_at"] = hunt._ago(verify.CATCH_ALL_DAYS + 1)
+        self.assertFalse(verify._known("kim.lo@known-all-qa.test"))
+        r = verify.check_one("kim.lo@known-all-qa.test", "native", False)
+        self.assertEqual(r["status"], "valid")
+        self.assertEqual(srv.connections, 1)
+
+    def test_backoff_schedule(self):
+        d = "back-qa.test"
+        days = []
+        for _ in range(4):
+            at = verify._backoff(d, "unclear")
+            days.append(round((verify.datetime.fromisoformat(at)
+                               - verify.datetime.now(verify.timezone.utc)).total_seconds() / 86400))
+        self.assertEqual(days, [7, 30, 90, 90])
+        self.assertIsNone(verify._backoff(d, "clear"))
+        self.assertEqual((verify._DOMAINS[d]["retry_at"], verify._DOMAINS[d]["unclear"]), (None, 0))
+        at = verify._backoff(d, "policy")
+        self.assertEqual(round((verify.datetime.fromisoformat(at)
+                                - verify.datetime.now(verify.timezone.utc)).total_seconds() / 86400),
+                         verify.POLICY_DAYS)
+        # What counts as an answer from the domain's server.
+        blank = verify._blank("a@b.qa", "reacher")
+        self.assertEqual(verify._answer(dict(blank, status="invalid")), "clear")
+        self.assertEqual(verify._answer(dict(blank, status="catch_all", memory=True)), None)
+        self.assertEqual(verify._answer(dict(blank, status="unknown", why="ours")), None)
+        self.assertEqual(verify._answer(dict(blank, status="unknown", outage=True)), None)
+        self.assertEqual(verify._answer(dict(blank, status="unknown")), "unclear")
+        res = verify._blank("a@b.qa", "reacher")
+        res["smtp"]["message"] = "550 5.7.1 Service unavailable; client host blocked using Spamhaus"
+        body = {"is_reachable": "unknown", "syntax": {"is_valid_syntax": True}}
+        with patch.object(verify, "_remember"):
+            r = verify._from_reacher(res, body, "b.qa", [])
+        self.assertEqual(verify._answer(r), "unclear")         # no smtp block: no words to read
+        body["smtp"] = {"type": "SmtpError", "message": "550 5.7.1 blocked using Spamhaus"}
+        with patch.object(verify, "_remember"):
+            r = verify._from_reacher(verify._blank("a@b.qa", "reacher"), body, "b.qa", [])
+        self.assertEqual(verify._answer(r), "policy")
 
 
 # ------------------------------------------------------------------ fake web and AI
@@ -570,16 +805,21 @@ class HuntDatabaseChecks(_DB):
         self.assertEqual(rows["bill.brown@acmeqa.test"]["source_ref"],
                          "first.last (nickname bill)")
         self.assertEqual(rows["john.smith@acmeqa.test"]["person_key"], "i:9001")
-        # The refused old guess is gone and logged; the unchecked one was asked
-        # right after the firm's own pattern, refused, and removed.
+        # The refused old guess is gone and logged. The firm's own pattern
+        # (first.last, from Mary Major's published address) is asked in every
+        # form before the unchecked old guess: bill.brown@ right after
+        # william.brown@, so wbrown@ is never asked, and goes as an
+        # unconfirmed guess once his real address is found.
         self.assertNotIn("john@acmeqa.test", rows)
         self.assertNotIn("wbrown@acmeqa.test", rows)
-        self.assertEqual(acme.rcpts.index("wbrown@acmeqa.test"), acme.rcpts.index("william.brown@acmeqa.test") + 1)
+        self.assertEqual(acme.rcpts.index("bill.brown@acmeqa.test"),
+                         acme.rcpts.index("william.brown@acmeqa.test") + 1)
+        self.assertEqual(acme.asked("wbrown@acmeqa.test"), 0)
         self.assertEqual(acme.asked("john@acmeqa.test"), 0)
         att = {r["address"]: r["status"] for r in c.execute(
             "SELECT address, status FROM email_attempt").fetchall()}
         self.assertEqual(att["john@acmeqa.test"], "invalid")
-        self.assertEqual(att["wbrown@acmeqa.test"], "invalid")
+        self.assertNotIn("wbrown@acmeqa.test", att)
         # Accept-all firm: nothing stored, the guess removed, the reason recorded.
         self.assertNotIn("pgreen@catchall-qa.test", rows)
         st = {(r["crd"], r["person_key"]): r["state"] for r in c.execute(
@@ -603,6 +843,208 @@ class HuntDatabaseChecks(_DB):
         self.assertEqual(acme.rcpts, asked)
         p = hunt.person_status(c, "900101")
         self.assertGreaterEqual(p["i:9003"]["tried"], 2)
+
+
+class MailLaneDatabaseChecks(_DB):
+    """The mail-lane efficiency rules against the database: an outage stops a
+    run and records nothing, a broken domain waits 7, 30, then 90 days, mail
+    servers are stored and reused, the best firms go first without starving
+    the rest, and email_verify answers what it already knows and backs off
+    domains that give no clear answer."""
+
+    def setUp(self):
+        self._p = [no_pacing(), patch.object(verify, "_DOMAINS", {}),
+                   patch.object(verify, "_DIRTY", set())]
+        for p in self._p:
+            p.start()
+
+    def tearDown(self):
+        for p in reversed(self._p):
+            p.stop()
+        c = self.conn
+        c.rollback()
+        for t in ("firm_current", "firm_scope", "person", "person_employment", "email_hunt_firm",
+                  "email_hunt", "email_attempt", "mail_domain", "contact_point",
+                  "firm_refresh_request"):
+            c.execute(f"DELETE FROM {t}")
+        c.commit()
+
+    def firm(self, crd, domain, priority=None, people=(("Max", "Ford"),)):
+        c = self.conn
+        c.execute("INSERT INTO firm_current (crd, legal_name, website) VALUES (?,?,?)",
+                  (crd, f"QA {crd} LLC", f"https://www.{domain}"))
+        if priority is not None:
+            c.execute("INSERT INTO firm_scope VALUES (?,?)", (crd, priority))
+        for i, (first, last) in enumerate(people):
+            pk = f"{crd}{i}"
+            c.execute("INSERT INTO person VALUES (?,?,?,NULL,?)", (pk, f"{first} {last}", first, last))
+            c.execute("INSERT INTO person_employment VALUES (?,?,'current')", (pk, crd))
+        c.commit()
+
+    @staticmethod
+    def days_until(stamp):
+        return round((verify.datetime.fromisoformat(stamp)
+                      - verify.datetime.now(verify.timezone.utc)).total_seconds() / 86400)
+
+    def test_outage_stops_the_run_and_records_nothing(self):
+        c = self.conn
+        for i in range(3):
+            self.firm(f"91020{i}", f"out{i}-qa.test", 90 - i)
+        with FakeDNS({f"out{i}-qa.test": "mx" for i in range(3)}, up=False):
+            stats = hunt.run(c, limit=50, seconds=60, engine="native", workers=1)
+        self.assertEqual((stats["dns_outage"], stats["firms"]), (1, 1))
+        self.assertIn("stopped: our DNS resolvers are failing", hunt.summary(stats))
+        self.assertEqual(c.execute("SELECT COUNT(*) n FROM email_hunt_firm").fetchone()["n"], 0)
+        self.assertEqual(c.execute("SELECT COUNT(*) n FROM email_hunt").fetchone()["n"], 0)
+
+    def test_broken_domain_waits_7_then_30_then_90_days(self):
+        c = self.conn
+        self.firm("910301", "dead-qa.test", 80)
+        for want in hunt.DNS_BROKEN_DAYS:
+            with FakeDNS({"dead-qa.test": "broken"}):
+                stats = hunt.run(c, limit=50, seconds=60, engine="native", workers=1)
+            self.assertEqual(stats["firms_dns_broken"], 1)
+            r = c.execute("SELECT state, next_try_at FROM email_hunt_firm WHERE crd='910301'").fetchone()
+            self.assertEqual(r["state"], "dns_broken")
+            self.assertEqual(self.days_until(r["next_try_at"]), want)
+            p = c.execute("SELECT state, detail FROM email_hunt WHERE crd='910301'").fetchone()
+            self.assertEqual(p["state"], "no_mail_server")
+            self.assertIn(f"after {want} days", p["detail"])
+            # Its turn comes round.
+            c.execute("UPDATE email_hunt_firm SET next_try_at=?", (hunt._ago(1),))
+            c.execute("UPDATE email_hunt SET next_try_at=?", (hunt._ago(1),))
+            c.commit()
+        # A domain that answers again is hunted as usual, and the count resets.
+        srv = FakeSMTP(valid={"max.ford@dead-qa.test"})
+        serve_domain("dead-qa.test", srv)
+        try:
+            hunt.run(c, limit=50, seconds=60, engine="native", workers=1)
+        finally:
+            verify._MX_OVERRIDE.pop("dead-qa.test", None)
+        r = c.execute("SELECT state, fails FROM email_hunt_firm WHERE crd='910301'").fetchone()
+        self.assertEqual((r["state"], r["fails"]), ("active", 0))
+
+    def test_too_many_broken_domains_in_one_run_is_our_trouble(self):
+        # A resolver failing upstream still answers the canary from its cache;
+        # a run of broken domains past DNS_BROKEN_PER_RUN stops the run.
+        c = self.conn
+        n = hunt.DNS_BROKEN_PER_RUN + 3
+        for i in range(n):
+            self.firm(f"9107{i:02d}", f"b{i}-qa.test", 70)
+        with FakeDNS({f"b{i}-qa.test": "broken" for i in range(n)}):
+            stats = hunt.run(c, limit=100, seconds=60, engine="native", workers=1)
+        self.assertEqual((stats["firms_dns_broken"], stats["dns_outage"]),
+                         (hunt.DNS_BROKEN_PER_RUN, 1))
+        self.assertEqual(c.execute("SELECT COUNT(*) n FROM email_hunt_firm").fetchone()["n"],
+                         hunt.DNS_BROKEN_PER_RUN)
+
+    def test_mail_servers_are_stored_and_reused_next_slice(self):
+        c = self.conn
+        c.execute("INSERT INTO mail_domain (domain, catch_all, checked_at, retry_at, unclear)"
+                  " VALUES ('aged-qa.test', 1, ?, ?, 2)", (hunt._ago(40), hunt._later(days=3)))
+        c.commit()
+        with FakeDNS({"store-qa.test": "mx"}) as dns:
+            verify.load_domains(c, ["store-qa.test", "aged-qa.test"])
+            self.assertEqual(verify.mail_hosts("store-qa.test"), (["mx.store-qa.test"], "ok"))
+            verify.save_domains(c)
+            c.commit()
+        self.assertEqual(dns.asked, ["store-qa.test"])
+        r = c.execute("SELECT mx, mx_state, mx_at FROM mail_domain WHERE domain='store-qa.test'"
+                      ).fetchone()
+        self.assertEqual((r["mx"], r["mx_state"]), ("mx.store-qa.test", "ok"))
+        # An old catch-all finding is read (its backoff with it) but not trusted.
+        self.assertIsNone(verify.cached_catch_all("aged-qa.test"))
+        self.assertEqual(verify._DOMAINS["aged-qa.test"]["unclear"], 2)
+        # The next slice: a new process memory, no DNS question at all.
+        verify._DOMAINS.clear()
+        with FakeDNS({}) as dns:
+            verify.load_domains(c, ["store-qa.test"])
+            self.assertEqual(verify.mail_hosts("store-qa.test"), (["mx.store-qa.test"], "ok"))
+            self.assertEqual(dns.asked, [])
+
+    def test_best_firms_first_and_nobody_starves(self):
+        c = self.conn
+        # crd: (priority, due since how many days, visited)
+        firms = {"910501": (90, 0.04), "910502": (60, 0.04), "910503": (10, 5),
+                 "910504": (None, 2), "910505": (None, 12), "910506": (None, None),
+                 "910507": (5, -3)}
+        for crd, (pri, due) in firms.items():
+            self.firm(crd, f"o{crd}-qa.test", pri, people=())
+            if due is not None:
+                at = hunt._ago(due) if due >= 0 else hunt._later(days=-due)
+                c.execute("INSERT INTO email_hunt_firm (crd, state, next_try_at, checked_at)"
+                          " VALUES (?, 'active', ?, ?)", (crd, at, hunt._ago(20)))
+        # Asked for from its firm page, though not due: before everyone.
+        c.execute("INSERT INTO firm_refresh_request VALUES ('910507', ?)", (hunt._now(),))
+        c.commit()
+        got = [crd for crd, _ in hunt.due_firms(c, 50)]
+        # Never visited, then a bottom-band firm due 12 days (over the 9-day
+        # head start), the top firm due an hour, a band-2 firm due 5 days
+        # (6-day start), the band-1 firm due an hour, a bottom firm due 2 days.
+        self.assertEqual(got, ["910507", "910506", "910505", "910501", "910503", "910502",
+                               "910504"])
+
+    def test_verify_answers_what_it_knows_and_backs_off(self):
+        from scripts import verify_emails
+        c = self.conn
+        self.firm("910601", "v-qa.test", 90, people=())
+        addrs = ["a@all-v-qa.test", "b@all-v-qa.test", "c@all-v-qa.test", "d@grey-v-qa.test",
+                 "e@grey-v-qa.test", "f@ok-v-qa.test", "g@ok-v-qa.test", "h@held-v-qa.test",
+                 "i@held-v-qa.test"]
+        for a in addrs:
+            contacts.upsert(c, "910601", "email", a, "website",
+                            person_key=f"n:{a[0]} qa", person_name=f"{a[0].upper()} Qa")
+        c.execute("UPDATE contact_point SET verify_status='queued' WHERE value='i@held-v-qa.test'")
+        c.execute("INSERT INTO mail_domain (domain, catch_all, checked_at) VALUES"
+                  " ('all-v-qa.test', 1, ?)", (hunt._now(),))
+        c.execute("INSERT INTO mail_domain (domain, retry_at, unclear) VALUES"
+                  " ('held-v-qa.test', ?, 1)", (hunt._later(days=20),))
+        c.commit()
+        ids = {r["value"]: r["id"] for r in c.execute(
+            "SELECT id, value FROM contact_point WHERE kind='email'").fetchall()}
+        due = verify_emails.todo(c, 100)
+        self.assertNotIn(ids["h@held-v-qa.test"], due)       # its domain is backed off
+        self.assertIn(ids["i@held-v-qa.test"], due)          # but asked for by hand
+        self.assertEqual(due[0], ids["i@held-v-qa.test"])
+        anyone = FakeSMTP(accept_all=True)
+        grey = FakeSMTP(greylist={"d@grey-v-qa.test": 9, "e@grey-v-qa.test": 9})
+        ok = FakeSMTP(valid={"f@ok-v-qa.test"})
+        for dom, srv in (("all-v-qa.test", anyone), ("grey-v-qa.test", grey), ("ok-v-qa.test", ok)):
+            serve_domain(dom, srv)
+        rows = [ids[a] for a in addrs[:7]]
+        with patch.object(verify, "BATCH", 1):
+            counts = verify.verify_contacts(c, rows, "native", network_limit=3)
+        print("\n  verify:", verify_emails.summary(counts))
+        # Three answered from memory, no conversation; three asked (the
+        # limit), the seventh left for the next slice; e left alone once its
+        # domain gave no clear answer.
+        self.assertEqual(anyone.connections, 0)
+        self.assertEqual((counts["catch_all"], counts["from_memory"]), (3, 3))
+        self.assertEqual((counts["unknown"], counts["valid"]), (1, 1))
+        self.assertEqual((counts["deferred"], counts["left"], counts["checked"]), (1, 1, 5))
+        self.assertEqual(grey.asked("e@grey-v-qa.test"), 0)
+        st = {r["value"]: r["verify_status"] for r in c.execute(
+            "SELECT value, verify_status FROM contact_point").fetchall()}
+        self.assertEqual((st["e@grey-v-qa.test"], st["g@ok-v-qa.test"]), ("unverified", "unverified"))
+        r = c.execute("SELECT retry_at, unclear FROM mail_domain WHERE domain='grey-v-qa.test'"
+                      ).fetchone()
+        self.assertEqual((self.days_until(r["retry_at"]), r["unclear"]), (verify.UNCLEAR_DAYS[0], 1))
+        due = verify_emails.todo(c, 100)
+        self.assertNotIn(ids["e@grey-v-qa.test"], due)
+        self.assertIn(ids["g@ok-v-qa.test"], due)
+        # Our resolvers down: nothing stored, the run ends.
+        contacts.upsert(c, "910601", "email", "j@dark-v-qa.test", "website")
+        c.commit()
+        j = c.execute("SELECT id FROM contact_point WHERE value='j@dark-v-qa.test'").fetchone()["id"]
+        with FakeDNS({"dark-v-qa.test": "mx"}, up=False), patch.object(verify, "BATCH", 1):
+            counts = verify.verify_contacts(c, [j, ids["g@ok-v-qa.test"]], "native")
+        self.assertEqual((counts["outage"], counts["checked"], counts["deferred"]), (1, 0, 1))
+        self.assertIn("stopped", verify_emails.summary(counts))
+        st = {r["id"]: r["verify_status"] for r in c.execute(
+            "SELECT id, verify_status FROM contact_point WHERE id IN (?, ?)",
+            (j, ids["g@ok-v-qa.test"])).fetchall()}
+        self.assertEqual(set(st.values()), {"unverified"})
+        self.assertEqual(ok.asked("g@ok-v-qa.test"), 0)
 
 
 class ResearchDatabaseChecks(_DB):

@@ -7,14 +7,20 @@ at an in-scope firm (best firms first) who has no usable email:
 
   1. The firm's mail domain (emailguess.domain_for). A consumer mail service,
      a domain with no mail server, or no domain at all ends the hunt for the
-     whole firm, with the reason recorded for every person.
+     whole firm, with the reason recorded for every person. So does a domain
+     whose own DNS gives no answer while our resolvers answer for others
+     (dns_broken: asked again after 7, then 30, then 90 days). When our
+     resolvers answer nothing at all, that is our outage, not the firm's: the
+     run stops and records nothing (see verify._mail_hosts).
   2. Whether the domain accepts any address at all. A server that says yes to
      a made-up mailbox cannot confirm a real one, so nothing is guessed there:
      each person is recorded as accept_all_domain instead. The answer is
      remembered per domain (verify's mail_domain) and asked again after 30 days.
   3. The candidates, most likely first (emailguess.candidates): the firm's own
-     pattern, then the rest by how common they are, then nicknames, middle
-     names and the halves of double surnames.
+     pattern with its nickname and middle-name forms, then the rest by how
+     common they are, then nicknames, middle names and the halves of double
+     surnames. One visit asks at most FIRST_PASS of them per person: most of
+     the questions used to go to people who were turned away eighteen times.
   4. One conversation with the firm's mail server asks about them in turn
      (verify.MailSession: RSET, MAIL FROM, RCPT TO for each, never DATA). A
      refused mailbox moves on to the next candidate. An accepted one is
@@ -26,9 +32,15 @@ at an in-scope firm (best firms first) who has no usable email:
      a refusal.
   5. Every question asked is one row in email_attempt, unique on the address,
      so no address is asked about twice and the screens can say "tried 4
-     addresses". When every candidate is refused the person is exhausted and
-     looked at again after 60 days, when new candidates or a new mailbox may
-     exist.
+     addresses". When every candidate asked is refused the person is exhausted
+     and looked at again after 60 days, when new candidates or a new mailbox
+     may exist. Filed officers, and people with a title an ATS seller looks
+     for, are the exception: their next FIRST_PASS candidates are asked after
+     TAIL_DAYS, until the list runs out.
+
+Firms are taken best first: priority bands from firm_scope.priority, each
+band waiting BAND_DAYS longer than the one above, so a low band is late but
+never starved (due_firms).
 
 Through Reacher when one is configured and answering, the same plan runs one
 address per Reacher call (Reacher does its own made-up-address test), else
@@ -86,7 +98,8 @@ CREATE TABLE IF NOT EXISTS email_hunt_firm (
     crd         TEXT PRIMARY KEY,
     domain      TEXT,
     state       TEXT NOT NULL,      -- active | done | accept_all | no_mail_server | no_domain
-                                    -- | free_mail | blocked | unreachable | waiting | dns | error
+                                    -- | free_mail | blocked | unreachable | waiting | dns_broken
+                                    -- | error (dns: rows from before 2026-10-16, see hunt_firm)
     pattern     TEXT,               -- the pattern confirmed addresses follow here
     fails       INTEGER NOT NULL DEFAULT 0,
     found       INTEGER NOT NULL DEFAULT 0,
@@ -113,8 +126,29 @@ STATE_LABEL = {
 FINAL = ("valid", "invalid", "unknown", "catch_all")   # settled until their reuse window expires
 
 EXHAUSTED_DAYS = 60
+# Questions per person per visit. Each slice used to ask ~400 addresses and
+# confirm ~44, with ~16 people a slice walking up to 18 candidates and ending
+# exhausted; the likeliest few patterns hold nearly every hit.
+FIRST_PASS = 6
+# Filed officers and ATS-designated people whose short list was all refused:
+# the next FIRST_PASS are asked after this many days, everyone else waits
+# EXHAUSTED_DAYS and then starts over from the likeliest.
+TAIL_DAYS = 7
 ACCEPT_ALL_DAYS = verify.CATCH_ALL_DAYS
 NO_MX_DAYS = 30
+# A domain whose own DNS gives no answer (our resolvers answering for others)
+# is asked again after these many days, a longer step each time in a row. It
+# used to be every 30 minutes.
+DNS_BROKEN_DAYS = (7, 30, 90)
+# Broken domains are rare (the mail platform job found 37 among ~16,000), so
+# more than this many in one run means a resolver failing upstream while
+# still answering the canary from its cache: the run stops as for an outage.
+DNS_BROKEN_PER_RUN = 10
+# Work order (due_firms): firm_scope.priority from BANDS[0] is band 0, from
+# BANDS[1] band 1, the rest of the scope band 2, everyone else band 3. Each
+# band down waits BAND_DAYS longer, so nothing waits for ever.
+BANDS = (75.0, 50.0)
+BAND_DAYS = 3
 NO_DOMAIN_DAYS = 14
 FREE_MAIL_DAYS = 30
 FIRM_RECHECK_DAYS = 7          # a finished firm is looked at again for new people
@@ -176,6 +210,9 @@ class Person:
     # found printed on a page (label 'ai_web'), or an old job's unconfirmed
     # guess (label: its pattern).
     seeds: list = field(default_factory=list)
+    # A title an ATS seller looks for (config/designations.yml): hunted first
+    # at the firm, and worth the rest of the list (TAIL_DAYS).
+    designated: bool = False
 
 
 def pattern_of(ref: str | None) -> str:
@@ -316,7 +353,8 @@ class Outcome:
     domain: str
     engine: str = ""
     firm: str = "active"          # active | accept_all | no_mail_server | blocked | unreachable
-                                  # | waiting | dns | error
+                                  # | waiting | dns_broken | error, or dns: our resolvers are
+                                  # down, so nothing is recorded and the run stops
     detail: str = ""
     retry_at: str | None = None
     hosts: list = field(default_factory=list)
@@ -347,8 +385,11 @@ class _Asker:
             return "late", None, "out of time"
         if t.engine == "reacher":
             r = verify.check_one(address, "reacher", t.auto)
-            self.rcpts += 1
-            self.sessions += 1
+            if r.get("outage"):
+                return "dns", None, r.get("reason") or ""
+            if not r.get("memory"):
+                self.rcpts += 1
+                self.sessions += 1
             smtp = r.get("smtp") or {}
             kind = {"valid": "valid", "invalid": "invalid", "catch_all": "accept_all",
                     "no_mail_server": "no_mx"}.get(r["status"])
@@ -418,14 +459,24 @@ def _taken_by_others(p: Person, task: Task, index) -> set[str]:
 
 def _plan(p: Person, task: Task, pattern: str | None) -> list[tuple[str, str, str]]:
     """The order to ask in: an address research found printed on a page, the
-    firm's own pattern, an old job's guess, then the rest."""
+    firm's own pattern in every form this person could have it in (nickname,
+    middle name or initial, either half of a double surname), an old job's
+    guess, then the rest."""
     made = emailguess.candidates(p.first, p.last, task.domain, middle=p.middle,
-                                 other_lasts=p.others, preferred=pattern, order=task.order)
+                                 other_lasts=p.others, preferred=pattern, order=task.order,
+                                 limit=10_000)
+    head: list = []
+    if pattern:
+        # A pattern seen on a real address at this firm: its forms first, so
+        # a William Brown at a first.last firm is asked bill.brown@ before
+        # any other pattern is tried.
+        made = emailguess.pattern_first(made, pattern)
+        head = [c for c in made if c[1] in emailguess.family(pattern)]
+    made = made[:emailguess.MAX_CANDIDATES]
     found = [(a, lab, "") for a, lab in p.seeds
              if lab == "ai_web" and a.endswith("@" + task.domain)]
     guesses = [(a, lab, "") for a, lab in p.seeds
                if lab != "ai_web" and a.endswith("@" + task.domain)]
-    head = made[:1] if pattern else []
     out: dict[str, tuple[str, str, str]] = {}
     for c in found + head + guesses + made:
         out.setdefault(c[0], c)
@@ -472,6 +523,8 @@ def _hunt_person(p: Person, task: Task, out: Outcome, asker: _Asker, pattern: st
     clash = _taken_by_others(p, task, index)
     now = _now()
     clashed = 0
+    asked = 0
+    more = False
     for cand in plan:
         addr = cand[0]
         if addr in clash:
@@ -491,7 +544,13 @@ def _hunt_person(p: Person, task: Task, out: Outcome, asker: _Asker, pattern: st
             return {"state": "searching", "next_try_at": prev["next_try_at"],
                     "detail": "Waiting to ask the mail server again about a likely address",
                     "tried": _tried(p, plan, task)}
+        if asked >= FIRST_PASS and cand[1] != "ai_web":
+            # This visit's share for the person is used; the long tail rarely
+            # answers yes (see FIRST_PASS and TAIL_DAYS).
+            more = True
+            break
         kind, code, text = asker.ask(addr, need=2)
+        asked += 0 if cand[1] == "ai_web" else 1
         if kind == "dropped":
             kind, code, text = asker.ask(addr, need=2)     # once more, in a new conversation
             if kind == "dropped":
@@ -544,6 +603,9 @@ def _hunt_person(p: Person, task: Task, out: Outcome, asker: _Asker, pattern: st
         if kind == "no_mx":
             out.firm, out.detail = "no_mail_server", text
             return None
+        if kind == "dns":
+            out.firm, out.detail = "dns", text      # our resolvers, mid-firm: stop the run
+            return None
         if kind == "capped":
             out.capped = True
             return None
@@ -559,8 +621,16 @@ def _hunt_person(p: Person, task: Task, out: Outcome, asker: _Asker, pattern: st
     if not refused:
         return {"state": "unverifiable", "next_try_at": _later(days=EXHAUSTED_DAYS),
                 "tried": tried, "detail": STATE_LABEL["unverifiable"]}
+    if more and (p.rank == 0 or p.designated):
+        # A filed officer or an ATS buyer is worth the less likely forms too,
+        # a few at a time, after everyone else's likeliest have had a turn.
+        return {"state": "exhausted", "next_try_at": _later(days=TAIL_DAYS), "tried": tried,
+                "detail": f"Tried the {tried} likeliest addresses at {task.domain}; the mail "
+                          f"server turned every one away. Trying less likely forms after "
+                          f"{TAIL_DAYS} days."}
+    which = f"the {tried} likeliest" if more else f"{tried} likely"
     return {"state": "exhausted", "next_try_at": _later(days=EXHAUSTED_DAYS), "tried": tried,
-            "detail": f"Tried {tried} likely addresses at {task.domain}; the mail server "
+            "detail": f"Tried {which} addresses at {task.domain}; the mail server "
                       f"turned every one away. Looking again after {EXHAUSTED_DAYS} days."}
 
 
@@ -589,8 +659,19 @@ def hunt_firm(task: Task) -> Outcome:
     try:
         hosts, state = verify.mail_hosts(task.domain)
         if state == "dns":
-            out.firm, out.retry_at = "dns", _later(minutes=30)
-            out.detail = f"Could not look up the mail servers for {task.domain}"
+            # Our resolvers answer nothing, not even for a domain that always
+            # resolves: an outage on our side, which says nothing about this
+            # firm. Before, this stamped the firm `dns` and the run moved on,
+            # its people budget refunded, so one outage stamped up to the
+            # 1,200 firms a run fetches, and ~16,000 piled up. Now the run
+            # stops and stores nothing (run, apply_outcome).
+            out.firm = "dns"
+            out.detail = "Our DNS resolvers are not answering"
+            return out
+        if state == "broken":
+            out.firm = "dns_broken"
+            out.detail = (f"The DNS for {task.domain} gives no answer, so no mail can reach "
+                          f"it for now")
             return out
         if state in ("none", "null"):
             out.firm = "no_mail_server"
@@ -744,12 +825,13 @@ def queue_firm(conn, crd: str, *, reset: bool = True) -> int:
                  " next_try_at=excluded.next_try_at, fails=0", (crd, ts, ts))
     conn.commit()
     if reset:
-        # A fresh look at the domain too: it may have stopped accepting anything.
+        # A fresh look at the domain too: it may have stopped accepting
+        # anything, moved its mail, or started answering checks again.
         try:
             r = conn.execute("SELECT domain FROM email_hunt_firm WHERE crd=?", (crd,)).fetchone()
             if r and r["domain"]:
-                conn.execute("UPDATE mail_domain SET checked_at=NULL WHERE domain=?",
-                             (r["domain"],))
+                conn.execute("UPDATE mail_domain SET checked_at=NULL, mx_at=NULL, retry_at=NULL,"
+                             " unclear=0 WHERE domain=?", (r["domain"],))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -794,6 +876,26 @@ def _attempts(conn, crd: str) -> dict[str, dict]:
         " WHERE crd=?", (crd,)).fetchall()}
 
 
+_RULES: list | None = None
+
+
+def _designated(title: str | None) -> bool:
+    """Whether a title is one the ATS list's sellers look for (the People
+    screen's designations, config/designations.yml)."""
+    global _RULES
+    if not title:
+        return False
+    try:
+        from . import designations
+        if _RULES is None:
+            _RULES = [r for r in designations.matcher()
+                      if any(t.startswith("ats:") for t in r[0])]
+        return bool(designations.tags_for(title, _RULES))
+    except Exception:
+        _RULES = _RULES or []
+        return False
+
+
 def build_task(conn, crd: str, *, firm_pat: dict, order: list, engine: str, auto: bool,
                deadline: float, budget: int, only_seeded: bool = False,
                force: bool = False, stats: Counter | None = None) -> Task | None:
@@ -823,6 +925,11 @@ def build_task(conn, crd: str, *, firm_pat: dict, order: list, engine: str, auto
         return False
 
     need = [p for p in everyone if due(p)]
+    for p in need:
+        p.designated = _designated(p.title)
+    # Value first inside the firm too: the people an ATS seller calls, then
+    # officers, website names and the roster (a stable sort keeps the rest).
+    need.sort(key=lambda p: (not p.designated, p.rank))
     domain = emailguess.domain_for(conn, crd)
     if not need:
         _set_firm(conn, crd, domain, "done", min(wake + [_later(days=FIRM_RECHECK_DAYS)]),
@@ -956,6 +1063,24 @@ def apply_outcome(conn, task: Task, out: Outcome, stats: Counter) -> None:
         stats[f"people_{res['state']}"] += 1
     stats["found"] += found
     left = [p for p in task.people if p.key not in out.people]
+    if out.firm == "dns" or (out.firm == "dns_broken"
+                             and stats["firms_dns_broken"] >= DNS_BROKEN_PER_RUN):
+        # Our outage: what was learned before it is kept above, the firm
+        # keeps its place and its state, and nothing is said about it.
+        stats["dns_outage"] += 1
+        return
+    if out.firm == "dns_broken":
+        r = conn.execute("SELECT state, fails FROM email_hunt_firm WHERE crd=?", (crd,)).fetchone()
+        fails = int(r["fails"] or 0) if r and r["state"] == "dns_broken" else 0
+        if r and r["state"] != "dns_broken":
+            conn.execute("UPDATE email_hunt_firm SET fails=0 WHERE crd=?", (crd,))
+        days = DNS_BROKEN_DAYS[min(fails, len(DNS_BROKEN_DAYS) - 1)]
+        nxt = _later(days=days)
+        detail = f"{out.detail}. Asking again after {days} days."
+        _bulk_people(conn, crd, left, "no_mail_server", domain, detail, nxt)
+        _set_firm(conn, crd, domain, "dns_broken", nxt, detail, failed=True)
+        stats["firms_dns_broken"] += 1
+        return
     if out.firm == "accept_all":
         settle_accept_all(conn, crd, domain, left, stats)
         return
@@ -977,7 +1102,7 @@ def apply_outcome(conn, task: Task, out: Outcome, stats: Counter) -> None:
         _set_firm(conn, crd, domain, out.firm, nxt, out.detail, out.pattern, found, failed=True)
         stats[f"firms_{out.firm}"] += 1
         return
-    if out.firm in ("waiting", "dns"):
+    if out.firm == "waiting":
         nxt = out.retry_at or _later(minutes=GREYLIST_MINUTES)
         _set_firm(conn, crd, domain, out.firm, nxt, out.detail, out.pattern, found)
         stats[f"firms_{out.firm}"] += 1
@@ -999,10 +1124,16 @@ def apply_outcome(conn, task: Task, out: Outcome, stats: Counter) -> None:
 
 
 def due_firms(conn, limit: int, crd: str | None = None) -> list[tuple[str, bool]]:
-    """All firms are eligible, with requested refreshes and unvisited firms first.
+    """All firms are eligible: requested refreshes first, then best value first.
 
-    Product priority orders the first pass; a large high-priority firm cannot
-    monopolise every slice while unvisited firms wait indefinitely.
+    The order used to be "longest since last checked", so a firm at the top
+    of a product list waited behind ~35,000 others. Now each firm counts as
+    due BAND_DAYS later for each band it sits below the top (BANDS on
+    firm_scope.priority), and firms are taken in that order: a top firm that
+    just became due goes before a bottom one due for less than nine days, and
+    a bottom one never waits more than nine days longer than a top one. Firms
+    never visited count as due since forever, as before (a few dozen, from
+    each week's new registrations).
     """
     if crd:
         return [(crd, False)]
@@ -1015,8 +1146,11 @@ def due_firms(conn, limit: int, crd: str | None = None) -> list[tuple[str, bool]
         " WHERE h.crd IS NULL OR h.next_try_at IS NULL OR h.next_try_at <= ?"
         "    OR r.requested_at > h.checked_at"
         " ORDER BY (r.requested_at > COALESCE(h.checked_at,'')) DESC NULLS LAST,"
-        " (h.crd IS NOT NULL), h.checked_at NULLS FIRST, s.priority DESC NULLS LAST, f.crd LIMIT ?",
-        (now, limit)).fetchall()]
+        " COALESCE(h.next_try_at, '1970-01-01T00:00:00+00:00')::timestamptz"
+        "   + (CASE WHEN s.priority >= ? THEN 0 WHEN s.priority >= ? THEN 1"
+        "      WHEN s.crd IS NOT NULL THEN 2 ELSE 3 END) * ? * INTERVAL '1 day',"
+        " s.priority DESC NULLS LAST, f.crd LIMIT ?",
+        (now, BANDS[0], BANDS[1], BAND_DAYS, limit)).fetchall()]
     return out
 
 
@@ -1059,7 +1193,9 @@ def run(conn, *, limit: int = 300, seconds: float = 540, crd: str | None = None,
                     stats["store_errors"] += 1
 
         for firm, only_seeded in firms:
-            if budget <= 0 or time.monotonic() >= deadline - 5:
+            if budget <= 0 or time.monotonic() >= deadline - 5 or stats["dns_outage"]:
+                # An outage of our resolvers ends the run at once: every later
+                # firm would fail the same way, and nothing is learned from it.
                 break
             try:
                 task = build_task(conn, firm, firm_pat=firm_pat, order=order, engine=eng,
@@ -1102,5 +1238,7 @@ def summary(stats: Counter) -> str:
                                                        "people_exhausted", "sessions",
                                                        "firm_errors", "store_errors"))]
     parts += [f"{k} {v}" for k, v in extra]
+    if stats.get("dns_outage"):
+        parts.append("stopped: our DNS resolvers are failing")
     return f"email hunt via {eng} in {stats.get('seconds', 0)}s: " + ", ".join(parts)
 

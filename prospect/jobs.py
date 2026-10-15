@@ -25,6 +25,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from .custodian_refresh import BACKLOG_SQL as _CUSTODIAN_BACKLOG  # noqa: E402
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS auto_task (
     kind          TEXT PRIMARY KEY,
@@ -107,7 +109,8 @@ JOBS: list[Job] = [
     Job("people_index", "People screen",
         "Folds the roster, officer titles and every usable email, phone and LinkedIn profile "
         "into the table the People screen reads, so new contacts appear there within half an "
-        "hour and the screen stays instant.",
+        "hour and the screen stays instant. Most runs only check what changed and refresh "
+        "just those firms; the whole table is rebuilt daily.",
         "scripts.build_people_index", (), every_hours=0.5, timeout_s=900,
         backlog_sql="SELECT CASE WHEN to_regclass('people_index') IS NULL THEN 1 ELSE 0 END n",
         group="contacts", min_gap_minutes=15),
@@ -178,7 +181,9 @@ JOBS: list[Job] = [
         "Reads each firm's own website (team, bio, contact pages and vCards) for the "
         "people who work there, their titles, emails and direct lines. Re-reads a site "
         "after the interval set in Settings.",
-        "scripts.web_enrich", ("--limit", "6", "--parallel", "3"), every_hours=6, timeout_s=2400,
+        # Each of the three shards claims firms from one shared queue until its
+        # seconds are up, so no shard waits for the slowest (scripts/web_enrich.py).
+        "scripts.web_enrich", ("--limit", "40", "--parallel", "3", "--seconds", "420"), every_hours=6, timeout_s=2400,
         backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN web_enrich_state w ON w.crd=f.crd LEFT JOIN firm_refresh_request r ON r.crd=f.crd WHERE f.website IS NOT NULL AND f.website != '' AND (w.crd IS NULL OR w.scanned_at < '{recrawl_cutoff}' OR r.requested_at > w.scanned_at)",
         done_sql="SELECT COUNT(*) n FROM web_enrich_state",
         total_sql="SELECT COUNT(*) n FROM firm_current WHERE website IS NOT NULL AND website != ''",
@@ -202,9 +207,10 @@ JOBS: list[Job] = [
         backlog_sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM office_phone_state WHERE k='attach' AND stamp = (SELECT '1/' || (SELECT COALESCE(MAX(id), 0) FROM snapshot WHERE source_key IN ('adv_feed','adv_state_feed','ia_indvl_feed'))::text || '/' || (SELECT COUNT(*) FROM firm_office)::text || '/' || (SELECT COUNT(*) FROM firm_social)::text)) THEN 0 ELSE 1 END n",
         group="contacts"),
     Job("contact_search", "Web search",
-        "Finds published personal emails, phones and LinkedIn profiles. Keeps searching "
-        "while any channel is missing, including people with a LinkedIn profile already. "
-        "Repeat interval is set in Crawling. Search engines are rate limited and source pages checked.",
+        "Finds published personal emails, phones and LinkedIn profiles, decision-makers at the "
+        "best-scored firms first. Keeps searching while any channel is missing; people who "
+        "already have a LinkedIn profile come after everyone without one. Repeat interval is "
+        "set in Crawling. Search engines are rate limited and source pages checked.",
         "scripts.search_contacts", ("--limit", "40", "--seconds", "420"), every_hours=0.25,
         timeout_s=900,
         backlog_sql=None,
@@ -233,7 +239,9 @@ JOBS: list[Job] = [
         "without sending anything, and re-checks after 90 days. Personal addresses first. "
         "Guessed addresses are the email hunt's.",
         "scripts.verify_emails", ("--limit", "60"), every_hours=1, timeout_s=1800,
-        backlog_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web') AND verify_status IN ('unverified','queued')",
+        # Addresses waiting on a domain that is backed off (no clear answer, or it
+        # refused our check) are not work to do yet.
+        backlog_sql="SELECT COUNT(*) n FROM contact_point cp LEFT JOIN mail_domain md ON md.domain = split_part(cp.value, '@', 2) WHERE cp.kind='email' AND cp.source NOT IN ('pattern','ai_web') AND (cp.verify_status = 'queued' OR (cp.verify_status = 'unverified' AND (md.retry_at IS NULL OR md.retry_at <= '{now}')))",
         done_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web') AND verify_status NOT IN ('unverified','queued')",
         total_sql="SELECT COUNT(*) n FROM contact_point WHERE kind='email' AND source NOT IN ('pattern','ai_web')", group="contacts",
         lane="mail", min_gap_minutes=10,
@@ -250,10 +258,14 @@ JOBS: list[Job] = [
         recent_sql="SELECT COUNT(*) n FROM firm_mail_platform WHERE checked_at >= '{day_ago}'",
         recent_label="firms checked"),
     Job("firm_refresh", "Custodian refresh",
-        "Reads today's custodian names from the current ADV for firms that report "
-        "custody, since the bulk custodian archive ends December 2024.",
+        "Reads today's custodian names from the current ADV for firms that report custody, "
+        "since the bulk custodian archive ends December 2024. A firm is read again only when "
+        "the weekly SEC feed shows a newer filing, or after 180 days; a filing that fails is "
+        "retried after a day, a week, then a month.",
         "scripts.autopilot_slice", ("firm_refresh",), every_hours=24, timeout_s=600,
-        backlog_sql="SELECT COUNT(*) n FROM firm_current f LEFT JOIN firm_refresh r ON r.crd=f.crd WHERE (f.q5k3='Y' OR f.q7b='Y') AND (r.crd IS NULL OR (r.status!='ok' AND r.fetched_at < to_char(NOW()-INTERVAL '1 day', 'YYYY-MM-DD\"T\"HH24:MI:SS')) OR r.fetched_at < to_char(NOW()-INTERVAL '30 days', 'YYYY-MM-DD\"T\"HH24:MI:SS'))",
+        # The same rule the slice picks its filings by (prospect/custodian_refresh.py),
+        # so the count and the queue never disagree.
+        backlog_sql=_CUSTODIAN_BACKLOG,
         done_sql="SELECT COUNT(*) n FROM firm_refresh WHERE status='ok'",
         group="filings",
         recent_sql="SELECT COUNT(*) n FROM firm_refresh WHERE fetched_at >= '{day_ago}'",
@@ -268,7 +280,8 @@ JOBS: list[Job] = [
         done_sql="SELECT COUNT(*) n FROM firm_class c JOIN firm_current f ON f.crd=c.crd",
         total_sql="SELECT COUNT(*) n FROM firm_current", group="filings"),
     Job("rescore", "Scores",
-        "Recomputes every product list from the latest data. Takes seconds.",
+        "Recomputes every product list from the latest data and writes only the scores that "
+        "changed.",
         "scripts.score_products", (), every_hours=3, timeout_s=1200, group="system",
         min_gap_minutes=30),
     Job("cusip_verify", "Security map check",
@@ -291,6 +304,22 @@ JOBS: list[Job] = [
         "Repeat interval is set in Crawling; the AI daily limit still applies.",
         "scripts.ai_research", ("--limit", "8"), every_hours=1, timeout_s=1500,
         needs="ai:research", group="ai", lane="search"),
+    Job("ai_extract", "AI page reading",
+        "Reads the team pages the website reader could not make sense of (names with no "
+        "title or email) with the AI provider, best firms first, and keeps only what the "
+        "page prints. Emails it finds still need the mail server's confirmation. A page is "
+        "sent again only when its text changes, and the job uses at most half of the AI "
+        "daily limit, so AI research keeps the rest.",
+        "scripts.ai_jobs", ("extract", "--limit", "30", "--seconds", "600"), every_hours=1,
+        timeout_s=1500, needs="ai:extract", group="ai", lane="search",
+        # Queued pages, but 0 once today's extraction share (half of ai.daily_limit) or the
+        # reserve AI research keeps is reached, so a capped job is not restarted every turn.
+        # Must match scripts/web_enrich.py extract_room.
+        backlog_sql="WITH lim AS (SELECT COALESCE((SELECT NULLIF(value, '')::numeric FROM app_setting WHERE key = 'ai.daily_limit'), 400) AS n), used AS (SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE feature = 'extract') AS x FROM ai_call WHERE at >= LEFT('{now}', 10)) SELECT CASE WHEN used.x + 2 > FLOOR(lim.n * 0.5) OR used.n + 2 > lim.n - GREATEST(20, FLOOR(lim.n * 0.25)) THEN 0 ELSE (SELECT COUNT(*) FROM web_ai_page WHERE status = 'queued') END AS n FROM lim, used",
+        done_sql="SELECT COUNT(*) n FROM web_ai_page WHERE status='done'",
+        total_sql="SELECT COUNT(*) n FROM web_ai_page",
+        recent_sql="SELECT COUNT(*) n FROM web_ai_page WHERE status='done' AND done_at >= '{day_ago}'",
+        recent_label="pages read"),
     Job("brochure_ocr", "Brochures without a text layer",
         "Reads the few brochures that come back empty from the PDF reader: most were typed "
         "into the SEC's fillable form, so their text is read exactly from the form fields; "

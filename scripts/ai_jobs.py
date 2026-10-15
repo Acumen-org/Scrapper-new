@@ -1,16 +1,22 @@
-"""The two background jobs that use the AI provider, each one slice per run.
+"""The background jobs that use the AI provider, each one slice per run.
 
   briefs   write or refresh the AI brief for the best firms on the lists whose
            data changed since their brief was written (a hash of the dossier
            decides), so the brief on a firm page is ready before anyone asks
   clean    tidy titles the rules could not place and sort those people into
            roles, in batches; stored with source 'ai'
+  extract  read the team pages the website reader queued for the AI (names
+           with no title or email), best firms first, and store what the
+           model finds exactly as the reader used to when it asked inline
+           (scripts/web_enrich.py run_ai_queue). Uses at most half of the
+           day's allowance, so AI research keeps the rest.
 
-Both stop as soon as the day's AI allowance is spent, and do nothing at all
+All stop as soon as the day's AI allowance is spent, and do nothing at all
 when no provider is connected.
 
     python -m scripts.ai_jobs briefs [--limit N]
     python -m scripts.ai_jobs clean [--limit N]
+    python -m scripts.ai_jobs extract [--limit N] [--seconds S]
 """
 
 from __future__ import annotations
@@ -106,11 +112,41 @@ def clean(limit: int) -> str:
     return f"{msg}; AI placed {fixed} more"
 
 
+def extract(limit: int, seconds: float) -> tuple[str, int]:
+    """One slice of the AI page-reading queue. Fails the slice (1) when the
+    provider kept failing, so the worker backs off instead of retrying at once."""
+    from prospect import config, contacts, jobs, runlog
+    from scripts import web_enrich
+    c = db.connect()
+    ai.init(c)
+    contacts.init(c)
+    web_enrich.init(c)
+    with runlog.Run(c, "ai_extract", "enrich", config.load().stamp) as run:
+        stats = web_enrich.run_ai_queue(c, limit=limit, seconds=seconds)
+        line = web_enrich.ai_summary(stats)
+        if stats.get("not_enabled"):
+            run.skip(line)
+        else:
+            run.rows_in = stats.get("pages", 0)
+            run.rows_out = stats.get("stored", 0)
+            run.note(line[:300])
+        if stats.get("stored"):
+            jobs.request_run(c, "email_verify")
+            jobs.request_run(c, "rescore")
+    c.close()
+    return line, 1 if stats.get("stopped_for_error") else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["briefs", "clean"])
+    ap.add_argument("what", choices=["briefs", "clean", "extract"])
     ap.add_argument("--limit", type=int, default=15)
+    ap.add_argument("--seconds", type=float, default=600, help="extract: time budget")
     a = ap.parse_args()
+    if a.what == "extract":
+        line, code = extract(a.limit, a.seconds)
+        print(line)
+        return code
     print(briefs(a.limit) if a.what == "briefs" else clean(a.limit))
     return 0
 

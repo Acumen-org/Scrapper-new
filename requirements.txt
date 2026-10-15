@@ -17,6 +17,9 @@ lxml==6.1.1
 # Apache-2.0: https://github.com/daviddrysdale/python-phonenumbers
 phonenumbers==9.0.41
 pdfplumber==0.11.10
+# Reads ADV text 10 to 100 times faster than pdfplumber for the custodian refresh
+# (pdfplumber already depends on it; pinned to the version tested).
+pypdfium2==5.14.0
 PyYAML==6.0.3
 requests==2.33.0
 

@@ -42,7 +42,15 @@ The @linkedin.com lesson is why an accepted address only counts as valid once a
 made-up address at the same domain has been refused: a server that says yes to
 everything is not confirming anything. That made-up probe is remembered per
 domain for 30 days (table mail_domain) so a firm with forty people costs one
-probe, not forty.
+probe, not forty, and an address at a domain known to accept anything is
+answered catch_all from that memory without asking its server at all.
+
+mail_domain also keeps what DNS said (mx_at, reused for MX_STORE_DAYS) and,
+for email_verify, how long to leave a domain alone after its server refused
+our check or gave no clear answer (retry_at: 7, then 30, then 90 days in a
+row; 30 after a refusal). A lookup that gets no answer is followed by one
+about a domain that always resolves, so an outage of our own resolvers is
+never taken for a fact about anyone's domain.
 
 Being a good citizen with other people's mail servers is not optional here:
 never more than one connection to a mail server at a time, a pause between
@@ -83,6 +91,17 @@ REACHER_TTL_S = 300
 REACHER_TIMEOUT = 60.0      # Reacher may wait out a slow server itself
 CATCH_ALL_DAYS = 30
 MX_TTL_S = 3600
+# Mail servers read from DNS are kept in mail_domain and reused this long, so
+# a slice no longer asks DNS about every domain it touches all over again.
+MX_STORE_DAYS = 7
+# Asked when a lookup gets no answer: a domain that always publishes mail
+# servers. If it answers, our resolvers are fine and the domain's own DNS is
+# broken; if not, the resolvers are down and nothing is said about the domain.
+CANARY_DOMAIN = "gmail.com"
+# A domain whose server gave no clear answer is left alone for this long, a
+# longer step each time in a row; one that refused our check, for POLICY_DAYS.
+UNCLEAR_DAYS = (7, 30, 90)
+POLICY_DAYS = 30
 BATCH = 20                  # verify_contacts commits after this many
 WORKERS = 4
 # Conversations per minute across every mail server, when Settings holds no
@@ -114,9 +133,16 @@ CREATE TABLE IF NOT EXISTS mail_domain (
     provider   TEXT,       -- google | m365 | proofpoint | mimecast | ... | other
     catch_all  INTEGER,    -- 1 accepts any address, 0 refuses made-up ones, NULL not known
     smtp_ok    INTEGER,    -- 1 a check conversation worked, 0 refused or unreachable
-    checked_at TEXT        -- when catch_all was last determined; trusted for 30 days
+    checked_at TEXT,       -- when catch_all was last determined; trusted for 30 days
+    mx_at      TEXT,       -- when DNS gave mx; reused for MX_STORE_DAYS
+    mx_state   TEXT,       -- ok | none | null: what that lookup said
+    retry_at   TEXT,       -- email_verify leaves the domain's addresses alone until then
+    unclear    INTEGER NOT NULL DEFAULT 0   -- checks in a row with no clear answer
 );
 """
+# The same columns for an install whose mail_domain predates them.
+MAIL_DOMAIN_COLUMNS = (("mx_at", "TEXT"), ("mx_state", "TEXT"), ("retry_at", "TEXT"),
+                       ("unclear", "INTEGER NOT NULL DEFAULT 0"))
 
 # Consumer mailbox providers. An address here is a person's own inbox, not a
 # firm's, which matters for outreach even when it is perfectly deliverable.
@@ -524,6 +550,9 @@ def init(conn) -> None:
     ever run."""
     global _TABLE_READY
     conn.executescript(SCHEMA)
+    from .db import add_column
+    for col, decl in MAIL_DOMAIN_COLUMNS:
+        add_column(conn, "mail_domain", col, decl)
     conn.commit()
     _TABLE_READY = True
     try:
@@ -534,8 +563,21 @@ def init(conn) -> None:
 
 
 def _cutoff() -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=CATCH_ALL_DAYS)
-            ).isoformat(timespec="seconds")
+    return _ago(CATCH_ALL_DAYS)
+
+
+def _ago(days: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def _later(days: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def _new_rec() -> dict:
+    return {"mx": [], "provider": None, "catch_all": None, "smtp_ok": None,
+            "checked_at": None, "mx_at": None, "mx_state": None, "retry_at": None,
+            "unclear": 0}
 
 
 def _cached_catch_all(domain: str) -> bool | None:
@@ -552,8 +594,7 @@ def _remember(domain: str, hosts: list[str], provider: str,
     when catch_all is freshly determined, so a value read from the cache can
     never extend its own life past 30 days."""
     with _DOM_LOCK:
-        rec = _DOMAINS.get(domain) or {"catch_all": None, "smtp_ok": None,
-                                       "checked_at": _now()}
+        rec = _DOMAINS.get(domain) or dict(_new_rec(), checked_at=_now())
         rec["mx"] = list(hosts)
         rec["provider"] = provider
         if smtp_ok is not None:
@@ -566,15 +607,17 @@ def _remember(domain: str, hosts: list[str], provider: str,
 
 
 def _load_domains(conn, domains) -> None:
+    # Every row, however old: each part carries its own date (checked_at for
+    # catch_all, mx_at for the mail servers) and is only trusted while fresh,
+    # and a backoff must be read to be escalated.
     with _DOM_LOCK:
         want = sorted({d for d in domains if d and d not in _DOMAINS})
-    cutoff = _cutoff()
     for i in range(0, len(want), 500):
         chunk = want[i:i + 500]
         rows = conn.execute(
-            f"SELECT domain, mx, provider, catch_all, smtp_ok, checked_at FROM mail_domain"
-            f" WHERE domain IN ({','.join('?' * len(chunk))}) AND checked_at >= ?",
-            (*chunk, cutoff)).fetchall()
+            f"SELECT domain, mx, provider, catch_all, smtp_ok, checked_at, mx_at, mx_state,"
+            f" retry_at, unclear FROM mail_domain"
+            f" WHERE domain IN ({','.join('?' * len(chunk))})", chunk).fetchall()
         with _DOM_LOCK:
             for r in rows:
                 _DOMAINS.setdefault(r["domain"], {
@@ -582,7 +625,9 @@ def _load_domains(conn, domains) -> None:
                     "provider": r["provider"],
                     "catch_all": None if r["catch_all"] is None else bool(r["catch_all"]),
                     "smtp_ok": None if r["smtp_ok"] is None else bool(r["smtp_ok"]),
-                    "checked_at": r["checked_at"]})
+                    "checked_at": r["checked_at"], "mx_at": r["mx_at"],
+                    "mx_state": r["mx_state"], "retry_at": r["retry_at"],
+                    "unclear": int(r["unclear"] or 0)})
 
 
 def _save_domains(conn) -> None:
@@ -594,15 +639,20 @@ def _save_domains(conn) -> None:
         _DIRTY.clear()
         rows = [(d, ",".join(_DOMAINS[d].get("mx") or []), _DOMAINS[d].get("provider"),
                  flag(_DOMAINS[d].get("catch_all")), flag(_DOMAINS[d].get("smtp_ok")),
-                 _DOMAINS[d].get("checked_at")) for d in dirty if d in _DOMAINS]
+                 _DOMAINS[d].get("checked_at"), _DOMAINS[d].get("mx_at"),
+                 _DOMAINS[d].get("mx_state"), _DOMAINS[d].get("retry_at"),
+                 int(_DOMAINS[d].get("unclear") or 0)) for d in dirty if d in _DOMAINS]
     if not rows:
         return
     try:
         conn.executemany(
-            "INSERT INTO mail_domain (domain, mx, provider, catch_all, smtp_ok, checked_at)"
-            " VALUES (?,?,?,?,?,?) ON CONFLICT(domain) DO UPDATE SET mx=excluded.mx,"
+            "INSERT INTO mail_domain (domain, mx, provider, catch_all, smtp_ok, checked_at,"
+            " mx_at, mx_state, retry_at, unclear) VALUES (?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(domain) DO UPDATE SET mx=excluded.mx,"
             " provider=excluded.provider, catch_all=excluded.catch_all,"
-            " smtp_ok=excluded.smtp_ok, checked_at=excluded.checked_at", rows)
+            " smtp_ok=excluded.smtp_ok, checked_at=excluded.checked_at,"
+            " mx_at=excluded.mx_at, mx_state=excluded.mx_state,"
+            " retry_at=excluded.retry_at, unclear=excluded.unclear", rows)
     except Exception:
         with _DOM_LOCK:          # keep them for the next save
             _DIRTY.update(dirty)
@@ -640,32 +690,106 @@ def _own_conn_cache(action: str, domains=()) -> None:
 
 # ---------------------------------------------------------------- lookups
 
+_CANARY = {"t": -1e9, "ok": True}
+_CANARY_LOCK = threading.Lock()
+
+
+def _resolver_ok(since: float) -> bool:
+    """Whether our resolvers answer at all, asked after a lookup got nothing:
+    one question about a domain that always publishes mail servers. An answer
+    taken after that lookup began is reused, so a run of broken domains costs
+    one extra question, not one each. The email hunt used to read every lookup
+    that got nothing as "this firm's DNS failed" and stamp it `dns`; the mail
+    platform job learned this canary in ffa8376."""
+    with _CANARY_LOCK:
+        # perf_counter: monotonic() ticks only every 15 ms on Windows, too
+        # coarse to tell "asked after this lookup began" from "just before".
+        if _CANARY["t"] > since:
+            return _CANARY["ok"]
+        ok = bool(mailcheck.mx_records(CANARY_DOMAIN))
+        _CANARY.update(t=time.perf_counter(), ok=ok)
+        return ok
+
+
+def _stored_mx(domain: str) -> tuple[list[str], str] | None:
+    """What DNS said about the domain in the last MX_STORE_DAYS, from
+    mail_domain (loaded by load_domains), or None when that is too old."""
+    with _DOM_LOCK:
+        rec = _DOMAINS.get(domain)
+        if not rec or rec.get("mx_state") not in ("ok", "none", "null"):
+            return None
+        if (rec.get("mx_at") or "") < _ago(MX_STORE_DAYS):
+            return None
+        hosts = list(rec.get("mx") or []) if rec["mx_state"] == "ok" else []
+    if rec["mx_state"] == "ok" and not hosts:
+        return None
+    return hosts, rec["mx_state"]
+
+
+def _note_mx(domain: str, hosts: list[str], state: str) -> None:
+    with _DOM_LOCK:
+        rec = _DOMAINS.get(domain) or _new_rec()
+        rec.update(mx=list(hosts), mx_state=state, mx_at=_now())
+        rec["provider"] = rec.get("provider") or provider_for(hosts)
+        _DOMAINS[domain] = rec
+        _DIRTY.add(domain)
+
+
 def _mail_hosts(domain: str) -> tuple[list[str], str]:
-    """(hosts, state), state one of ok | none | null | dns. Hosts are MX names,
-    most preferred first, or the domain itself when it has no MX but does have
-    an address, which RFC 5321 section 5.1 says senders must then try."""
+    """(hosts, state), state one of ok | none | null | broken | dns. Hosts are
+    MX names, most preferred first, or the domain itself when it has no MX but
+    does have an address, which RFC 5321 section 5.1 says senders must then try.
+
+    broken: the domain's own DNS gave no answer while our resolvers answer for
+    a domain that always resolves, so it is a fact about the domain. dns: the
+    resolvers themselves are not answering, which says nothing about it."""
     if domain in _MX_OVERRIDE:
         return list(_MX_OVERRIDE[domain]), "ok"
     hit = _MX_CACHE.get(domain)
     if hit and time.monotonic() - hit[2] < MX_TTL_S:
         return list(hit[0]), hit[1]
-    mx = mailcheck.mx_records(domain)
+    stored = _stored_mx(domain)
+    if stored is not None:
+        _MX_CACHE[domain] = (stored[0], stored[1], time.monotonic())
+        return list(stored[0]), stored[1]
+    if not mailcheck.valid_host(domain):
+        out = ([], "none")        # no question can even be asked about this name
+        _MX_CACHE[domain] = (out[0], out[1], time.monotonic())
+        return out
+    started = time.perf_counter()
+    fail: list[str] = []
+    out = _lookup(domain, fail)
+    if out is None and "error" not in fail and _resolver_ok(started):
+        # Nothing came back in time, yet the resolvers answer: the domain's
+        # own servers may just be slow, and a resolver keeps working on a
+        # question after we stop waiting, so a second ask usually finds it.
+        out = _lookup(domain, fail)
+    if out is None:
+        if not _resolver_ok(started):
+            return [], "dns"      # never cached: a resolver outage is not an answer
+        # Kept for this process only: the caller decides when to look again.
+        _MX_CACHE[domain] = ([], "broken", time.monotonic())
+        return [], "broken"
+    _MX_CACHE[domain] = (out[0], out[1], time.monotonic())
+    _note_mx(domain, out[0], out[1])
+    return list(out[0]), out[1]
+
+
+def _lookup(domain: str, fail: list) -> tuple[list[str], str] | None:
+    mx = mailcheck.mx_records(domain, fail=fail)
     if mx is None:
-        return [], "dns"          # never cached: a resolver outage is not an answer
+        return None
     if mx:
         hosts = [h for _, h in mx if h]
-        out = (hosts, "ok") if hosts else ([], "null")
-    else:
-        a = mailcheck.a_records(domain)
+        return (hosts, "ok") if hosts else ([], "null")
+    a = mailcheck.a_records(domain, fail=fail)
+    if a is None:
+        return None
+    if not a:
+        a = mailcheck.a_records(domain, ipv6=True, fail=fail)
         if a is None:
-            return [], "dns"
-        if not a:
-            a = mailcheck.a_records(domain, ipv6=True)
-            if a is None:
-                return [], "dns"
-        out = ([domain], "ok") if a else ([], "none")
-    _MX_CACHE[domain] = (out[0], out[1], time.monotonic())
-    return list(out[0]), out[1]
+            return None
+    return ([domain], "ok") if a else ([], "none")
 
 
 def _split_host(entry: str) -> tuple[str, int]:
@@ -817,9 +941,15 @@ def _probe_says(probe) -> bool | None:
     return None
 
 
-def _done(res: dict, status: str, reason: str) -> dict:
+def _done(res: dict, status: str, reason: str, why: str | None = None) -> dict:
+    """Set the verdict. `why` says, for an unknown, whose answer it was: policy
+    (the server refused to be asked), ours (our side could not ask: Reacher
+    failing, no SMTP engine) or, when left out, unclear (the server gave no
+    clear answer). email_verify backs a domain off on policy and unclear."""
     res["status"] = status
     res["reason"] = reason
+    if why:
+        res["why"] = why
     return res
 
 
@@ -876,7 +1006,7 @@ def _native(res: dict, email: str, domain: str, hosts: list[str]) -> dict:
                 "helo": "refused our greeting",
                 "mail": "refused our test sender"}[out["stage"]]
         return _done(res, "unknown", f"The mail server for {domain} {what}, which says "
-                                     f"nothing about this mailbox.")
+                                     f"nothing about this mailbox.", "policy")
     if out["target"] is None:
         return _done(res, "unknown", f"The mail server for {domain} hung up during the "
                                      f"check, so this address is unchecked.")
@@ -921,7 +1051,7 @@ def _native(res: dict, email: str, domain: str, hosts: list[str]) -> dict:
     if kind == "policy":
         _remember(domain, hosts, provider, False, None)
         return _done(res, "unknown", f"The mail server for {domain} refused to answer our "
-                                     f"check, which says nothing about this mailbox.")
+                                     f"check, which says nothing about this mailbox.", "policy")
     return _done(res, "unknown", f"The mail server for {domain} gave a reply we could not "
                                  f"interpret, so this address is unchecked.")
 
@@ -1170,7 +1300,7 @@ def _reacher(res: dict, email: str, domain: str, hosts: list[str]) -> dict:
         msg = data.get("error") if isinstance(data, dict) else r.text
         res["smtp"]["message"] = _text(f"HTTP {r.status_code}: {msg}")
         return _done(res, "unknown", "The Reacher server could not check this address, so "
-                                     "it is unchecked.")
+                                     "it is unchecked.", "ours")
     return _from_reacher(res, data, domain, hosts)
 
 
@@ -1207,7 +1337,7 @@ def _from_reacher(res: dict, data: dict, domain: str, hosts: list[str]) -> dict:
         # Our own lookup found a mail server (or we would not have asked), so
         # this is a disagreement between resolvers, not a finding.
         return _done(res, "unknown", f"Reacher found no mail server for {domain} where our "
-                                     f"lookup did, so this address is unchecked.")
+                                     f"lookup did, so this address is unchecked.", "ours")
     if reach == "safe":
         if out["catch_all"] is True:
             return _done(res, "catch_all", _catch_all_reason(domain, provider))
@@ -1248,8 +1378,11 @@ def _from_reacher(res: dict, data: dict, domain: str, hosts: list[str]) -> dict:
                                          f"does not exist.")
         return _done(res, "risky", f"The mail server for {domain} accepted this address with "
                                    f"warning signs, so send to it with care.")
+    # Reacher folds a refusal of our check into "unknown"; the server's own
+    # words tell it from a server that simply gave no answer.
+    why = "policy" if _POLICY.search(out.get("message") or "") else None
     return _done(res, "unknown", f"The mail server for {domain} would not give a clear "
-                                 f"answer, so this address is unchecked.")
+                                 f"answer, so this address is unchecked.", why)
 
 
 # ---------------------------------------------------------------- one check
@@ -1265,7 +1398,7 @@ def _blank(email: str, engine: str) -> dict:
 def _dns_verdict(res: dict, domain: str) -> dict:
     res["engine"] = "dns"
     return _done(res, "unknown", f"{domain} accepts mail, but this check cannot see whether "
-                                 f"this particular mailbox exists.")
+                                 f"this particular mailbox exists.", "ours")
 
 
 def _check_one(email: str, engine: str, auto: bool) -> dict:
@@ -1282,8 +1415,14 @@ def _check_one(email: str, engine: str, auto: bool) -> dict:
         # whichever engine runs, and Reacher is never asked about a dead domain.
         hosts, state = _mail_hosts(domain)
         if state == "dns":
+            # Our resolvers are down: not a verdict on anything. verify_contacts
+            # stores nothing for it and stops, rather than mark a slice unknown.
+            res["outage"] = True
             return _done(res, "unknown", f"Could not reach a DNS server to look up {domain}, "
-                                         f"so nothing was checked.")
+                                         f"so nothing was checked.", "ours")
+        if state == "broken":
+            return _done(res, "unknown", f"The DNS for {domain} gives no answer, so no mail can "
+                                         f"reach it for now. Asked again later.")
         if state == "null":
             return _done(res, "no_mail_server", f"{domain} declares that it accepts no mail, "
                                                 f"so nothing sent there can arrive.")
@@ -1294,6 +1433,14 @@ def _check_one(email: str, engine: str, auto: bool) -> dict:
         if res["misc"]["disposable"]:
             return _done(res, "risky", "This is a throwaway inbox service, not a business "
                                        "address.")
+        if engine != "dns" and _cached_catch_all(domain) is True:
+            # The answer is already known: this domain accepted a made-up
+            # address within CATCH_ALL_DAYS, so its yes proves nothing and a
+            # check would only spend a slot of the per-minute cap to learn it
+            # again. Never valid: that needs a refused made-up address.
+            res["memory"] = True
+            res["smtp"]["catch_all"] = True
+            return _done(res, "catch_all", _catch_all_reason(domain, provider_for(res["mx"])))
         if engine == "reacher" and auto and _reacher_health()[0] is False:
             engine = "native" if smtp_egress_ok()[0] else "dns"   # went down mid-run
             res["engine"] = engine
@@ -1306,7 +1453,7 @@ def _check_one(email: str, engine: str, auto: bool) -> dict:
                 if not auto:
                     res["smtp"]["message"] = str(e)
                     return _done(res, "unknown", "The Reacher server could not be reached, so "
-                                                 "this address is unchecked.")
+                                                 "this address is unchecked.", "ours")
                 _mark_reacher_down(str(e))
                 engine = "native" if smtp_egress_ok()[0] else "dns"
                 res["engine"] = engine
@@ -1316,7 +1463,7 @@ def _check_one(email: str, engine: str, auto: bool) -> dict:
     except Exception as e:     # one odd address must never sink a batch
         res["smtp"]["message"] = _text(f"{type(e).__name__}: {e}")
         return _done(res, "unknown", "The check failed unexpectedly, so this address is "
-                                     "unchecked.")
+                                     "unchecked.", "ours")
 
 
 def _run(emails: list[str], engine: str, auto: bool, max_workers: int) -> list[dict]:
@@ -1344,7 +1491,7 @@ def check_one(email: str, engine: str, auto: bool) -> dict:
 
 
 def mail_hosts(domain: str) -> tuple[list[str], str]:
-    """(hosts, state) for a domain: state ok | none | null | dns."""
+    """(hosts, state) for a domain: state ok | none | null | broken | dns."""
     return _mail_hosts(domain)
 
 
@@ -1396,13 +1543,68 @@ def detail_json(result: dict) -> str:
     return json.dumps(result, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
-def verify_contacts(conn, ids: list[int], engine: str | None = None) -> dict:
+def _known(email: str) -> bool:
+    """Whether a verdict needs no mail server: a malformed address, a domain
+    that accepted a made-up address within CATCH_ALL_DAYS, or one DNS said
+    within MX_STORE_DAYS has no mail server."""
+    if not mailcheck.valid_syntax((email or "").strip()):
+        return True
+    domain = _domain_of(email)
+    if _cached_catch_all(domain) is True:
+        return True
+    stored = _stored_mx(domain)
+    return stored is not None and stored[1] in ("none", "null")
+
+
+def _answer(res: dict) -> str | None:
+    """What one verdict says about its domain's mail server: clear (it gave
+    an answer), policy (it refused to be asked), unclear (no clear answer), or
+    None when it says nothing new (an answer from memory, a failure of ours)."""
+    if res.get("memory") or res.get("outage"):
+        return None
+    if res["status"] != "unknown":
+        return "clear"
+    why = res.get("why") or "unclear"
+    return None if why == "ours" else why
+
+
+def _backoff(domain: str, answer: str) -> str | None:
+    """Move a domain's backoff after an answer from its server, and return
+    when its addresses may be asked again. Before this every unknown was asked
+    again after 7 days for ever, so servers that never answer clearly took a
+    share of every slice (one returned "valid 2, unknown 58")."""
+    with _DOM_LOCK:
+        rec = _DOMAINS.get(domain) or _new_rec()
+        if answer == "clear":
+            if not rec.get("retry_at") and not rec.get("unclear"):
+                return None
+            rec["retry_at"], rec["unclear"] = None, 0
+        elif answer == "policy":
+            rec["retry_at"] = _later(POLICY_DAYS)
+        else:
+            n = int(rec.get("unclear") or 0)
+            rec["retry_at"] = _later(UNCLEAR_DAYS[min(n, len(UNCLEAR_DAYS) - 1)])
+            rec["unclear"] = n + 1
+        _DOMAINS[domain] = rec
+        _DIRTY.add(domain)
+        return rec["retry_at"]
+
+
+def verify_contacts(conn, ids: list[int], engine: str | None = None,
+                    network_limit: int | None = None) -> dict:
     """Check contact_point email rows and store each verdict on its row.
 
     Commits after every batch of BATCH addresses and before any network
     traffic, so a long run never sits on an open transaction while it waits on
     someone else's mail server. Returns counts by status, plus `checked` and
-    `engine` (the engines that actually ran, joined with + if more than one)."""
+    `engine` (the engines that actually ran, joined with + if more than one).
+
+    With network_limit, at most that many addresses go to a mail server; ones
+    with a verdict already in hand (_known) are settled on top at no cost, and
+    the rest are left for the next run (`left`). A domain whose server refuses
+    our check or gives no clear answer is backed off and its other addresses
+    here are left alone (`deferred`). If our own DNS resolvers stop answering,
+    nothing more is stored and the run ends (`outage`)."""
     counts: dict = {s: 0 for s in STATUSES}
     ids = [int(i) for i in ids or []]
     init(conn)
@@ -1432,28 +1634,67 @@ def verify_contacts(conn, ids: list[int], engine: str | None = None) -> dict:
             conn.commit()
         except Exception:
             conn.rollback()
+    counts.update(from_memory=0, left=0, deferred=0, outage=0)
+    if network_limit is not None and eng != "dns":
+        keep, asking = [], 0
+        for cid, value in rows:
+            if _known(value):
+                keep.append((cid, value))
+            elif asking < network_limit:
+                keep.append((cid, value))
+                asking += 1
+        counts["left"] = len(rows) - len(keep)
+        rows = keep
     ran: Counter = Counter()
-    for b in range(0, len(rows), BATCH):
-        batch = rows[b:b + BATCH]
+    held: set[str] = set()       # domains backed off during this run
+    stored = 0
+    pending = list(rows)
+    while pending and not counts["outage"]:
+        batch = []
+        while pending and len(batch) < BATCH:
+            cid, value = pending.pop(0)
+            if _domain_of(value) in held:
+                counts["deferred"] += 1
+                continue
+            batch.append((cid, value))
+        if not batch:
+            break
         results = _run([v for _, v in batch], eng, auto, WORKERS)
+        kept, answers = [], {}
         for (cid, value), res in zip(batch, results):
+            if res.get("outage"):
+                counts["outage"] = 1
+                continue
+            kept.append((cid, res))
             contacts.set_verification(conn, cid, res["status"], detail_json(res))
             counts[res["status"]] = counts.get(res["status"], 0) + 1
+            counts["from_memory"] += 1 if res.get("memory") else 0
             ran[res["engine"]] += 1
             if cid in guessed:
                 # A guess checked here is an attempt the hunter must not
                 # repeat; its next run removes the row unless it was valid.
                 _note_guess(conn, value, guessed[cid], res)
+            a = _answer(res)
+            if a:
+                # Any clear answer from a domain in this batch outweighs a
+                # refusal or a non-answer about another of its addresses.
+                dom = _domain_of(value)
+                answers[dom] = min(a, answers.get(dom, a), key=("clear", "policy", "unclear").index)
+        for dom, a in answers.items():
+            if eng != "dns" and _backoff(dom, a) and a != "clear":
+                held.add(dom)
+        stored += len(kept)
         if eng != "dns" and _DB_CACHE:
             try:
                 _save_domains(conn)
             except Exception:
                 # A failed statement has rolled the batch back; store the
                 # verdicts again without the cache rather than lose them.
-                for (cid, _), res in zip(batch, results):
+                for cid, res in kept:
                     contacts.set_verification(conn, cid, res["status"], detail_json(res))
         conn.commit()
-    counts["checked"] = len(rows)
+    counts["deferred"] += len(pending)
+    counts["checked"] = stored
     counts["engine"] = "+".join(e for e, _ in ran.most_common()) or eng
     if counts.get('invalid'):
         # Someone lost an address: the hunter looks for the right one.

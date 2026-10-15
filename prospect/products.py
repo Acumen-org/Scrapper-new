@@ -40,8 +40,11 @@ scoring_config, with every version kept in scoring_history).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import struct
+import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from functools import lru_cache
@@ -2160,19 +2163,35 @@ INSERT = ("INSERT INTO product_score (crd, product, status, reason, score, tier,
           " raum, detail_json, computed_at, config_stamp, coverage, potential, missing)"
           " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 
+# A changed row keeps its old rank here: rerank runs for every product with a
+# changed row, in the same transaction.
+UPSERT = INSERT + (" ON CONFLICT (crd, product) DO UPDATE SET status=excluded.status,"
+                   " reason=excluded.reason, score=excluded.score, tier=excluded.tier,"
+                   " raum=excluded.raum, detail_json=excluded.detail_json,"
+                   " computed_at=excluded.computed_at, config_stamp=excluded.config_stamp,"
+                   " coverage=excluded.coverage, potential=excluded.potential,"
+                   " missing=excluded.missing")
+
+SCOPE_UPSERT = ("INSERT INTO firm_scope (crd, best_score, best_product, best_tier, products,"
+                " priority, best_coverage) VALUES (?,?,?,?,?,?,?) ON CONFLICT (crd) DO UPDATE"
+                " SET best_score=excluded.best_score, best_product=excluded.best_product,"
+                " best_tier=excluded.best_tier, products=excluded.products,"
+                " priority=excluded.priority, best_coverage=excluded.best_coverage")
+
 
 def rerank(conn, key: str | None = None) -> None:
     """Rank within each product: score, then how much of it rests on known
-    data, then size, then CRD so the order never shuffles between runs."""
+    data, then size, then CRD so the order never shuffles between runs. Only
+    rows whose rank moves are written."""
     keys = [key] if key else product_keys()
     for k in keys:
         conn.execute("""UPDATE product_score p SET rank = r.rn FROM (
             SELECT crd, ROW_NUMBER() OVER (ORDER BY score DESC, coverage DESC NULLS LAST,
                                            raum DESC NULLS LAST, crd) rn
             FROM product_score WHERE product=? AND status='scored') r
-            WHERE p.crd = r.crd AND p.product = ?""", (k, k))
+            WHERE p.crd = r.crd AND p.product = ? AND p.rank IS DISTINCT FROM r.rn""", (k, k))
         conn.execute("UPDATE product_score SET rank=NULL WHERE product=?"
-                     " AND status!='scored'", (k,))
+                     " AND status!='scored' AND rank IS NOT NULL", (k,))
 
 
 def _priority(r: Result) -> float:
@@ -2203,68 +2222,191 @@ def _scope_row(crd: str, results: dict[str, Result]):
             ",".join(r.product for r in scored), _priority(best), best.coverage)
 
 
-def score_all(conn, progress=None) -> dict[str, int]:
-    """Score every firm for every product and rebuild both tables."""
+# ------------------------------------------------- writing only what changed
+# A rescore evaluates every firm, but almost every result comes out as it was,
+# so only rows that differ from the stored ones are written and only products
+# with a changed row are re-ranked. Each stored row is compared by a 16-byte
+# fingerprint of everything a rebuild would write (rank aside, which rerank
+# derives), config_stamp included, so new rules rewrite every row they touch.
+#
+# computed_at is therefore when a row's result last changed (or was first
+# written, or the rules it rests on changed), not when it was last confirmed:
+# a run that confirms a row leaves it alone. MAX(computed_at), Home's "Scores
+# updated", is when a list last changed; run_log has every run.
+
+STORED = ("SELECT crd, product, status, reason, score, tier, raum,"
+          " md5(detail_json) AS dh, config_stamp, coverage, potential, missing"
+          " FROM product_score")
+SCOPE_STORED = ("SELECT crd, best_score, best_product, best_tier, products, priority,"
+                " best_coverage FROM firm_scope")
+
+
+def _f4(v):
+    """What a REAL column keeps of a number: a 4-byte float. Both sides of a
+    comparison go through it, so values that would store the same compare
+    the same."""
+    return None if v is None else struct.unpack("f", struct.pack("f", float(v)))[0]
+
+
+def _fp(*vals) -> bytes:
+    return hashlib.blake2b(repr(vals).encode("utf-8"), digest_size=16).digest()
+
+
+def _row_fp(status, reason, score, tier, raum, detail_md5, st, coverage, potential,
+            missing) -> bytes:
+    return _fp(status, reason, _f4(score), tier, None if raum is None else int(raum),
+               detail_md5, st, _f4(coverage), _f4(potential), missing)
+
+
+def _scope_fp(s) -> bytes:
+    return _fp(_f4(s[1]), s[2], s[3], s[4], _f4(s[5]), _f4(s[6]))
+
+
+def _read(conn, sql: str, args=()):
+    """The rows of a query a batch at a time, so a whole table is never held
+    as dicts at once. Anything but a row list (the stand-in connection of the
+    offline checks) reads as no rows."""
+    cur = conn.execute(sql, args)
+    while True:
+        rows = cur.fetchmany(5000)
+        if not isinstance(rows, list) or not rows:
+            return
+        yield from rows
+
+
+class _Store:
+    """Brings product_score and firm_scope up to date with fresh results, for
+    every firm or for one (`crd`). Holds a fingerprint per stored row rather
+    than the row, and changed rows only until they are written. `full`
+    deletes everything first and writes every row, as a rebuild did."""
+
+    BATCH = 5000
+
+    def __init__(self, conn, st: str, crd: str | None = None, full: bool = False):
+        self.conn, self.st, self.full = conn, st, full
+        self.now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.where, self.args = (" WHERE crd=?", (crd,)) if crd else ("", ())
+        self.rows: dict[tuple, bytes] = {}
+        self.scope: dict[str, bytes] = {}
+        if not full:
+            for r in _read(conn, STORED + self.where, self.args):
+                self.rows[(r["crd"], sys.intern(r["product"]))] = _row_fp(
+                    r["status"], r["reason"], r["score"], r["tier"], r["raum"], r["dh"],
+                    r["config_stamp"], r["coverage"], r["potential"], r["missing"])
+            for r in _read(conn, SCOPE_STORED + self.where, self.args):
+                self.scope[r["crd"]] = _scope_fp(
+                    (r["crd"], r["best_score"], r["best_product"], r["best_tier"],
+                     r["products"], r["priority"], r["best_coverage"]))
+        self.put: list[tuple] = []
+        self.put_scope: list[tuple] = []
+        self.drop_scope: list[tuple] = []
+        self.dirty: set[str] = set()
+        self.stats = {"added": 0, "updated": 0, "removed": 0, "unchanged": 0,
+                      "scope_changed": 0, "reranked": 0}
+
+    def add(self, crd: str, d: dict, results: dict[str, Result]) -> None:
+        for row in _rows_for(crd, d, results, self.now, self.st):
+            old = self.rows.pop((crd, row[1]), None)
+            new = _row_fp(row[2], row[3], row[4], row[5], row[7],
+                          hashlib.md5(row[8].encode("utf-8")).hexdigest(), row[10],
+                          row[11], row[12], row[13])
+            if old == new:
+                self.stats["unchanged"] += 1
+                continue
+            self.stats["updated" if old else "added"] += 1
+            self.put.append(row)
+            self.dirty.add(row[1])
+        s = _scope_row(crd, results)
+        old = self.scope.pop(crd, None)
+        if s is None:
+            if old is not None:
+                self.drop_scope.append((crd,))
+        elif _scope_fp(s) != old:
+            self.put_scope.append(s)
+        # A run where most rows change (new rules) writes as it goes rather
+        # than hold them all; still one transaction, so readers see either
+        # the old lists or the new ones.
+        if len(self.put) >= self.BATCH and not self.full:
+            self.conn.executemany(UPSERT, self.put)
+            self.put = []
+
+    def finish(self) -> None:
+        """Write what is left, remove rows no firm produced this time (a firm
+        that left the universe, a list it is now gated out of), re-rank the
+        products that changed and commit, all in one transaction."""
+        c = self.conn
+        if self.full:
+            c.execute("DELETE FROM product_score" + self.where, self.args)
+            c.execute("DELETE FROM firm_scope" + self.where, self.args)
+            self.dirty.update(product_keys())
+        for i in range(0, len(self.put), self.BATCH):
+            c.executemany(UPSERT, self.put[i:i + self.BATCH])
+        self.put = []
+        gone = list(self.rows)
+        for i in range(0, len(gone), self.BATCH):
+            c.executemany("DELETE FROM product_score WHERE crd=? AND product=?",
+                          gone[i:i + self.BATCH])
+        self.dirty.update(k for _, k in gone)
+        self.stats["removed"] = len(gone)
+        self.rows = {}
+        self.drop_scope.extend((crd,) for crd in self.scope)
+        self.scope = {}
+        if self.drop_scope:
+            c.executemany("DELETE FROM firm_scope WHERE crd=?", self.drop_scope)
+        for i in range(0, len(self.put_scope), self.BATCH):
+            c.executemany(SCOPE_UPSERT, self.put_scope[i:i + self.BATCH])
+        self.stats["scope_changed"] = len(self.put_scope) + len(self.drop_scope)
+        for k in sorted(self.dirty):
+            rerank(c, k)
+        self.stats["reranked"] = len(self.dirty)
+        c.commit()
+
+
+def score_all(conn, progress=None, stats: dict | None = None,
+              full: bool = False) -> dict[str, int]:
+    """Score every firm for every product and bring both tables up to date.
+
+    Every firm is evaluated every time, so new data or a rule change reaches
+    every list, but only rows whose result changed are written (_Store);
+    `full` deletes and rewrites both tables instead. The tables end up the
+    same either way. `stats`, when given, receives what was written."""
     init(conn)
     feats = load_features(conn)
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    st = stamp()
-    rows, scope = [], []
+    store = _Store(conn, stamp(), full=full)
     counts: dict[str, int] = {k: 0 for k in product_keys()}
     total = len(feats)
-    # Each firm's features are dropped once scored, so the rows being built
-    # replace them in memory instead of adding to them (every firm is on the
-    # ATS list, which doubled the peak when both were held).
+    # Each firm's features are dropped once scored, and only changed rows are
+    # kept until written, so a quiet run holds little beyond the features.
     for i, crd in enumerate(list(feats), 1):
         d = feats.pop(crd)
         res = evaluate_all(d)
-        rows.extend(_rows_for(crd, d, res, now, st))
-        s = _scope_row(crd, res)
-        if s:
-            scope.append(s)
+        store.add(crd, d, res)
         for k, r in res.items():
             if r.status == "scored":
                 counts[k] += 1
         if progress and i % 5000 == 0:
             progress(i, total)
-    conn.execute("DELETE FROM product_score")
-    for i in range(0, len(rows), 5000):
-        conn.executemany(INSERT, rows[i:i + 5000])
-    conn.execute("DELETE FROM firm_scope")
-    for i in range(0, len(scope), 5000):
-        conn.executemany("INSERT INTO firm_scope (crd, best_score, best_product,"
-                         " best_tier, products, priority, best_coverage)"
-                         " VALUES (?,?,?,?,?,?,?)", scope[i:i + 5000])
-    rerank(conn)
-    conn.commit()
+    store.finish()
+    if stats is not None:
+        stats.update(store.stats)
     if progress:
         progress(total, total)
     return counts
 
 
 def rescore_firm(conn, crd: str) -> dict[str, Result]:
-    """Recompute one firm after a manual level or status change, in place.
-    No init() here: this runs inside a request, and schema work belongs to
-    startup, where it cannot queue behind readers."""
+    """Recompute one firm after a manual level or status change, in place,
+    writing only the rows that changed. No init() here: this runs inside a
+    request, and schema work belongs to startup, where it cannot queue behind
+    readers."""
     feats = load_features(conn, [crd])
     d = feats.get(crd)
     if d is None:
         return {}
     res = evaluate_all(d)
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    conn.execute("DELETE FROM product_score WHERE crd=?", (crd,))
-    rows = list(_rows_for(crd, d, res, now, stamp()))
-    if rows:
-        conn.executemany(INSERT, rows)
-    conn.execute("DELETE FROM firm_scope WHERE crd=?", (crd,))
-    s = _scope_row(crd, res)
-    if s:
-        conn.execute("INSERT INTO firm_scope (crd, best_score, best_product,"
-                     " best_tier, products, priority, best_coverage)"
-                     " VALUES (?,?,?,?,?,?,?)", s)
-    for k in res:
-        rerank(conn, k)
-    conn.commit()
+    store = _Store(conn, stamp(), crd=crd)
+    store.add(crd, d, res)
+    store.finish()
     return res
 
 

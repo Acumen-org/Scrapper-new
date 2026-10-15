@@ -2,7 +2,10 @@
 
   firm_refresh   fetch current ADV Part 1 PDFs for firms that report custody
                  or private funds (Q5K3 or Q7B yes) and read today's custodian
-                 names, refreshing data whose bulk source ends 2024-12-31
+                 names, refreshing data whose bulk source ends 2024-12-31. A
+                 firm is read again only after it files a new ADV, after 180
+                 days, or when a failed read's wait is over
+                 (prospect/custodian_refresh.py has the rules and the reader)
   cusip_verify   re-verify the target security map when older than 90 days
 
 These used to live inside the worker loop. They are separate processes now,
@@ -14,48 +17,30 @@ like every other job, so the worker only schedules.
 
 from __future__ import annotations
 
-import io
 import json
-import re
 import subprocess
 import sys
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from prospect import config, db, net  # noqa: E402
+from prospect import custodian_refresh as refresh  # noqa: E402
 
-REFRESH_SCHEMA = """
-CREATE TABLE IF NOT EXISTS firm_refresh (
-    crd         TEXT PRIMARY KEY,
-    fetched_at  TEXT NOT NULL,
-    pdf_bytes   INTEGER,
-    custodians  TEXT,               -- pipe separated, deduped, as filed today
-    status      TEXT NOT NULL       -- ok | fetch_failed | parse_failed
-);
-"""
+# Kept under their old names for the checks that import them.
+REFRESH_SCHEMA = refresh.SCHEMA
+DUE_SQL = refresh.DUE_SQL
 
-CUSTODIAN_RE = re.compile(r"Legal name of custodian:[ \t]*(?:\n[ \t]*)?([^\n]+)", re.I)
-
-# A failed source stays retryable; successful filings are refreshed monthly.
-DUE_SQL = """SELECT f.crd FROM firm_current f
-    LEFT JOIN firm_scope s ON s.crd=f.crd
-    LEFT JOIN firm_refresh r ON r.crd=f.crd
-    WHERE (f.q5k3='Y' OR f.q7b='Y')
-      AND (r.crd IS NULL OR (r.status != 'ok' AND r.fetched_at < ?)
-           OR r.fetched_at < ?)
-    ORDER BY (r.crd IS NOT NULL), r.fetched_at NULLS FIRST,
-             s.priority DESC NULLS LAST LIMIT ?"""
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+FILING_TIMEOUT_S = 110      # one filing, download and reading together
+SLICE_BUDGET_S = 120        # no new filing is started after this
 
 
 def refresh_one(crd: str) -> dict:
-    """Run in an isolated process: a slow/large PDF cannot end the whole slice."""
+    """Run in an isolated process: pdfium is native code, so a malformed PDF
+    that hangs or crashes it is stopped and recorded as a failure, and cannot
+    end the slice or come back first in line every slice."""
     if not crd.isdigit():
         raise ValueError("CRD must be numeric")
     cfg = config.load()
@@ -70,71 +55,87 @@ def refresh_one(crd: str) -> dict:
                 if len(pdf) > 40 * 1024 * 1024:
                     return {"status": "fetch_failed", "detail": "PDF exceeds 40 MB"}
     except net.FetchError:
-        return {"status": "fetch_failed", "detail": "SEC filing unavailable; retry scheduled"}
+        return {"status": "fetch_failed", "detail": "SEC filing unavailable"}
     finally:
         fetch.session.close()
     try:
-        import pdfplumber
-        names = []
-        with pdfplumber.open(io.BytesIO(pdf)) as doc:
-            for page in doc.pages:
-                text = (page.extract_text() or "").replace("\x00", "")
-                for name in CUSTODIAN_RE.findall(text):
-                    name = " ".join(name.split())
-                    if name and name not in names:
-                        names.append(name)
-                # pdfplumber otherwise retains every page's layout and chars.
-                page.close()
+        names, reader = refresh.read_names(bytes(pdf))
+        detail = f"{len(names)} custodian names in current filing"
+        if reader != "pdfium":
+            detail += f", read by {reader}"
         return {"status": "ok", "pdf_bytes": len(pdf), "custodians": "|".join(names) or None,
-                "detail": f"{len(names)} custodian names in current filing"}
+                "detail": detail}
     except Exception as exc:
         return {"status": "parse_failed", "pdf_bytes": len(pdf),
-                "detail": f"PDF could not be read ({type(exc).__name__}); retry scheduled"}
+                "detail": f"PDF could not be read ({type(exc).__name__})"}
 
 
-def firm_refresh(limit: int = 4, seconds: int = 480) -> str:
-    conn = db.connect()
-    conn.executescript(REFRESH_SCHEMA)
-    db.add_column(conn, "firm_refresh", "detail", "TEXT")
-    db.add_column(conn, "firm_refresh", "last_success_at", "TEXT")
-    conn.execute("UPDATE firm_refresh SET last_success_at=fetched_at WHERE status='ok' AND last_success_at IS NULL")
-    conn.commit()
+def read_filing(crd: str) -> dict:
+    """One filing in its own process, stopped at FILING_TIMEOUT_S."""
     try:
-        t = datetime.now(timezone.utc)
-        todo = conn.execute(DUE_SQL, ((t - timedelta(days=1)).isoformat(),
-                                     (t - timedelta(days=30)).isoformat(), limit)).fetchall()
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.autopilot_slice", "firm_refresh_one", crd],
+            cwd=config.ROOT, capture_output=True, text=True, encoding="utf-8",
+            timeout=FILING_TIMEOUT_S, check=True)
+        return json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        return {"status": "parse_failed", "detail": f"Filing exceeded {FILING_TIMEOUT_S} seconds"}
+    except (subprocess.CalledProcessError, ValueError):
+        return {"status": "parse_failed", "detail": "Filing reader stopped"}
+
+
+def save(conn, row, data: dict) -> None:
+    """Record one attempt. A failure keeps the last good names and waits a
+    day, then a week, then a month before the next try."""
+    ok = data["status"] == "ok"
+    fails = 0 if ok else int(row["fails"] or 0) + 1
+    t = datetime.now(timezone.utc)
+    detail = data.get("detail") or ""
+    retry_at = None
+    if not ok:
+        retry_at = refresh.now_iso(t + refresh.retry_after(fails))
+        detail += f"; retry {refresh.retry_words(fails)}"
+    # The filing this attempt covers. With no date in the feed, a read covers
+    # what was filed a few days before it, as for reads from before the column.
+    covers = row["filing_date"] or refresh.covered_through(refresh.now_iso(t))
+    conn.execute("""INSERT INTO firm_refresh
+        (crd, fetched_at, pdf_bytes, custodians, status, detail, last_success_at,
+         filing_date, fails, next_try_at) VALUES (?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(crd) DO UPDATE SET fetched_at=excluded.fetched_at,
+        pdf_bytes=COALESCE(excluded.pdf_bytes, firm_refresh.pdf_bytes),
+        custodians=CASE WHEN excluded.status='ok' THEN excluded.custodians
+            ELSE firm_refresh.custodians END,
+        status=excluded.status, detail=excluded.detail,
+        last_success_at=COALESCE(excluded.last_success_at, firm_refresh.last_success_at),
+        filing_date=excluded.filing_date, fails=excluded.fails,
+        next_try_at=excluded.next_try_at""",
+        (row["crd"], refresh.now_iso(t), data.get("pdf_bytes"), data.get("custodians"),
+         data["status"], detail, refresh.now_iso(t) if ok else None, covers, fails, retry_at))
+    conn.commit()
+
+
+def firm_refresh(limit: int = 300, budget_s: float = SLICE_BUDGET_S) -> str:
+    """Read due filings one after another until the slice's budget is used,
+    so the data lane's other jobs get their turn soon after."""
+    conn = db.connect()
+    try:
+        refresh.init(conn)
+        todo = conn.execute(DUE_SQL, refresh.due_params(limit)).fetchall()
         conn.commit()
         started, ok, attempted = time.monotonic(), 0, 0
         for row in todo:
-            remaining = seconds - (time.monotonic() - started)
-            if remaining < 10:
+            if time.monotonic() - started >= budget_s:
                 break
-            crd = row["crd"]
-            try:
-                result = subprocess.run(
-                    [sys.executable, "-m", "scripts.autopilot_slice", "firm_refresh_one", crd],
-                    cwd=config.ROOT, capture_output=True, text=True, encoding="utf-8",
-                    timeout=min(110, remaining), check=True)
-                data = json.loads(result.stdout)
-            except subprocess.TimeoutExpired:
-                data = {"status": "parse_failed", "detail": "Filing exceeded 110 seconds; retry scheduled"}
-            except (subprocess.CalledProcessError, ValueError):
-                data = {"status": "parse_failed", "detail": "Filing reader stopped; retry scheduled"}
-            conn.execute("""INSERT INTO firm_refresh
-                (crd, fetched_at, pdf_bytes, custodians, status, detail, last_success_at) VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(crd) DO UPDATE SET fetched_at=excluded.fetched_at,
-                pdf_bytes=COALESCE(excluded.pdf_bytes, firm_refresh.pdf_bytes),
-                custodians=CASE WHEN excluded.status='ok' THEN excluded.custodians
-                    ELSE firm_refresh.custodians END,
-                status=excluded.status, detail=excluded.detail,
-                last_success_at=COALESCE(excluded.last_success_at, firm_refresh.last_success_at)""",
-                (crd, now(), data.get("pdf_bytes"), data.get("custodians"), data["status"], data.get("detail"),
-                 now() if data['status'] == 'ok' else None))
-            conn.commit()
+            data = read_filing(row["crd"])
+            save(conn, row, data)
             attempted += 1
             ok += data["status"] == "ok"
-            print(f"Custodian filing {crd}: {data['status']} ({data.get('detail', '')})", flush=True)
-        return f"Updated {ok} of {attempted} filings; {attempted - ok} scheduled for retry in 24 hours"
+            print(f"Custodian filing {row['crd']}: {data['status']} ({data.get('detail', '')})",
+                  flush=True)
+        if not attempted:
+            return "Updated 0 of 0 filings; nothing new filed and no retry due"
+        return (f"Updated {ok} of {attempted} filings; {attempted - ok} to retry after 1, 7 or 30 days"
+                f" ({time.monotonic() - started:.0f} s)")
     finally:
         conn.close()
 

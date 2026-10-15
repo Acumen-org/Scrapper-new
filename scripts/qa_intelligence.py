@@ -75,7 +75,7 @@ class RetryDatabaseChecks(_DB):
     def setUpClass(cls):
         super().setUpClass()
         c = cls.conn
-        c.execute('ALTER TABLE firm_current ADD COLUMN q5k3 TEXT, ADD COLUMN q7b TEXT')
+        c.execute('ALTER TABLE firm_current ADD COLUMN q5k3 TEXT, ADD COLUMN q7b TEXT, ADD COLUMN filing_date TEXT')
         c.execute('ALTER TABLE person ADD COLUMN other_names TEXT')
         c.executescript(autopilot_slice.REFRESH_SCHEMA)
         c.execute('ALTER TABLE firm_refresh ADD COLUMN detail TEXT')
@@ -186,14 +186,12 @@ class RetryDatabaseChecks(_DB):
         stale = self.conn.execute("SELECT * FROM firm_refresh WHERE crd='900701'").fetchone()
         self.assertEqual(stale['custodians'], 'Last known custodian')
         self.assertEqual(stale['status'], 'parse_failed')
-        now = datetime.now(timezone.utc)
-        due = self.conn.execute(autopilot_slice.DUE_SQL, ((now-timedelta(days=1)).isoformat(),
-                                  (now-timedelta(days=30)).isoformat(),10)).fetchall()
+        due_params = autopilot_slice.refresh.due_params
+        due = self.conn.execute(autopilot_slice.DUE_SQL, due_params(10)).fetchall()
         self.assertEqual(due, [])
-        self.conn.execute("UPDATE firm_refresh SET fetched_at='2020-01-01' WHERE crd='900701'")
-        self.conn.commit()
-        due = self.conn.execute(autopilot_slice.DUE_SQL, ((now-timedelta(days=1)).isoformat(),
-                                  (now-timedelta(days=30)).isoformat(),10)).fetchall()
+        # A failed filing waits a day before its next try, not for ever.
+        later = datetime.now(timezone.utc) + timedelta(days=1, minutes=1)
+        due = self.conn.execute(autopilot_slice.DUE_SQL, due_params(10, later)).fetchall()
         self.assertEqual([r['crd'] for r in due], ['900701'])
 
 

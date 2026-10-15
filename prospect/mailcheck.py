@@ -276,12 +276,38 @@ def check(email: str) -> tuple[str, str]:
 QTYPE_A = 1
 QTYPE_AAAA = 28
 
+_LABEL = re.compile(r"^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$")
 
-def _ask(domain: str, qtype: int, timeout: float = TIMEOUT
+
+def valid_host(domain: str) -> bool:
+    """Whether a name can be asked about at all. A name with an empty or
+    over-long label ("firm..com", a pasted URL) goes out as a malformed
+    question, every resolver answers it with an error, and that error looks
+    exactly like a resolver outage; such a name can never receive mail."""
+    domain = (domain or "").strip().lower().rstrip(".")
+    if not domain or len(domain) > 253 or "." not in domain:
+        return False
+    for label in domain.split("."):
+        try:
+            label = label.encode("idna").decode("ascii") if any(ord(c) > 127 for c in label) else label
+        except UnicodeError:
+            return False
+        if not _LABEL.match(label):
+            return False
+    return True
+
+
+def _ask(domain: str, qtype: int, timeout: float = TIMEOUT, fail: list | None = None
          ) -> tuple[bytes, list[tuple[int, int, int]]] | None:
     """One DNS question. Returns (raw reply, [(rtype, rdata offset, rdlength)])
     for the answer section, with an empty list when the domain answers with
-    nothing or does not exist, and None when no resolver could be reached."""
+    nothing or does not exist, and None when no resolver gave an answer.
+
+    With `fail` (a list), each resolver that gave no answer adds why: "error"
+    when it replied with a failure code (SERVFAIL, REFUSED: the resolver is
+    up, the domain's own DNS did not answer it), "silent" when nothing usable
+    came back in time. The caller tells an outage from a broken domain with
+    that and a question about a domain that always resolves."""
     domain = (domain or "").strip().lower().rstrip(".")
     if not domain:
         return b"", []
@@ -295,16 +321,24 @@ def _ask(domain: str, qtype: int, timeout: float = TIMEOUT
                 s.sendto(query, (resolver, 53))
                 data, _ = s.recvfrom(8192)
         except OSError:
+            if fail is not None:
+                fail.append("silent")
             continue
         if len(data) < 12:
+            if fail is not None:
+                fail.append("silent")
             continue
         rid, flags, qd, an, _, _ = struct.unpack(">HHHHHH", data[:12])
         if rid != qid:            # a stray or spoofed reply, not our answer
+            if fail is not None:
+                fail.append("silent")
             continue
         rcode = flags & 0x000F
         if rcode == 3:            # NXDOMAIN
             return data, []
         if rcode != 0:
+            if fail is not None:
+                fail.append("error")
             continue
         i = 12
         for _ in range(qd):
@@ -324,15 +358,16 @@ def _ask(domain: str, qtype: int, timeout: float = TIMEOUT
     return None
 
 
-def mx_records(domain: str, timeout: float = TIMEOUT) -> list[tuple[int, str]] | None:
+def mx_records(domain: str, timeout: float = TIMEOUT, fail: list | None = None
+               ) -> list[tuple[int, str]] | None:
     """(preference, host) pairs, most preferred (lowest number) first.
 
     [] when the domain publishes no MX or does not exist, None when no resolver
-    could be reached. A null MX (RFC 7505, a single record pointing at ".",
-    meaning "this domain accepts no mail") comes back as [(0, "")] so a caller
-    can tell it apart from "no MX", which RFC 5321 says to treat as "try the
-    domain's own address"."""
-    got = _ask(domain, QTYPE_MX, timeout)
+    gave an answer (`fail` collects why, see _ask). A null MX (RFC 7505, a
+    single record pointing at ".", meaning "this domain accepts no mail") comes
+    back as [(0, "")] so a caller can tell it apart from "no MX", which RFC
+    5321 says to treat as "try the domain's own address"."""
+    got = _ask(domain, QTYPE_MX, timeout, fail)
     if got is None:
         return None
     data, answers = got
@@ -348,12 +383,13 @@ def mx_records(domain: str, timeout: float = TIMEOUT) -> list[tuple[int, str]] |
     return out
 
 
-def a_records(domain: str, timeout: float = TIMEOUT, ipv6: bool = False) -> list[str] | None:
+def a_records(domain: str, timeout: float = TIMEOUT, ipv6: bool = False,
+              fail: list | None = None) -> list[str] | None:
     """IPv4 (or, with ipv6=True, IPv6) addresses for a name. [] when there are
-    none, None when no resolver could be reached. A CNAME in the answer is
+    none, None when no resolver gave an answer. A CNAME in the answer is
     skipped: the resolver has already followed it and the addresses follow."""
     qtype = QTYPE_AAAA if ipv6 else QTYPE_A
-    got = _ask(domain, qtype, timeout)
+    got = _ask(domain, qtype, timeout, fail)
     if got is None:
         return None
     data, answers = got
