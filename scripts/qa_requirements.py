@@ -1,4 +1,4 @@
-"""Offline regressions for enrichment, scoring, seats and job scheduling.
+"""Offline regressions for enrichment, scoring, seats, job scheduling and the push to Cadence.
 
 Run with python -m scripts.qa_requirements. No provider keys, database writes,
 email probes or external requests are made.
@@ -8,6 +8,11 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from prospect import ai, assistant, contacts, directory, emailguess, harvest, jobs, msauth, products, users, verify
+# The push to Cadence, against the fake Cadence (scripts/qa_cadence.py).
+from scripts.qa_cadence import (AtsAndTollboothChecks, CheckBeforePushChecks,  # noqa: F401
+                                ContractFixtureChecks, ErrorChecks, IdempotencyChecks, OptOutChecks,
+                                PaceChecks, PayloadChecks, PushResultChecks, SecretAndSetupChecks,
+                                StatusChecks)
 
 
 class ContactDiscoveryChecks(unittest.TestCase):
