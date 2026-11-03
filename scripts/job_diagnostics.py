@@ -446,6 +446,18 @@ def _page_speed():
         webapp.CURRENT_ACCOUNT.reset(token)
 
 
+def _cadence(conn):
+    """Pushes to Cadence: counts by state and outcome, the hold, the last
+    sync and whether CADENCE_API_URL and CADENCE_API_KEY are set. Never a
+    contact's details, never the key."""
+    try:
+        from prospect import cadence
+        print('Runtime cadence:', json.dumps(cadence.diagnostics(conn), default=str))
+    except Exception as exc:
+        conn.rollback()
+        print('Runtime cadence:', json.dumps({'unavailable': type(exc).__name__}))
+
+
 def main():
     conn = db.connect()
     try:
@@ -464,6 +476,7 @@ def main():
         _shapes(conn)
         _ai(conn)
         _growth(conn)
+        _cadence(conn)
         _list_speed()
         ready =conn.execute("""SELECT COUNT(*) AS n FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='firm_refresh'
