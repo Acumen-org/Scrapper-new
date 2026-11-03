@@ -1,0 +1,105 @@
+{
+  "_about": "The JSON examples of the shared contract (docs/outreach-sandbox-plan.md, 14.3 ping, 14.8 push response, 14.12 status response), copied by script. scripts/qa_cadence.py reads them with Bellwether's parser and checks they still match the plan.",
+  "ping": {
+    "ok": true,
+    "version": "1",
+    "sandboxEnabled": true,
+    "maxBatch": 500,
+    "serverTime": "2026-11-03T15:04:05Z"
+  },
+  "push_response": {
+    "pushId": "6f1c2a9e-1b7d-4c1e-9a55-2f0f1d3c8b10",
+    "replayed": false,
+    "receivedAt": "2026-11-03T15:04:05Z",
+    "owner": {
+      "email": "alyssa@acumen-strategy.com",
+      "name": "Alyssa Example"
+    },
+    "summary": {
+      "created": 1,
+      "duplicate_in_sandbox": 1,
+      "already_in_crm": 1,
+      "rejected": 1
+    },
+    "results": [
+      {
+        "bellwetherContactId": "105943:i:7712001",
+        "result": "created",
+        "cadenceContactId": "0b6a...",
+        "reason": null,
+        "detail": null,
+        "matchedOn": null,
+        "crmPersonId": null,
+        "crmUrl": null,
+        "ownerEmail": "alyssa@acumen-strategy.com",
+        "ownerName": "Alyssa Example",
+        "filledFields": [],
+        "warnings": []
+      },
+      {
+        "bellwetherContactId": "105943:i:7712002",
+        "result": "duplicate_in_sandbox",
+        "cadenceContactId": "5d21...",
+        "reason": null,
+        "detail": null,
+        "matchedOn": "email",
+        "crmPersonId": null,
+        "crmUrl": null,
+        "ownerEmail": "leigh@acumen-strategy.com",
+        "ownerName": "Leigh Example",
+        "filledFields": [
+          "linkedinUrl"
+        ],
+        "warnings": []
+      },
+      {
+        "bellwetherContactId": "288810:n:jane doe",
+        "result": "already_in_crm",
+        "cadenceContactId": null,
+        "reason": null,
+        "detail": null,
+        "matchedOn": "linkedin_url",
+        "crmPersonId": "8e0f...",
+        "crmUrl": "https://<twenty-host>/object/person/8e0f...",
+        "ownerEmail": "andrew@acumen-strategy.com",
+        "ownerName": "Andrew Example",
+        "filledFields": [],
+        "warnings": []
+      },
+      {
+        "bellwetherContactId": "288810:n:",
+        "result": "rejected",
+        "cadenceContactId": null,
+        "reason": "invalid_field",
+        "detail": "lastName is empty",
+        "matchedOn": null,
+        "crmPersonId": null,
+        "crmUrl": null,
+        "ownerEmail": null,
+        "ownerName": null,
+        "filledFields": [],
+        "warnings": []
+      }
+    ]
+  },
+  "status_response": {
+    "serverTime": "2026-11-03T15:10:00Z",
+    "nextCursor": null,
+    "results": [
+      {
+        "bellwetherContactId": "105943:i:7712001",
+        "status": "moved_to_crm",
+        "cadenceContactId": "0b6a...",
+        "ownerEmail": "alyssa@acumen-strategy.com",
+        "ownerName": "Alyssa Example",
+        "campaignName": null,
+        "callCount": 3,
+        "lastActivityAt": "2026-11-10T16:22:00Z",
+        "movedToCrmAt": "2026-11-12T14:00:00Z",
+        "crmPersonId": "a91c...",
+        "crmUrl": "https://<twenty-host>/object/person/a91c...",
+        "statusChangedAt": "2026-11-12T14:00:00Z"
+      }
+    ]
+  }
+}

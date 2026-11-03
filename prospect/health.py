@@ -264,6 +264,14 @@ def evaluate(conn, *, restart_worker=None, start_weekly=None) -> dict[str, dict]
                                 "detail": "The weekly pull normally keeps it under a week. Bellwether "
                                           "started it again; if this stays, the SEC site may be refusing it.",
                                 "href": "/settings/system"}
+
+    # 4. Cadence: its key refused or its integration off (the queue is held),
+    #    pushes failed or waiting over an hour, the status sync failing.
+    try:
+        from . import cadence
+        alerts.update(cadence.alerts(conn))
+    except Exception:
+        conn.rollback()
     return alerts
 
 

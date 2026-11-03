@@ -10,12 +10,18 @@ Four passes:
   4. Concurrency: parallel clients hammer the app while the background ingest
      writer is running, which is exactly the situation that made v1 laggy.
 
-    python -m scripts.qa_smoke [--base http://127.0.0.1:8787]
+    python -m scripts.qa_smoke [--base http://127.0.0.1:8787] [--cadence-port 8799]
+
+With --cadence-port, a fifth pass pushes to a fake Cadence this script starts
+on that port (the app must point CADENCE_API_URL at it, with the same
+CADENCE_API_KEY). --only cadence runs that pass alone, on a small database.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import random
 import sqlite3
 import statistics
@@ -179,6 +185,8 @@ ROUTES: list[tuple[str, str]] = [
     ("/settings/jobs", "Weekly SEC cycle"),
     ("/settings/system", "Recent runs"),
     ("/settings/system.json", "snapshots"),
+    ("/settings/cadence", "Do not contact"),
+    ("/people?cad=none", "People"),
     ("/settings/review", "Review queue"),
     ("/settings/review?kind=match_13f", "Review queue"),
     ("/settings/review?kind=brochure_negation&page=2", "Review queue"),
@@ -567,12 +575,175 @@ def pass_concurrency(base: str, detail_crd: str) -> None:
         fail(f"p95 latency {p95:.2f}s exceeds 2s under load")
 
 
+def _json(base: str, path: str, payload: dict | None = None, opener=None, timeout: float = 90.0):
+    """POST JSON (or GET without a payload) and read the JSON answer."""
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(base + path, data=data, headers={
+        "Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        r = (opener or _OPENER).open(req, timeout=timeout)
+        return r.status, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, {}
+
+
+def pass_cadence(base: str, port: int) -> None:
+    """The push to Cadence through the running app, against the fake Cadence
+    this process starts on `port`. The app must run with CADENCE_API_URL set to
+    http://127.0.0.1:<port> and the same CADENCE_API_KEY as this process.
+    Needs six people with an email in the People index who were never pushed."""
+    print("\n[5] Cadence: preview, push, errors, retries, polling, seats")
+    from prospect import cadence, db, users
+    from scripts.fake_cadence import FakeCadence
+    fake = FakeCadence(os.environ.get("CADENCE_API_KEY", ""), port=port).start()
+    # pushedBy.email is required (14.4): the harness accounts get a test address.
+    changed = False
+    for login in (QA_USER, QA_PLAIN):
+        if not (users.get(login) or {}).get("email"):
+            users.save(login, email=f"{login}@acumen-strategy.test")
+            changed = True
+    if changed:
+        time.sleep(users.TTL_S + 1)    # the app's account cache
+    fake.add_user(f"{QA_USER}@acumen-strategy.test", "QA Harness", "senior_fo")
+    c = db.connect()
+    try:
+        post(base, "/settings/save", {"_group": "cadence", "cadence.enabled": "on",
+                                      "cadence.max_per_push": "200", "cadence.daily_per_user": "500"})
+        ids = [cadence.contact_id(r["crd"], r["person_key"]) for r in c.execute(
+            "SELECT p.crd, p.person_key FROM people_index p WHERE p.email IS NOT NULL"
+            " AND NOT EXISTS (SELECT 1 FROM cadence_push x WHERE x.crd = p.crd"
+            " AND x.person_key = p.person_key) ORDER BY p.crd, p.person_key LIMIT 6").fetchall()]
+        c.commit()
+        if len(ids) < 6:
+            fail(f"Cadence pass needs six people with an email; found {len(ids)}")
+            return
+        st, ping = _json(base, "/settings/cadence/test", {})
+        (ok if st == 200 and ping.get("ok") else fail)(f"Test the connection: {ping.get('message')}")
+        plain = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+        plain.open(urllib.request.Request(base + "/login", data=urllib.parse.urlencode(
+            {"username": QA_PLAIN, "password": QA_PASS, "next": "/"}).encode()), timeout=20)
+        st, pv = _json(base, "/api/cadence/preview", {"ids": ids[:1]}, opener=plain)
+        (ok if st == 200 and "send" in pv else fail)(f"a plain user can open the push preview ({st})")
+        st, _ = _json(base, "/settings/cadence", None, opener=plain)
+        (ok if st == 403 else fail)(f"a plain user is refused Settings, Cadence ({st})")
+        # One contact goes; the CRM check stops another before it goes.
+        st, pv = _json(base, "/api/cadence/preview", {"ids": ids[:2]})
+        (ok if st == 200 and pv.get("can_send") and len(pv["send"]) == 2 else fail)(
+            f"preview: {len(pv.get('send', []))} would go")
+        email = c.execute("SELECT email FROM people_index WHERE crd || ':' || person_key = ?",
+                          (ids[1],)).fetchone()["email"]
+        c.commit()
+        fake.add_crm(emails=[email], owner="crm-owner@acumen-strategy.test")
+        st, pv = _json(base, "/api/cadence/preview", {"ids": ids[:2]})
+        crm = [x for x in pv.get("skipped", []) if x["id"] == ids[1]]
+        (ok if crm and crm[0]["why"].startswith("Already in the CRM") else fail)(
+            "the check blocks a contact already in the CRM")
+        st, res = _json(base, "/api/cadence/push", {"ids": ids[:2], "preview_id": pv.get("preview_id")})
+        states = {r["id"]: r["state"] for r in res.get("results", [])}
+        (ok if states.get(ids[0]) == "in_sandbox" and states.get(ids[1]) == "skipped" else fail)(
+            f"push one: {res.get('summary')}")
+        sent = {ct["bellwetherContactId"] for rq in fake.requests_of("push")
+                for ct in json.loads(rq["body"])["contacts"]}
+        (ok if ids[1] not in sent else fail)("the blocked contact was not sent")
+        # A 429, retried in the background with the same key, then a partial refusal.
+        fake.forced[ids[2]] = {"result": "rejected", "reason": "blocked_account"}
+        fake.then("push", status=429, code="rate_limited", retry_after=1)
+        st, res = _json(base, "/api/cadence/push", {"ids": ids[2:4]})
+        bid, b = res.get("batch_id"), {}
+        for _ in range(60):
+            st, b = _json(base, f"/api/cadence/batch/{bid}", None)
+            if b.get("finished"):
+                break
+            time.sleep(2)
+        states = {r["id"]: r["state"] for r in b.get("results", [])}
+        keys = [rq["idem"] for rq in fake.requests_of("push")][-2:]
+        (ok if states.get(ids[2]) == "rejected" and states.get(ids[3]) == "in_sandbox" else fail)(
+            f"batch polled to the end, 429 retried, a partial refusal: {b.get('summary')}")
+        (ok if len(set(keys)) == 1 else fail)("the retry after 429 used the same Idempotency-Key")
+        st, b2 = _json(base, f"/api/cadence/batch/{bid}", None, opener=plain)
+        (ok if not b2.get("ok") else fail)("a plain user cannot read someone else's push")
+        # A timeout, retried with the same key and body.
+        fake.slow_s = 65
+        fake.then("push", action="timeout")
+        st, res = _json(base, "/api/cadence/push", {"ids": ids[5:6]}, timeout=200)
+        for _ in range(60):
+            row = c.execute("SELECT state FROM cadence_push WHERE crd || ':' || person_key = ?",
+                            (ids[5],)).fetchone()
+            c.commit()
+            if row and row["state"] == "in_sandbox":
+                break
+            time.sleep(2)
+        last = fake.requests_of("push")[-2:]
+        (ok if row and row["state"] == "in_sandbox" and last[0]["idem"] == last[1]["idem"]
+         and last[0]["body"] == last[1]["body"] else fail)("a timeout is retried with the same key and body")
+        fake.slow_s = 1.5
+        # 401 holds the queue; Test the connection lifts it and the held push goes.
+        fake.then("push", status=401, code="unauthorized")
+        _json(base, "/api/cadence/push", {"ids": ids[4:5]})
+        held = cadence.held(c)
+        c.commit()
+        (ok if held == "unauthorized" else fail)("401 holds the queue")
+        _json(base, "/settings/cadence/test", {})
+        row = None
+        for _ in range(30):
+            row = c.execute("SELECT state FROM cadence_push WHERE crd || ':' || person_key = ?",
+                            (ids[4],)).fetchone()
+            c.commit()
+            if row and row["state"] == "in_sandbox":
+                break
+            cadence.drain(c, max_s=5)
+            time.sleep(1)
+        (ok if row and row["state"] == "in_sandbox" else fail)(
+            f"the hold lifts and the held push goes ({row['state'] if row else None})")
+        # Pages show where people stand; an opt-out in Cadence comes back.
+        fake.set_status(ids[0], "opted_out")
+        st, rf = _json(base, "/api/cadence/refresh", {"ids": [ids[0]]})
+        line = (rf.get("lines") or {}).get(ids[0], {}).get("html", "")
+        (ok if "Opted out (Cadence)" in line else fail)("an opt-out read by id shows as Opted out (Cadence)")
+        st, body, _ = get(base, "/people?cad=optout")
+        (ok if "Opted out (Cadence)" in body else fail)("People shows Opted out (Cadence)")
+        crd = ids[0].split(":", 1)[0]
+        st, body, _ = get(base, f"/firm/{crd}")
+        (ok if "data-cad-push" in body and "Opted out (Cadence)" in body else fail)(
+            "the firm page shows push buttons and the opt-out")
+        st, body, _ = get(base, "/settings/cadence")
+        (ok if "Recent activity" in body else fail)("Settings, Cadence shows the audit")
+        from scripts import qa_html
+        before = len(qa_html.FAILURES)
+        for pth in ("/people", "/people?cad=in", "/people?cad=optout", f"/firm/{crd}", "/settings/cadence"):
+            qa_html.check_page(base, pth, _OPENER)
+        found = qa_html.FAILURES[before:]
+        FAILURES.extend(found)
+        (ok if not found else fail)("Cadence pages: markup, CSS and templates clean")
+    finally:
+        c.close()
+        fake.stop()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8787")
+    ap.add_argument("--cadence-port", type=int, default=0,
+                    help="also run the Cadence pass, with the fake Cadence on this port")
+    ap.add_argument("--only", choices=("cadence",), default=None,
+                    help="cadence: sign in and run the Cadence pass alone, for a small test database")
     args = ap.parse_args()
 
     from prospect import db
+    if args.only == "cadence":
+        created = sign_in(args.base)
+        try:
+            pass_cadence(args.base, args.cadence_port or 8799)
+        finally:
+            if created:
+                remove_qa_account()
+                print("\n(removed the temporary qa account)")
+        print("\n" + "=" * 60)
+        print(f"QA: {len(FAILURES)} FAILURE(S)" if FAILURES else "QA: ALL CHECKS PASS")
+        for f in FAILURES:
+            print(f"  - {f}")
+        return 1 if FAILURES else 0
+
     c = db.connect()
     detail_crd = c.execute("SELECT crd FROM product_score WHERE product='phh_fund'"
                            " AND status='scored' ORDER BY rank LIMIT 1").fetchone()["crd"]
@@ -587,6 +758,8 @@ def main() -> int:
         pass_writes(args.base)
         pass_latency(args.base, detail_crd)
         pass_concurrency(args.base, detail_crd)
+        if args.cadence_port:
+            pass_cadence(args.base, args.cadence_port)
     finally:
         # Even on failure: leaving a known-password account behind is worse
         # than any test result.

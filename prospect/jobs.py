@@ -66,9 +66,9 @@ CREATE INDEX IF NOT EXISTS ix_job_run_started ON job_run (started_at);
 # Lanes run side by side, each with its own turn order. Mail and search wait on
 # other people's servers and use little memory; websites may start a headless
 # browser; the data jobs read and write the big tables, one at a time.
-LANES = ("mail", "web", "search", "data")
+LANES = ("mail", "web", "search", "data", "cadence")
 LANE_LABEL = {"mail": "Mail servers", "web": "Websites", "search": "Search and AI",
-              "data": "Filings and data"}
+              "data": "Filings and data", "cadence": "Cadence"}
 
 # A failing job waits longer each time, so a broken source is not hammered,
 # and is retried for ever: a fix on the other side is picked up by itself.
@@ -87,7 +87,7 @@ class Job:
     done_sql: str | None = None      # for the progress bar
     total_sql: str | None = None
     timeout_s: int = 1800
-    needs: str = ""                  # "", "ai:<feature>", "ocr"
+    needs: str = ""                  # "", "ai:<feature>", "ocr", "cadence"
     group: str = "enrich"
     extra: dict = field(default_factory=dict)
     lane: str = "data"               # jobs in one lane take turns; lanes run side by side
@@ -330,6 +330,18 @@ JOBS: list[Job] = [
         backlog_sql="SELECT COUNT(*) n FROM brochure WHERE status='ok' AND COALESCE(ocr_status,'') = '' AND COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1)",
         done_sql="SELECT COUNT(*) n FROM brochure WHERE ocr_status IN ('ok','empty')",
         total_sql="SELECT COUNT(*) n FROM brochure WHERE status='ok' AND (ocr_status IS NOT NULL OR COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1))"),
+    # A lane of its own, so the 10-minute pace never waits behind a slow AI or
+    # search slice. Backlog: requests due a resend, and claims a dead process
+    # left (prospect/cadence.py STALE_CLAIM_S).
+    Job("cadence_sync", "Cadence",
+        "Reads from Cadence what happened to every contact pushed there: claimed, moved to the "
+        "CRM, opted out or removed, and shows it on People and the firm page. An opt-out in "
+        "Cadence becomes a do-not-contact here. Also resends a push a restart interrupted.",
+        "scripts.cadence_sync", (), every_hours=1 / 6, timeout_s=540, needs="cadence",
+        group="contacts", lane="cadence", min_gap_minutes=5,
+        backlog_sql="SELECT COUNT(*) n FROM cadence_request WHERE (state='retry_wait' AND next_retry_at <= '{now}') OR (state='sending' AND claimed_at < '{ago_min:5}')",
+        recent_sql="SELECT COUNT(*) n FROM cadence_push_event WHERE action='status' AND at >= '{day_ago}'",
+        recent_label="status changes read"),
 ]
 BY_KIND = {j.kind: j for j in JOBS}
 
@@ -379,6 +391,9 @@ def _fill(sql: str, tag_version: int) -> str:
     if "{ago:" in sql:
         sql = re.sub(r"\{ago:(\d+)\}", lambda m: (datetime.now(timezone.utc) - timedelta(
             days=int(m.group(1)))).isoformat(timespec="seconds"), sql)
+    if "{ago_min:" in sql:
+        sql = re.sub(r"\{ago_min:(\d+)\}", lambda m: (datetime.now(timezone.utc) - timedelta(
+            minutes=int(m.group(1)))).isoformat(timespec="seconds"), sql)
     return sql
 
 
@@ -418,6 +433,12 @@ def requirement(job: Job) -> tuple[bool, str]:
         from . import ocr
         if not ocr.configured():
             return False, "Waiting for an OCR server in Settings, Crawling"
+    if job.needs == "cadence":
+        from . import cadence
+        if not cadence.configured():
+            return False, "Waiting for CADENCE_API_URL and CADENCE_API_KEY on the server"
+        if not cadence.switched_on():
+            return False, "Switched off in Settings, Cadence"
     return True, ""
 
 

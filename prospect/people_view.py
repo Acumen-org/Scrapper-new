@@ -14,6 +14,10 @@ Designations are the job titles each product's sellers look for: pick a
 product list and the Designation filter offers its titles (Head of Talent
 Acquisition for ATS, Chief Compliance Officer for Glynac), any number at once,
 or any title typed by hand. They are defined in config/designations.yml.
+
+Anyone can tick people (or every person the filter matches) and push them to
+Cadence's outreach sandbox; each row then says where the person stands there
+(prospect/cadence_view.py).
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from functools import lru_cache
 from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from . import designations, people_index, products, roles, ui
+from . import cadence, cadence_view, designations, people_index, products, roles, ui
 from .names import first_name
 from .webapp import conn, esc, escn, money, nice_name, page, qs_join
 
@@ -60,6 +64,18 @@ CRED = [("", "Any credential"), ("cfp", "CFP"), ("cfa", "CFA")]
 SRC = [("", "Anywhere"), ("sec", "SEC registration"), ("adv", "Form ADV officers only"),
        ("web", "Firm website or web search")]
 SIZE = [("", "Any firm size"), ("100", "$100M+"), ("500", "$500M+"), ("1000", "$1B+"), ("5000", "$5B+")]
+CAD = [("", "Any"), ("none", "Not pushed"), ("in", "In Cadence"), ("crm", "Moved to CRM"),
+       ("optout", "Opted out (Cadence)"), ("dnc", "Do not contact")]
+_CAD_PUSH = ("EXISTS (SELECT 1 FROM cadence_push cp WHERE cp.crd = people_index.crd"
+             " AND cp.person_key = people_index.person_key{})")
+_CAD_SUPP = ("EXISTS (SELECT 1 FROM contact_suppression s WHERE s.lifted_at IS NULL AND {}"
+             " AND ((s.scope = 'person' AND s.value = people_index.crd || ':' || people_index.person_key)"
+             " OR (s.scope = 'firm' AND s.value = people_index.crd)))")
+CAD_SQL = {"none": "NOT " + _CAD_PUSH.format(""),
+           "in": _CAD_PUSH.format(" AND cp.state IN ('sending', 'retry_wait', 'in_sandbox')"),
+           "crm": _CAD_PUSH.format(" AND cp.state = 'moved_to_crm'"),
+           "optout": _CAD_SUPP.format("s.source = 'cadence'"),
+           "dnc": _CAD_SUPP.format("s.source = 'manual'")}
 SORTS = [("", "Best firms first"), ("joined", "Newest joiners"), ("name", "Name A to Z"),
          ("firm", "Firm A to Z"), ("aum", "Largest firms")]
 ORDER = {"": "priority DESC NULLS LAST, raum DESC NULLS LAST, name",
@@ -68,7 +84,7 @@ ORDER = {"": "priority DESC NULLS LAST, raum DESC NULLS LAST, name",
          "firm": "firm_lc, last_name",
          "aum": "raum DESC NULLS LAST, name"}
 FIELDS = ("q", "st", "on", "view", "role", "joined", "cred", "disc", "size", "cat", "src",
-          "des", "title", "sort")
+          "des", "title", "sort", "cad")
 
 
 def _product(on: str) -> str | None:
@@ -125,6 +141,8 @@ def _where(f: dict, cols: set, skip: str = "") -> tuple[str, list]:
     if f["src"] in dict(SRC) and f["src"] and "src" in cols:
         where.append("src = ?")
         args.append(f["src"])
+    if f["cad"] in CAD_SQL:
+        where.append(CAD_SQL[f["cad"]])
     if skip != "des" and f["des"] and "desig" in cols:
         where.append(f"desig && ARRAY[{','.join('?' * len(f['des']))}]::text[]")
         args += list(f["des"])
@@ -194,6 +212,7 @@ def _filters(**kw) -> dict:
     f = {k: (kw.get(k) if isinstance(kw.get(k), str) else "") for k in FIELDS}
     f["view"] = f["view"] if f["view"] in VIEWS else ""
     f["sort"] = f["sort"] if f["sort"] in ORDER else ""
+    f["cad"] = f["cad"] if f["cad"] in CAD_SQL else ""
     f["title"] = " ".join(f["title"].split())[:120]
     known = {designations.tag(p, d["key"])
              for p in products.product_keys() + [designations.GENERAL]
@@ -216,7 +235,7 @@ HUNT_TIP = ui.tip_attr("Finding email", "No email for this person yet. Bellwethe
                        "patterns with the mail server, and with AI research.")
 
 
-def _person_row(r, prod_tags: list, active: tuple = ()) -> str:
+def _person_row(r, prod_tags: list, active: tuple = (), cad: dict | None = None) -> str:
     title = roles.clean_title(r["title"]) or ("Officer" if r["is_officer"] else "Registered representative")
     src = r.get("src") or "sec"
     badges = []
@@ -255,9 +274,17 @@ def _person_row(r, prod_tags: list, active: tuple = ()) -> str:
         joined = ('<div class="small muted">Not registered</div><div class="meta">'
                   + ("Officer on Form ADV" if src == "adv" else "Firm website or web search")
                   + '</div>')
+    cid = cadence.contact_id(r["crd"], r["person_key"])
+    info = (cad or {}).get(cid)
+    pick = (f'<label><input type="checkbox" data-cad-id="{esc(cid)}" data-cad-name="{esc(r["name"])}"'
+            f' aria-label="Select {esc(r["name"])}"></label>'
+            if not info or info["can_push"] else "")
+    line = cadence_view.status_html(info)
     return (f'<tr class="go" data-href="/firm/{esc(r["crd"])}#people">'
+            f'<td class="pick">{pick}</td>'
             f'<td><div class="ent">{ui.mono(r["name"], "p")}<div><div class="t">{esc(r["name"])}</div>'
             f'<div class="meta">{esc(title)}</div>'
+            f'<div class="cad-line" data-cad-status="{esc(cid)}">{line}</div>'
             f'{("<div class=pills style=margin-top:6px>" + "".join(badges) + "</div>") if badges else ""}</div></div></td>'
             f'<td>{esc(first_name(r["name"], r.get("first_name"))) or "<span class=muted>Unknown</span>"}</td>'
             f'<td><a class="firm" href="/firm/{esc(r["crd"])}">{escn(r["firm_name"])}</a>'
@@ -312,7 +339,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
                 view: str = Query(""), role: str = Query(""), joined: str = Query(""),
                 cred: str = Query(""), disc: str = Query(""), size: str = Query(""),
                 cat: str = Query(""), src: str = Query(""), des: list[str] = Query([]),
-                title: str = Query(""), sort: str = Query(""),
+                title: str = Query(""), sort: str = Query(""), cad: str = Query(""),
                 page_n: int = Query(1, ge=1, alias="page"),
                 per: int = Query(50, ge=10, le=200),
                 # Old links used these; they still work.
@@ -324,11 +351,11 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
     s = {k: (v if isinstance(v, str) else ",".join(x for x in v if isinstance(x, str))
              if isinstance(v, (list, tuple)) else "") for k, v in dict(
         q=q, st=st, on=on, view=view, role=role, joined=joined, cred=cred, disc=disc, size=size,
-        cat=cat, src=src, des=des, title=title, sort=sort, reach=reach, officers=officers,
+        cat=cat, src=src, des=des, title=title, sort=sort, cad=cad, reach=reach, officers=officers,
         cfp=cfp, desig=desig).items()}
-    q, st, on, view, role, joined, cred, disc, size, cat, src, des, title, sort = (
+    q, st, on, view, role, joined, cred, disc, size, cat, src, des, title, sort, cad = (
         s[k] for k in ("q", "st", "on", "view", "role", "joined", "cred", "disc", "size", "cat",
-                       "src", "des", "title", "sort"))
+                       "src", "des", "title", "sort", "cad"))
     reach, officers, cfp, desig = s["reach"], s["officers"], s["cfp"], s["desig"]
     page_n = page_n if isinstance(page_n, int) else 1
     per = per if isinstance(per, int) else 50
@@ -354,7 +381,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
         return page("People", "people", f'<div class="pg narrow"><h1>People</h1>'
                                         f'<p class="lede">{msg}</p></div>')
     f = _filters(q=q, st=st, on=on, view=view, role=role, joined=joined, cred=cred, disc=disc,
-                 size=size, cat=cat, src=src, des=des, title=title, sort=sort)
+                 size=size, cat=cat, src=src, des=des, title=title, sort=sort, cad=cad)
     where, args = _where(f, cols)
     minute = int(time.monotonic() // 60)
     # The view tabs show how many people each one holds under the other filters.
@@ -365,6 +392,10 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
     try:
         rows = c.execute(f"SELECT * FROM people_index WHERE {where} ORDER BY {_order(f, cols)}"
                          f" LIMIT ? OFFSET ?", args + [per, (page_n - 1) * per]).fetchall()
+        # Where each person on the page stands in Cadence: two small reads.
+        in_cadence = cadence.status_map(c, [(r["crd"], r["person_key"]) for r in rows],
+                                        emails={cadence.contact_id(r["crd"], r["person_key"]): r["email"]
+                                                for r in rows})
     finally:
         c.close()
     vals = _vals(f)
@@ -384,7 +415,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
         more.append(("cat", "Firm type", [("", "Any firm type")] + cats))
     if "src" in cols:
         more.append(("src", "Found in", SRC))
-    more += [("disc", "With a disclosure", "check"), ("sort", "Sort", SORTS)]
+    more += [("cad", "Cadence", CAD), ("disc", "With a disclosure", "check"), ("sort", "Sort", SORTS)]
     extra = [(designations.label_of(t),
               "/people?" + qs_join(**_vals(f, des=",".join(x for x in f["des"] if x != t))))
              for t in f["des"]]
@@ -400,7 +431,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
     pages = max(1, -(-total // per))
     prev = f'<a href="/people?{qs}&page={page_n - 1}">Previous</a>' if page_n > 1 else ""
     nxt = f'<a href="/people?{qs}&page={page_n + 1}">Next</a>' if page_n < pages else ""
-    empty = ('<tr><td colspan="5"><div class="empty"><b>Nobody matches these filters</b>'
+    empty = ('<tr><td colspan="6"><div class="empty"><b>Nobody matches these filters</b>'
              'Remove a filter above, or try a broader title.</div></td></tr>')
     body = f"""<div class="pg wide">
 <div class="head"><div><h1>People</h1>
@@ -414,17 +445,19 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
 {bar}
 <div class="resbar"><span><b>{total:,}</b> {"person" if total == 1 else "people"}</span>
 <span class="muted small">Page {page_n} of {pages:,}</span></div>
-<div class="table-scroll"><table class="people-table"><thead><tr><th style="width:28%">Person</th><th>First name</th><th style="width:26%">Firm</th>
+<div class="table-scroll"><table class="people-table"><thead><tr><th class="pick"><label><input type="checkbox" data-cad-all aria-label="Select everyone on this page"></label></th><th style="width:28%">Person</th><th>First name</th><th style="width:26%">Firm</th>
 <th>Contact</th><th style="width:14%">Joined firm</th></tr></thead>
-<tbody>{"".join(_person_row(r, prod_tags, f["des"]) for r in rows) or empty}</tbody></table></div>
-<div class="pager"><span>{total:,} people</span><span class="acts">{prev}{nxt}</span></div></div>"""
+<tbody>{"".join(_person_row(r, prod_tags, f["des"], in_cadence) for r in rows) or empty}</tbody></table></div>
+<div class="pager"><span>{total:,} people</span><span class="acts">{prev}{nxt}</span></div>
+{cadence_view.context("people", _product(f["on"]) or "", total, qs)}</div>"""
     return page("People", "people", body)
 
 
 @router.get("/people/export.csv")
 def people_export(q: str = "", st: str = "", on: str = "", view: str = "", role: str = "",
                   joined: str = "", cred: str = "", disc: str = "", size: str = "", cat: str = "",
-                  src: str = "", des: str = "", title: str = "", sort: str = "", desig: str = ""):
+                  src: str = "", des: str = "", title: str = "", sort: str = "", desig: str = "",
+                  cad: str = ""):
     if not cred and desig in ("cfp", "cfa"):
         cred = desig
     c = conn()
@@ -433,9 +466,15 @@ def people_export(q: str = "", st: str = "", on: str = "", view: str = "", role:
             return PlainTextResponse("name,first_name\n", media_type="text/csv")
         cols = people_index.columns(c)
         f = _filters(q=q, st=st, on=on, view=view, role=role, joined=joined, cred=cred, disc=disc,
-                     size=size, cat=cat, src=src, des=des, title=title, sort=sort)
+                     size=size, cat=cat, src=src, des=des, title=title, sort=sort, cad=cad)
         where, args = _where(f, cols)
         extra = ", src AS found_in, desig" if "desig" in cols else ""
+        if cadence.ready(c):
+            extra += (", (SELECT cp.state FROM cadence_push cp WHERE cp.crd = people_index.crd"
+                      " AND cp.person_key = people_index.person_key) AS cadence_status,"
+                      " (SELECT COALESCE(cp.cadence_owner_name, cp.cadence_owner) FROM cadence_push cp"
+                      " WHERE cp.crd = people_index.crd AND cp.person_key = people_index.person_key)"
+                      " AS cadence_owner")
         rows = c.execute(f"""SELECT name, first_name, title, firm_name AS firm, crd, state, bcity AS branch_city,
                 start_date AS at_firm_since, prior_firm, designations AS credentials, has_disclosure,
                 email, email_status, phone, phone_label, linkedin, iapd_link, category AS firm_type{extra}

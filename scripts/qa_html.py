@@ -55,6 +55,7 @@ PAGES = [
     "/settings", "/settings/users", "/settings/signin", "/settings/ai",
     "/settings/verify", "/settings/crawl", "/settings/jobs", "/settings/system",
     "/settings/review", "/settings/review?kind=match_13f", "/quit",
+    "/settings/cadence", "/people?cad=in", "/people?cad=optout",
 ]
 
 # Filled in at run time: the firm detail page needs a real CRD.

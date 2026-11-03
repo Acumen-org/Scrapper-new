@@ -105,12 +105,17 @@ job "bellwether" {
         BELLWETHER_REACHER_SECRET = var.reacher_secret
       }
 
+      # cadence_url and cadence_key are optional keys of the same variable
+      # (prospect/cadence.py). Each line is guarded: a missing key would
+      # otherwise render a placeholder the app would take as configured.
       template {
         data        = <<-EOT
           {{ with nomadVar "nomad/jobs/bellwether" }}
           BELLWETHER_SECRET={{ .secret }}
           BELLWETHER_CONTACT={{ .contact }}
           BELLWETHER_DSN={{ .dsn }}
+          {{ with .cadence_url }}CADENCE_API_URL={{ . }}{{ end }}
+          {{ with .cadence_key }}CADENCE_API_KEY={{ . }}{{ end }}
           {{ end }}
         EOT
         destination = "secrets/app.env"

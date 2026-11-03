@@ -67,7 +67,25 @@ Settings is visible to admins only.
   directories and websites the team adds, firm website coverage, and email
   verification.
 - **Settings** (admins): users and seats, Microsoft sign-in, the AI provider,
-  email verification, crawling, background jobs, system health, review queue.
+  email verification, crawling, Cadence, background jobs, system health, review
+  queue.
+
+## Pushing contacts to Cadence
+
+Anyone can push people (never firms) into Cadence's outreach sandbox: tick them
+on People, or on a firm's People & contacts tab, or press Push to Cadence on one
+person. The dialog says who would go and who would not, and why: Bellwether's
+own rules (do not contact, opted out in Cadence, a Customer firm, nothing to
+reach them on, already pushed), then Cadence's check, which leaves out anyone
+already in the CRM. After the push, each person shows where they stand: in
+Cadence and who owns them, moved to the CRM, refused, or "Opted out (Cadence)".
+Bellwether reads that back from Cadence every 10 minutes, and at once when a
+firm's People & contacts tab opens.
+
+It needs `CADENCE_API_URL` and `CADENCE_API_KEY` in the server environment (see
+[DEPLOY.md](DEPLOY.md)) and pushing switched on in Settings, Cadence. Without
+them the button explains that Cadence is not connected. The contract between
+the two apps is in [docs/outreach-sandbox-plan.md](docs/outreach-sandbox-plan.md).
 
 **Ctrl K** (or **/**) finds any firm, person or page from anywhere.
 
@@ -156,6 +174,8 @@ sign-in from `Bellwether.bat /silent` and is stopped only from Quit in the app.
 | `prospect/verify.py`, `scripts/verify_emails.py` | Email verification (built-in SMTP check or Reacher) |
 | `prospect/ai.py`, `prospect/assistant.py` | Bellwether AI |
 | `prospect/jobs.py`, `scripts/autopilot.py` | Background jobs and the worker that runs them |
+| `prospect/cadence.py`, `prospect/cadence_view.py`, `scripts/cadence_sync.py` | Pushing contacts to Cadence and reading back their status |
+| `scripts/fake_cadence.py`, `scripts/qa_cadence.py` | An offline Cadence and the checks that run against it |
 | `prospect/static/` | Stylesheet, scripts, and the thinking-orbs engine (MIT) |
 | `data/snapshots/` | Immutable raw SEC captures, content addressed |
 

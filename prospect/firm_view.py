@@ -23,7 +23,9 @@ stays at the top:
   Compliance   who runs compliance, disclosures, registration
 
 The Workspace tab holds status, owner, notes and saved lists. Bellwether AI
-opens in a drawer scoped to this firm.
+opens in a drawer scoped to this firm. Each person card can be pushed to
+Cadence's outreach sandbox, alone or ticked with others, and says where the
+person stands there (prospect/cadence_view.py).
 
 Rules this page enforces:
   1. A score is always shown with its inputs and its coverage; missing data is
@@ -378,7 +380,7 @@ def _icp_tags(hits: list[dict]) -> tuple[str, str, bool]:
 
 
 def _person_card(person: dict, key: str, points: list, hunt: dict | None = None,
-                 icp_hits: list | None = None) -> str:
+                 icp_hits: list | None = None, cad: str = "") -> str:
     name = person.get("name") or "Name unavailable"
     title = roles.clean_title(person.get("title") or "") or (
         "Officer" if person.get("is_officer") else "Registered representative")
@@ -423,7 +425,7 @@ def _person_card(person: dict, key: str, points: list, hunt: dict | None = None,
             f'{tag}<span class="nm">{esc(name)}</span><div class="ttl">{esc(title)}'
             f'</div><div class="meta">{" · ".join(meta)}</div></div>{iapd}</div>'
             f'{("<div class=pills>" + "".join(chips) + "</div>") if chips else ""}'
-            f'<div class="reach">{lines}</div></article>')
+            f'<div class="reach">{lines}</div>{cad}</article>')
 
 
 # Hunt states that are settled for now: shown in a quieter colour.
@@ -452,7 +454,8 @@ def _hunt_line(hunt: dict | None) -> str:
 
 def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: list,
                     unmatched: list, stats: dict | None,
-                    hunts: dict | None = None, icp_products=()) -> tuple[str, list[str], dict]:
+                    hunts: dict | None = None, icp_products=(), country: str | None = None
+                    ) -> tuple[str, list[str], dict]:
     """Every person as a card: each product's ICP first (the compliance
     officer for Glynac, the investment chief for AcuBooth), then the people we
     can reach. Returns the HTML, the top cards for the overview, and the counts
@@ -502,9 +505,30 @@ def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: 
         counts["direct"] += any(cp["kind"] == "phone" and cp["label"] in ("direct", "mobile") for cp in pts)
         counts["linkedin"] += any(cp["kind"] == "linkedin" for cp in pts)
     hunts = hunts or {}
+    shown = uniq[:PEOPLE_CARDS_MAX]
+    from . import cadence, cadence_view
+
+    def best(key, kind):
+        pts = [cp for cp in cps_by_person.get(key, []) if cp["kind"] == kind and not cp["is_role"]]
+        pts.sort(key=lambda cp: (cp["verify_status"] != "valid", -(cp["confidence"] or 0)))
+        return pts[0]["value"] if pts else None
+    cad = cadence.status_map(c, [(crd, key) for _, key in shown if key],
+                             emails={cadence.contact_id(crd, key): best(key, "email")
+                                     for _, key in shown if key})
+    hist = cadence.history(c, crd) if any(v["pushed"] for v in cad.values()) else {}
+
+    def controls(person, key):
+        if not cadence.parse_id(cadence.contact_id(crd, key)):
+            return ""
+        cid = cadence.contact_id(crd, key)
+        info = cad.get(cid)
+        newer = cadence.newer_details((info or {}).get("row"), best(key, "email"),
+                                      best(key, "phone"), cadence.country_code(country))
+        return cadence_view.card_controls(cid, person.get("name") or "", info, hist.get(key), newer)
     cards = [_person_card(dict(person, title=title_of(person, key)), key,
-                          cps_by_person.get(key, []), hunts.get(key), hits.get(key))
-             for person, key in uniq[:PEOPLE_CARDS_MAX]]
+                          cps_by_person.get(key, []), hunts.get(key), hits.get(key),
+                          controls(person, key))
+             for person, key in shown]
     more = ""
     if len(uniq) > PEOPLE_CARDS_MAX:
         more = (f'<p class="small soft" style="margin-top:14px">Showing {PEOPLE_CARDS_MAX} of '
@@ -847,7 +871,8 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     on_lists = [k for k, r in results.items() if r.status == "scored"]
     icp_products = [focus] if focus in on_lists else on_lists
     people_html, top_cards, pc = _people_section(c, crd, roster, cps_by_person, web_people,
-                                                 unmatched, stats, hunts, icp_products)
+                                                 unmatched, stats, hunts, icp_products,
+                                                 f["country"])
     c.close()
     from . import growth_view
     growth_html = growth_view.section(crd, f, d, stats, mv, series)
@@ -1035,8 +1060,11 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
     filings_html = (f'<table class="tight bare"><thead><tr><th>Filed</th><th class="num">Assets reported</th>'
                     f'<th class="num">Change</th></tr></thead><tbody>{"".join(frows)}</tbody></table>'
                     if frows else '<p class="muted">No filing history on record yet.</p>')
-    # The overview repeats the first cards; without their ids, so each id stays unique.
-    overview_people = "".join(re.sub(r' id="(p-[^"]*|vs[0-9]+)"', "", x) for x in top_cards[:2]) or '<p class="empty">No people on record. <a href="#people">Find contacts</a></p>'
+    # The overview repeats the first cards; without their ids, so each id stays unique,
+    # and without the Cadence controls, which belong to the People & contacts tab.
+    overview_people = "".join(re.sub(r' id="(p-[^"]*|vs[0-9]+)"', "",
+                                     re.sub(r'<div class="cad-ctl">.*?</div>', "", x, flags=re.S))
+                              for x in top_cards[:2]) or '<p class="empty">No people on record. <a href="#people">Find contacts</a></p>'
     recent = trow[:3]
 
     def more(href: str, text: str) -> str:
@@ -1057,10 +1085,12 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                      cls="ov"))
         + (ui.panel("AI brief", brief_block, sub="Written by AI from this firm's records")
            if brief_block else ""))
+    from . import cadence_view
     people_tab = (ui.panel("Contact discovery", discovery_html,
                            sub="How reachable their people are, and tools to find more")
                   + ui.panel("People", people_html, count=pc["people"],
-                             sub="From SEC records and their website, best to call first at the top"))
+                             sub="From SEC records and their website, best to call first at the top")
+                  + cadence_view.context("firm", focus))
     fit_tab = ui.panel("Product fit", _fit_section(crd, results, ranks, focus),
                        sub="Each product's score and the evidence behind it, best fit first")
     activity_tab = (ui.panel("Signals", trig_html, count=signals_n, anchor="signals",

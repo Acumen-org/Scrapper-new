@@ -79,4 +79,112 @@ except RuntimeError as e:
     assert "snapshot_id" in str(e), e
     print("8. partial INSERT OR REPLACE refused, naming the unset column OK")
 
+# ---------------------------------------------------------------- Cadence
+# The push to Cadence on the real engine: what SQLite (scripts/qa_cadence.py)
+# cannot show, two connections racing for the same row.
+import threading  # noqa: E402
+
+from prospect import cadence  # noqa: E402
+
+conn.rollback()
+for t in reversed(cadence.TABLES):
+    conn.execute(f"DROP TABLE IF EXISTS {t}")
+conn.commit()
+cadence.init(conn)
+cadence.init(conn)
+print("9. cadence schema created twice without error OK")
+
+CLAIM = ("INSERT INTO cadence_push (crd, person_key, name, state, pushed_by, first_pushed_at, claimed_at)"
+         " VALUES ('105943', 'i:1', 'Jane Doe', 'sending', ?, '2026-11-03T15:00:00+00:00',"
+         " '2026-11-03T15:00:00+00:00') ON CONFLICT (crd, person_key) DO UPDATE SET state='sending',"
+         " pushed_by=excluded.pushed_by WHERE cadence_push.state IN ('rejected', 'failed', 'removed')"
+         " RETURNING id")
+
+
+def race(fn, n: int = 2) -> list:
+    """Run fn(i) on n connections at the same moment; their answers."""
+    gate, out = threading.Barrier(n), [None] * n
+
+    def go(i):
+        c = db.connect()
+        try:
+            gate.wait()
+            out[i] = fn(c, i)
+        finally:
+            c.close()
+    ts = [threading.Thread(target=go, args=(i,)) for i in range(n)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    return out
+
+
+def claim(c, i):
+    r = c.execute(CLAIM, (f"user{i}",)).fetchone()
+    c.commit()
+    return r is not None
+
+
+wins = race(claim, 4)
+assert wins.count(True) == 1, wins
+print("10. four connections claim one contact at once: exactly one wins OK")
+
+conn.execute("UPDATE cadence_push SET state='in_sandbox'")
+conn.commit()
+assert conn.execute(CLAIM, ("again",)).fetchone() is None
+conn.rollback()
+for st in ("rejected", "failed", "removed"):
+    conn.execute("UPDATE cadence_push SET state=?", (st,))
+    conn.commit()
+    assert conn.execute(CLAIM, ("again",)).fetchone() is not None, st
+    conn.commit()
+print("11. a push again claims only from rejected, failed and removed OK")
+
+conn.execute("INSERT INTO cadence_request (request_key, batch_id, body, body_sha256, contacts, state,"
+             " first_sent_at, next_retry_at) VALUES ('k1', 'b1', '{}', 'x', 1, 'retry_wait',"
+             " '2026-01-01T15:00:00+00:00', '2026-01-01T15:00:05+00:00')")
+conn.commit()
+sent = race(lambda c, i: cadence.claim_due(c, "k1"), 4)
+assert sent.count(True) == 1, sent
+print("12. four senders try one due request: exactly one sends OK")
+
+slots: list[float] = []
+real_sleep = cadence._sleep
+cadence._sleep = lambda s: None
+
+
+def reserve(c, i):
+    return [cadence._reserve(c, "push") for _ in range(10)]
+
+
+for got in race(reserve, 3):
+    slots += got
+cadence._sleep = real_sleep
+assert len(set(slots)) == len(slots) == 30, len(set(slots))
+ordered = sorted(slots)
+assert all(b - a >= cadence.PUSH_GAP_S - 1e-6 for a, b in zip(ordered, ordered[1:]))
+print("13. three connections reserving pace slots never share one, 2.5 s apart OK")
+
+# A temporary stand-in shadows any real people_index for this session only.
+conn.execute("CREATE TEMP TABLE people_index (crd TEXT, person_key TEXT, name TEXT)")
+conn.commit()
+from prospect import webapp  # noqa: E402,F401  (the views import through the app)
+from prospect import people_view  # noqa: E402
+
+# Empty tables make any plan cheap, so the planner is told to avoid scans and
+# hash joins: what is left shows an index can answer the lookup per row.
+for knob in ("enable_seqscan", "enable_hashjoin", "enable_mergejoin"):
+    conn.execute(f"SET {knob} = off")
+plan = "\n".join(r[0] for r in conn.execute(
+    "EXPLAIN SELECT 1 FROM people_index WHERE " + people_view.CAD_SQL["in"]).fetchall())
+assert "ix_cadence_push" in plan or "cadence_push_crd_person_key_key" in plan, plan
+for knob in ("enable_seqscan", "enable_hashjoin", "enable_mergejoin"):
+    conn.execute(f"RESET {knob}")
+conn.execute("DROP TABLE pg_temp.people_index")
+for t in reversed(cadence.TABLES):
+    conn.execute(f"DROP TABLE IF EXISTS {t}")
+conn.commit()
+print("14. the People Cadence filter reads cadence_push through an index OK")
+
 print("\nINTEGRATION CHECKS PASS")
