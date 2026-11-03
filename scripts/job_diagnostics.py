@@ -40,6 +40,16 @@ def _health(conn):
             SUM(CASE WHEN COALESCE(text_chars,0) < 300 * GREATEST(COALESCE(pages,1),1) THEN 1 ELSE 0 END) thin,
             SUM(CASE WHEN COALESCE(text_chars,0) < 50 * GREATEST(COALESCE(pages,1),1) THEN 1 ELSE 0 END) image_only,
             SUM(COALESCE(pages,0)) pages FROM brochure GROUP BY 1 ORDER BY 2 DESC"""), default=str))
+    # The firms the brochures job takes first and has never recorded (public SEC firm numbers):
+    # a slice that dies on one leaves it at the head of the queue.
+    print('Runtime brochures unrecorded:', json.dumps(q("""SELECT s.crd FROM firm_scope s
+            LEFT JOIN brochure b ON b.crd = s.crd WHERE b.crd IS NULL
+            ORDER BY s.priority DESC LIMIT 5"""), default=str))
+    print('Runtime brochures recheck head:', json.dumps(q("""SELECT b.crd, b.version_id, b.pages, b.bytes,
+            b.fetched_at FROM firm_scope s JOIN brochure b ON b.crd = s.crd
+            WHERE b.status IN ('ok','no_brochure')
+              AND b.fetched_at < to_char(NOW() - INTERVAL '30 days', 'YYYY-MM-DD"T"HH24:MI:SS')
+            ORDER BY s.priority DESC LIMIT 5"""), default=str))
     # Throughput: every recorded run in the last day, per source.
     for row in q("""SELECT source_key, COUNT(*) n,
             SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) ok,
