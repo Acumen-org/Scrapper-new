@@ -170,6 +170,9 @@ def extract_text(pdf: bytes, max_pages: int) -> tuple[str, int]:
         pages = len(doc.pages)
         for pg in doc.pages[:max_pages]:
             parts.append(pg.extract_text() or "")
+            # pdfplumber otherwise retains every page's layout and chars: an
+            # 11 MB, 70-page brochure peaked at 2.5 GB that way, 250 MB this way.
+            pg.close()
     # A brochure typed into the SEC's fillable template keeps its text in form
     # fields, which the page text above does not include. Read only when the
     # pages came back nearly empty, so a filled and flattened form is not doubled.
@@ -503,6 +506,12 @@ def main() -> int:
             streak = 0
             path = BROCHURE_DIR / f"{crd}_{meta['version_id']}.pdf"
             path.write_bytes(pdf)
+            # Written as failed first and overwritten once read. A brochure that
+            # gets the slice killed (out of memory) is then not taken first
+            # again by every slice after it: it stopped this job from 30 Oct.
+            conn.execute(upsert, (crd, meta["version_id"], meta["name"], meta["date"],
+                                  now, str(path), len(pdf), None, None, "parse_failed", ver))
+            conn.commit()
             try:
                 text, pages = extract_text(pdf, tags_cfg["max_pages"])
             except Exception:
