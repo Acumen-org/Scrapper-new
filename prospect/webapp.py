@@ -264,7 +264,7 @@ def _init_once() -> None:
     users.init(c)
     for mod in ("contacts", "jobs", "ai", "roles", "people", "verify", "directory",
                 "websignals", "firmtype", "knowledge", "websearch", "health", "ocr",
-                "growth", "openroles", "custodian_refresh", "people_index"):
+                "growth", "openroles", "custodian_refresh", "people_index", "cadence"):
         _init_optional(c, mod)
     # A fresh start: a run left "running" from before it is a ghost of the
     # previous container, whatever its age.
@@ -1370,8 +1370,8 @@ To start it right now, open the {APP_NAME} shortcut on your desktop.</p>
 </div>""")
 
 
-from . import (api_view, ask_view, enrich_view, firm_view, firms_view,  # noqa: E402
-               home_view, lists_view, people_view, settings_view, signals_view)
+from . import (api_view, ask_view, cadence_view, enrich_view, firm_view,  # noqa: E402
+               firms_view, home_view, lists_view, people_view, settings_view, signals_view)
 
 app.include_router(api_view.router)       # /api/*
 app.include_router(home_view.router)      # /
@@ -1383,6 +1383,7 @@ app.include_router(people_view.router)    # /people
 app.include_router(firm_view.router)      # /firm/{crd}
 app.include_router(enrich_view.router)    # /enrichment
 app.include_router(settings_view.router)  # /settings (admins)
+app.include_router(cadence_view.router)   # /api/cadence/*, /settings/cadence
 
 
 # Old URLs, redirected to their new home so bookmarks keep working.

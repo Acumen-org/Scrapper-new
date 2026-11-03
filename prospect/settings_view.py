@@ -6,6 +6,7 @@
   AI            the model provider behind Bellwether AI, its key and daily limit
   Verification  how email checking talks to mail servers, and whether it can
   Crawling      how firm websites and directories are read
+  Cadence       pushing contacts into Cadence's outreach sandbox (prospect/cadence_view.py)
   Firm types    what kind of firm each adviser is (independent RIA, custodian,
                 wirehouse, asset manager ...): counts, spot checks, corrections
                 by hand, Reclassify all and Rescore all
@@ -37,6 +38,7 @@ router = APIRouter()
 TABS = [("overview", "Overview", "/settings"), ("users", "Users", "/settings/users"),
         ("signin", "Sign-in", "/settings/signin"), ("ai", "AI", "/settings/ai"),
         ("verify", "Verification", "/settings/verify"), ("crawl", "Crawling", "/settings/crawl"),
+        ("cadence", "Cadence", "/settings/cadence"),
         ("firmtypes", "Firm types", "/settings/firmtypes"),
         ("knowledge", "Industry knowledge", "/settings/knowledge"),
         ("jobs", "Jobs", "/settings/jobs"), ("system", "System", "/settings/system"),
@@ -134,7 +136,7 @@ async def settings_save(request: Request):
     form = await request.form()
     group = form.get("_group") or ""
     back = {"signin": "/settings/signin", "ai": "/settings/ai", "verify": "/settings/verify",
-            "crawl": "/settings/crawl"}.get(group, "/settings")
+            "crawl": "/settings/crawl", "cadence": "/settings/cadence"}.get(group, "/settings")
     who = current_owner()
     try:
         for s in settings.SPECS:
@@ -229,6 +231,16 @@ def overview(msg: str = Query("")):
     except Exception:
         rows.append(_status_row("Website reading", "look", "The website reader did not load.",
                                 "/settings/crawl"))
+    try:
+        from . import cadence
+        why = cadence.problem()
+        rows.append(_status_row(
+            "Cadence", "ok" if not why else ("off" if not cadence.configured() else "look"),
+            "Everyone can push contacts into Cadence's outreach sandbox." if not why else esc(why),
+            "/settings/cadence", word="Connected" if not why else
+            ("Not set up" if not cadence.configured() else "Switched off")))
+    except Exception:
+        rows.append(_status_row("Cadence", "bad", "The Cadence module did not load.", "/settings/cadence"))
     c = conn()
     try:
         sm = jobs.summary(c)
