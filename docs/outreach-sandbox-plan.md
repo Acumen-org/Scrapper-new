@@ -903,8 +903,9 @@ Every call follows 14.2, 14.9, 14.10 and 14.11.
 
 ### Audit
 
-- Every preview skip, push, retry, result, status change, suppression, lift and hold is a
-  `cadence_push_event` row with actor and time.
+- Every skip, push, retry, result, status change, suppression, lift and hold is a
+  `cadence_push_event` row with actor and time. The preview writes nothing, so its skips are
+  recorded when the push runs the same rules again.
 - Settings › Cadence lists the latest 100 events, with filters by user and outcome.
 - The person card tooltip shows that contact's history.
 - Diagnostics print counts by state and outcome for the last day, with no contact values.
@@ -1209,3 +1210,35 @@ the topic. Elsewhere in this plan, "decision 16" and the like use Rahul's number
     shows as opted out in Bellwether. The `cadence_sync` job (every 10 minutes, `changedSince`) and
     the by-id refresh write a `contact_suppression` (all channels, `source='cadence'`), and the
     person card and the People list show "Opted out (Cadence)".
+
+**Defaults taken during the build** (no question asked; written here so they can be changed):
+
+- **The check that does not answer.** A timeout, connection error, `429` or 5xx on the preview's
+  check lets the push go ahead with a note, because the push's own rule 4 still refuses anyone
+  already in the CRM. A `401` or `503 integration_disabled` on the check disables the push. The
+  preview never writes a hold; only a push or the sync does.
+- **Contacts the check says Cadence would refuse** (`rejected`) are skipped like `already_in_crm`,
+  with the reason in words. Sending them would only bring back the same refusal.
+- **A preview's check answers are kept 15 minutes, in the web process that made them.** A push
+  that reaches the other worker, or comes later, runs the check again first.
+- **Check-blocked contacts get no `cadence_push` row.** They are recorded in the audit as
+  `skipped:already_in_crm`, and the preview says so each time.
+- **HTTPS only, except to this machine.** `CADENCE_API_URL` must be `https://`; plain `http` is
+  accepted only for `127.0.0.1` and `localhost`, where the tests' fake Cadence listens.
+- **ATS is not offered as a product** in the dialog. A push from the ATS list carries no product,
+  and the designation tags leave out ATS's titles.
+- **Retry in Settings › Cadence pushes in the name of the original pusher**, so an admin's retry
+  does not make the admin the owner, and does not count against the admin's daily cap.
+- **Do not contact on a card** covers the person or everyone at the firm, on all channels, email or
+  calls, with a reason and a note. Email, phone and domain scopes exist in the table for Cadence's
+  opt-outs and for later; a person's email suppression also shows on People.
+- **The firm page's Overview copies of the first two cards** leave out the push controls; they
+  live on the People & contacts tab.
+- **Phones in the dialog** are shown the way the rest of the app writes them, `(212) 555-0142`,
+  while the payload carries E.164.
+- **A contact Cadence answers `not_found` by id** is marked failed ("Cadence has no record of it")
+  unless a push of it is still in flight.
+- **Local checks.** `scripts/qa_cadence.py` runs offline on SQLite and the fake (it is part of
+  `scripts.qa_requirements`, so the Docker build runs it); `scripts/qa_pg.py` adds Postgres race
+  checks; `scripts/qa_smoke.py --cadence-port <port>` (or `--only cadence` on a small database)
+  drives the running app against the fake.

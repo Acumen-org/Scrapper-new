@@ -220,6 +220,8 @@ job "bellwether" {
           {{ with nomadVar "nomad/jobs/bellwether" }}
           BELLWETHER_SECRET={{ .secret }}
           BELLWETHER_CONTACT={{ .contact }}
+          {{ with .cadence_url }}CADENCE_API_URL={{ . }}{{ end }}
+          {{ with .cadence_key }}CADENCE_API_KEY={{ . }}{{ end }}
           {{ end }}
         EOT
         destination = "secrets/app.env"

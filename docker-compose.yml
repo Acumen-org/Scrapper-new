@@ -24,6 +24,9 @@ services:
       BELLWETHER_CONTACT: ${BELLWETHER_CONTACT:?set BELLWETHER_CONTACT in .env}
       BELLWETHER_HTTPS: "1"
       BELLWETHER_REACHER_URL: http://reacher:8080
+      # Optional: pushing contacts to Cadence. Empty means not connected.
+      CADENCE_API_URL: ${CADENCE_API_URL:-}
+      CADENCE_API_KEY: ${CADENCE_API_KEY:-}
     volumes:
       - bellwether-data:/data
     expose:

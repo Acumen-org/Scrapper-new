@@ -77,6 +77,10 @@ server access is needed for any of it:
    Reacher server can be used instead: `docker compose` starts one beside the
    app, and on Nomad `nomad job run reacher.nomad.hcl` starts it as its own job
    (then set its address in Settings).
+4. **Cadence** (Settings, Cadence). Pushing contacts into Cadence's outreach
+   sandbox needs two environment variables, which are never typed into the app
+   (see Cadence below). With them set, run Test the connection, then switch
+   pushing on. Everyone can push once it is on.
 
 Secrets entered in Settings are encrypted in the database with a key derived
 from `BELLWETHER_SECRET`; rotating that secret means re-entering them. Any of
@@ -84,6 +88,35 @@ them can instead be pinned by environment variable (`BELLWETHER_MS_TENANT`,
 `BELLWETHER_MS_CLIENT_ID`, `BELLWETHER_MS_CLIENT_SECRET`, `BELLWETHER_AI_KEY`,
 `BELLWETHER_REACHER_URL`, `BELLWETHER_ADMINS`, `BELLWETHER_PUBLIC_URL`), in which
 case the screen shows the field as fixed.
+
+### Cadence
+
+Bellwether pushes contacts (never firms) into Cadence's outreach sandbox and
+reads back what happened to them every 10 minutes. The contract is in
+`docs/outreach-sandbox-plan.md`, "Shared contract with Bellwether". Two values,
+environment only; neither is a setting, and the key is never stored, logged or
+shown:
+
+| Variable | What it is | Where it is set |
+| --- | --- | --- |
+| `CADENCE_API_URL` | Cadence's address, `https://...`, no trailing slash | Nomad: key `cadence_url` of the variable `nomad/jobs/bellwether`, rendered by the template in `nomad/bellwether.nomad.hcl`. Compose and local runs: `.env` |
+| `CADENCE_API_KEY` | The shared key, at least 32 random bytes, base64url. Cadence holds the same value as `BELLWETHER_API_KEY` | Nomad: key `cadence_key` of the same variable. Compose and local runs: `.env` |
+
+```bash
+# Adds the two keys; every key already in the variable has to be given again,
+# because nomad var put replaces the whole item.
+nomad var put -force nomad/jobs/bellwether secret=... contact=... dsn=... \
+  cadence_url=https://<cadence host> cadence_key=<the shared key>
+nomad job restart bellwether    # or redeploy: the template restarts the task on change
+```
+
+Unset, or not `https`, means not connected: the Push to Cadence button says so
+and nothing else changes. To rotate the key: generate a new one, set it in
+Cadence as `BELLWETHER_API_KEY` with the old one kept as
+`BELLWETHER_API_KEY_PREVIOUS`, change `cadence_key` here, then drop the previous
+key in Cadence. Rollout: deploy with pushing off, set both values, press Test
+the connection in Settings, Cadence (it proves the server can reach Cadence),
+push one test contact, then switch pushing on.
 
 The image now carries Scrapling and a headless Chromium for the few firm
 websites that only render with JavaScript (build with `--build-arg
@@ -190,7 +223,8 @@ two containers with less to learn, and nothing here is better for three people.
 `.github/workflows/ci.yml` on the self-hosted runner: it builds the image, pushes
 it to Harbor as `bellwether/app:YYYY-MM-DD-<sha7>`, and runs
 `nomad job run nomad/bellwether.nomad.hcl` with that tag. That jobspec reads
-`secret`, `contact` and `dsn` from the Nomad variable `nomad/jobs/bellwether`.
+`secret`, `contact` and `dsn`, and the optional `cadence_url` and `cadence_key`
+(see Cadence above), from the Nomad variable `nomad/jobs/bellwether`.
 There is no test step in that workflow, so run `python -m scripts.qa_style`,
 `python -m scripts.qa_pg` and `python -m scripts.qa_smoke` before pushing.
 The root `bellwether.nomad.hcl` described below is the older, self-contained
