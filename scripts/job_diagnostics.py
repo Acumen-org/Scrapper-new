@@ -63,6 +63,14 @@ def _health(conn):
             ORDER BY r.started_at DESC LIMIT 40"""):
         print('Runtime web shard:', json.dumps({k: (_scrub(v) if k == 'message' else v)
                                                for k, v in row.items()}, default=str))
+    # The firms a shard held when it was stopped: its claim stays behind.
+    for row in q("""SELECT c.crd, c.holder, c.claimed_at, c.expires_at, f.website,
+            w.scanned_at, w.status, w.pages, w.method,
+            (SELECT COUNT(*) FROM web_page p WHERE p.crd = c.crd) cached_pages
+            FROM web_enrich_claim c LEFT JOIN firm_current f ON f.crd = c.crd
+            LEFT JOIN web_enrich_state w ON w.crd = c.crd
+            ORDER BY c.claimed_at DESC LIMIT 12"""):
+        print('Runtime web claim:', json.dumps(row, default=str))
     # Throughput: every recorded run in the last day, per source.
     for row in q("""SELECT source_key, COUNT(*) n,
             SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) ok,
