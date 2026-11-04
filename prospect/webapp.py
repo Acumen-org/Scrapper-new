@@ -670,7 +670,7 @@ def asset(path: str) -> str:
     return f"/static/{path}?v={v}"
 
 
-FAVICON = '<link rel="icon" type="image/svg+xml" href="/static/mark.svg">'
+FAVICON = f'<link rel="icon" type="image/svg+xml" href="{asset("mark.svg")}">'
 
 # Pages render before the click lands: hovering a link for a moment starts
 # loading the next page in the background (Chrome and Edge), so moving around
@@ -861,10 +861,10 @@ def nav(active: str) -> str:
     feed = esc(n["feed"]) if n.get("feed") else "none yet"
     pages = json.dumps(_pages_for(acct))
     return (f'<script>window.BW_PAGES={pages};</script>' + PALETTE_HTML +
-            '<header class="mobile-nav"><a href="/"><img src="/static/mark.svg" alt="">Bellwether</a>'
+            f'<header class="mobile-nav"><a href="/"><img src="{asset("mark.svg")}" alt="">Bellwether</a>'
             '<button type="button" data-nav-toggle aria-controls="main-nav" aria-expanded="false">Menu</button></header>'
             '<nav class="side" id="main-nav" aria-label="Main navigation">'
-            f'<a class="brand" href="/"><img src="/static/mark.svg" width="30" height="30" alt="">'
+            f'<a class="brand" href="/"><img src="{asset("mark.svg")}" width="30" height="30" alt="">'
             f'<div class="t">{APP_NAME}<small>Acumen Strategy</small></div></a>'
             f'<button class="find" type="button" onclick="palShow()">{ICONS["search"]}'
             'Search<kbd>Ctrl K</kbd></button>'
@@ -1131,7 +1131,7 @@ def login_page(error: str = "", nxt: str = "/", status: int | None = None,
 <div class="signin-wrap">
 <main class="signin">
 <div class="signin-brand">
-<a class="wm" href="/login"><img src="/static/mark.svg" width="40" height="40" alt="">{APP_NAME}</a>
+<a class="wm" href="/login"><img src="{asset('mark.svg')}" width="40" height="40" alt="">{APP_NAME}</a>
 <p>GTM intelligence</p>
 <svg class="signin-emblem" viewBox="0 0 160 140" fill="none" aria-hidden="true">
 <path d="M8 66 80 10l72 56M8 98l72-56 72 56M8 130l72-56 72 56" stroke="currentColor" stroke-width="1.2"/>

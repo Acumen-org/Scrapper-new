@@ -582,7 +582,7 @@ color:rgba(255,255,255,.8);background:var(--raise)}
 .aimsg{font-size:14px;line-height:1.7;overflow-wrap:anywhere}
 .aimsg.me{align-self:flex-end;background:var(--raise3);padding:10px 15px;border-radius:16px 16px 4px 16px;max-width:85%;white-space:pre-wrap}
 .aimsg.bot{display:grid;grid-template-columns:28px minmax(0,1fr);gap:12px}
-.aimsg.bot::before{content:"";width:28px;height:28px;border-radius:8px;background:url("/static/mark.svg") center/28px no-repeat}
+.aimsg.bot::before{content:"";width:28px;height:28px;border-radius:8px;background:url("/static/mark.svg?v=b") center/28px no-repeat}
 .aimsg.bot p{margin:0 0 10px} .aimsg.bot ul,.aimsg.bot ol{margin:0 0 10px;padding-left:20px}
 .aimsg.bot table{font-size:12.5px;margin:8px 0;border:1px solid var(--line);border-radius:10px}
 .aimsg.bot td,.aimsg.bot th{padding:7px 10px}

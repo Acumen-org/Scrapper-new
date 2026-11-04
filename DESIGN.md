@@ -164,7 +164,7 @@ components:
 
 Bellwether is a serious, neutral charcoal workspace in which firm identity, evidence and available actions are easy to scan. Restrained red supplies emphasis; hierarchy comes from type, space, fine rules and named views. Summary rows keep the first view quiet while complete research and operational detail remain reachable.
 
-The October 2026 refinement keeps self-hosted Instrument Sans, solid surfaces and a professional sign-in experience. The shipped identity is the red rounded-square mark with three stacked white chevrons in `prospect/static/mark.svg`. Reuse that asset rather than rebuilding it.
+The October 2026 refinement keeps self-hosted Instrument Sans, solid surfaces and a professional sign-in experience. The shipped identity is the white drawn B with a red dot on a near-black rounded square in `prospect/static/mark.svg` (the 5 October mark, restored on 4 November 2026 at the user's request; it replaced the red three-chevron mark of the October redesign). Reuse that asset rather than rebuilding it, and link it through `asset()` so a change reaches browsers that cached the old one; the AI avatar in `app.css` carries its own `?v=` for the same reason.
 
 **Key Characteristics:**
 
