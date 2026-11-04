@@ -50,6 +50,27 @@ def _health(conn):
             WHERE b.status IN ('ok','no_brochure')
               AND b.fetched_at < to_char(NOW() - INTERVAL '30 days', 'YYYY-MM-DD"T"HH24:MI:SS')
             ORDER BY s.priority DESC LIMIT 5"""), default=str))
+    # Firm websites: each shard's own run against its slice, to tell a shard that
+    # overran from a slice that waited on shards that had already finished.
+    for row in q("""SELECT j.started_at slice_at, j.seconds slice_s, j.status slice_status,
+            r.slice_id, r.started_at, r.finished_at, r.status, r.rows_out, r.message
+            FROM run_log r LEFT JOIN job_run j ON j.kind='web_enrich'
+              AND r.started_at >= j.started_at
+              AND r.started_at < to_char(j.started_at::timestamptz + make_interval(secs => j.seconds + 5),
+                                         'YYYY-MM-DD"T"HH24:MI:SS')
+            WHERE r.source_key='web_enrich'
+              AND r.started_at >= to_char(NOW() - INTERVAL '2 day', 'YYYY-MM-DD"T"HH24:MI:SS')
+            ORDER BY r.started_at DESC LIMIT 40"""):
+        print('Runtime web shard:', json.dumps({k: (_scrub(v) if k == 'message' else v)
+                                               for k, v in row.items()}, default=str))
+    # The firms a shard held when it was stopped: its claim stays behind.
+    for row in q("""SELECT c.crd, c.holder, c.claimed_at, c.expires_at, f.website,
+            w.scanned_at, w.status, w.pages, w.method,
+            (SELECT COUNT(*) FROM web_page p WHERE p.crd = c.crd) cached_pages
+            FROM web_enrich_claim c LEFT JOIN firm_current f ON f.crd = c.crd
+            LEFT JOIN web_enrich_state w ON w.crd = c.crd
+            ORDER BY c.claimed_at DESC LIMIT 12"""):
+        print('Runtime web claim:', json.dumps(row, default=str))
     # Throughput: every recorded run in the last day, per source.
     for row in q("""SELECT source_key, COUNT(*) n,
             SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) ok,
@@ -468,7 +489,37 @@ def _cadence(conn):
         print('Runtime cadence:', json.dumps({'unavailable': type(exc).__name__}))
 
 
+def _processes():
+    """What runs in the container: process names, parents and age, no arguments
+    beyond the module a Python process runs (a browser left behind shows here)."""
+    import os
+    try:
+        tick = os.sysconf('SC_CLK_TCK')
+        with open('/proc/uptime') as fh:
+            up = float(fh.read().split()[0])
+        rows = []
+        for pid in filter(str.isdigit, os.listdir('/proc')):
+            try:
+                with open(f'/proc/{pid}/stat') as fh:
+                    st = fh.read()
+                with open(f'/proc/{pid}/cmdline', 'rb') as fh:
+                    argv = [a.decode('utf-8', 'replace') for a in fh.read().split(b'\0') if a]
+            except OSError:
+                continue
+            name = st[st.index('(') + 1:st.rindex(')')]
+            f = st[st.rindex(')') + 2:].split()
+            mod = argv[argv.index('-m') + 1] if '-m' in argv[:-1] else ''
+            rows.append({'pid': int(pid), 'ppid': int(f[1]), 'state': f[0], 'name': name,
+                         'module': mod, 'age_min': round((up - int(f[19]) / tick) / 60),
+                         'rss_mb': round(int(f[21]) * os.sysconf('SC_PAGE_SIZE') / 2**20)})
+        for row in sorted(rows, key=lambda r: r['pid']):
+            print('Runtime process:', json.dumps(row))
+    except Exception as exc:
+        print('Runtime process: unavailable', type(exc).__name__)
+
+
 def main():
+    _processes()
     conn = db.connect()
     try:
         conn.execute('SET TRANSACTION READ ONLY')
