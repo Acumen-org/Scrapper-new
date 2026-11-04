@@ -61,6 +61,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import socket
 import sys
 import time
@@ -159,6 +160,10 @@ EXTRACT_SHARE = 0.5       # of ai.daily_limit, the most the extraction job uses 
 CALLS_PER_PAGE = 2        # one call, and one repair when the JSON comes back broken
 CLAIM_MINUTES = 15        # a claim not renewed this long is free again
 GUESSES_MAX = 60          # pattern guesses per firm, at most
+# One firm, crawl and all the matching after it. The crawl stops itself at five
+# minutes (crawl.SITE_SECONDS_MAX); this is the backstop for everything else, so
+# one firm can no longer hold its shard until the slice's 40 minute timeout.
+FIRM_SECONDS_MAX = 900
 FIRM_PHONES_PER_PAGE = 3  # firm-level numbers kept from any one page
 
 
@@ -900,8 +905,8 @@ def attribute_leftovers(conn, run: FirmRun) -> int:
         " AND person_key='' AND is_role=0 AND source IN ('website','vcard')"
         " AND updated_at >= ?", (run.crd, run.now)).fetchall()
     names: list[tuple[str, str | None]] = [(n, run.known_of.get(k)) for k, n in run.persons.items()]
-    names += [(n, n) for n in run.roster.names
-              if contacts.name_key(n) not in {contacts.name_key(k or "") for _, k in names}]
+    on_site = {contacts.name_key(k or "") for _, k in names}
+    names += [(n, n) for n in run.roster.names if contacts.name_key(n) not in on_site]
     found = []
     for r in rows:
         email = r["value"]
@@ -967,12 +972,17 @@ def learn_and_guess(conn, run: FirmRun) -> int:
         seen_keys.add(key)
     pending = list(run.roster.officers) + [n for n in run.roster.names
                                            if n not in run.roster.officers]
+    shown_keys = {contacts.name_key(run.known_of.get(k, "")) for k in seen_keys}
     keyed = []
     for name in pending:
         nk = contacts.name_key(name)
-        if not nk or any(contacts.name_key(run.known_of.get(k, "")) == nk for k in seen_keys):
+        if not nk or nk in shown_keys:
             continue
-        keyed.append((run.key_for(conn, name, name), name, run.roster.titles.get(nk)))
+        # A roster name already carries its IAPD record, which is what key_for
+        # would look up; a firm with thousands of reps (CRD 79) spent half an
+        # hour on one name-match query each. Officers and legacy names still match.
+        key = run.roster.pk.get(nk) or run.key_for(conn, name, name)
+        keyed.append((key, name, run.roster.titles.get(nk)))
     conn.commit()
     for key, name, title in keyed:
         if key and key not in seen_keys:
@@ -1340,19 +1350,42 @@ def run_shards(args) -> int:
     return 1 if failed == n else 0
 
 
+class FirmTooLong(Exception):
+    pass
+
+
+def _too_long(*_) -> None:
+    raise FirmTooLong(f"gave up after {FIRM_SECONDS_MAX // 60} minutes")
+
+
 def read_firm(conn, crawler: Crawler, crd: str, website: str, people, renew_fn=None) -> dict:
-    """One firm, end to end, never raising: what the slice prints and saves."""
+    """One firm, end to end, never raising: what the slice prints and saves.
+    Given up after FIRM_SECONDS_MAX where the system has an alarm clock (the
+    server does); the firm is then saved as an error, so it is not drawn again
+    at once."""
     if not website:
         return {"status": "no_website", "pages": 0, "people": 0, "emails": 0,
                 "personal": 0, "phones": 0, "guesses": 0, "method": None,
                 "site": None, "error": None}
+    alarm = hasattr(signal, "SIGALRM")
+    if alarm:
+        before = signal.signal(signal.SIGALRM, _too_long)
+        signal.alarm(FIRM_SECONDS_MAX)
     try:
         return enrich_one(conn, crawler, crd, website, people, renew=renew_fn)
     except Exception as e:  # one bad site must not end the slice
+        if alarm:
+            signal.alarm(0)
         conn.rollback()
+        if isinstance(e, FirmTooLong):
+            crawler.close()     # it may have been stopped mid-fetch; the next firm opens fresh
         return {"status": "error", "pages": 0, "people": 0, "emails": 0,
                 "personal": 0, "phones": 0, "guesses": 0, "method": None,
                 "site": website, "error": f"{type(e).__name__}: {e}"[:200]}
+    finally:
+        if alarm:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, before)
 
 
 def main() -> int:
