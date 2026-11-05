@@ -24,6 +24,8 @@ font-weight:400 700;font-style:normal;font-display:swap}
  --shadow:0 24px 80px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35);
 }
 *{box-sizing:border-box}
+/* Hidden means hidden, whatever display a component sets (B019). */
+[hidden]{display:none!important}
 html{color-scheme:dark;scroll-behavior:smooth;-webkit-text-size-adjust:100%}
 body{margin:0 0 0 var(--side-w);background:var(--bg);color:var(--ink);font:14px/1.55 var(--sans);
 -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;
