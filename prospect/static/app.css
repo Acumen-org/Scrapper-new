@@ -15,6 +15,8 @@ font-weight:400 700;font-style:normal;font-display:swap}
  --red:#b73545; --red-hover:#9f2c3b; --red-hi:#ef939c; --red-bg:rgba(230,72,80,.13); --red-line:rgba(240,107,114,.35);
  --ok:#45c08a; --ok-bg:rgba(69,192,138,.12); --ok-line:rgba(69,192,138,.32);
  --amber:#e8ac4a; --amber-bg:rgba(232,172,74,.11); --amber-line:rgba(232,172,74,.32);
+ --blue:#8fb4f0; --blue-bg:rgba(110,150,230,.12); --blue-line:rgba(110,150,230,.34);
+ --sky:#7fd0e3; --sky-bg:rgba(100,195,220,.11); --sky-line:rgba(100,195,220,.32);
  --sans:"Instrument Sans","Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
  --serif:var(--sans);
  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
@@ -1359,19 +1361,34 @@ form.newlist input[type=text]{width:100%;min-width:0}
 }
 /* end lists */
 
-/* ---------------------------------------------------------------- Cadence push
-   Tick people, push them to Cadence's sandbox, see where each stands. The
-   selection bar is a bulk action, so it takes the shared overlay shadow; the
-   status line is quiet text, red only for a refusal or a failure. */
+/* ---------------------------------------------------------------- Send to Cold outreach
+   Tick people, send them to Cold outreach in Cadence, see where each stands.
+   The selection bar is a bulk action, so it takes the shared overlay shadow.
+   Where a person stands is one chip in the plan's words: red with a stop sign
+   for Do not contact, amber for something to act on, blue in Cold outreach,
+   sky already in the CRM, green moved, grey for the rest. */
 .people-table th.pick,.people-table td.pick{width:36px;padding-right:0}
 .people-table td.pick label,.people-table th.pick label{display:flex;align-items:center;justify-content:center;
 min-height:28px;margin:-4px 0;cursor:pointer}
 .cad-line{font-size:12px;color:var(--soft);margin-top:3px;line-height:1.45}
 .cad-line:empty{display:none}
-.cad-st{color:var(--soft)}
-.cad-st.bad{color:var(--red-hi)}
-.cad-st[data-tip]{cursor:help;border-bottom:1px dotted var(--rule2)}
-.cad-crm{font-size:12px;color:var(--faint);text-decoration:underline;text-decoration-color:var(--rule2);text-underline-offset:3px}
+.cad-chip{display:inline-flex;align-items:center;gap:5px;font:500 11.5px/1.2 var(--sans);min-height:20px;padding:2px 7px;
+border-radius:6px;border:1px solid var(--rule2);color:var(--soft);vertical-align:middle;max-width:100%}
+.cad-chip svg{width:12px;height:12px;flex:none}
+.cad-chip[data-tip]{cursor:help}
+.cad-chip.stop{background:var(--red-bg);color:var(--red-hi);border-color:var(--red-line);font-weight:600}
+.cad-chip.warn{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-line)}
+.cad-chip.info{background:var(--blue-bg);color:var(--blue);border-color:var(--blue-line)}
+.cad-chip.sky{background:var(--sky-bg);color:var(--sky);border-color:var(--sky-line)}
+.cad-chip.ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
+.cad-chip.muted{color:var(--faint)}
+.cad-sub{display:block;font-size:12px;color:var(--faint);margin-top:3px}
+.cad-link{font-size:12px;color:var(--faint);margin-left:8px;text-decoration:underline;text-decoration-color:var(--rule2);text-underline-offset:3px}
+/* A person who must not be contacted: their email and phone are greyed out (B079). */
+.cad-stopped .pill,article:has(.cad-chip.stop) .cline{opacity:.45;text-decoration:line-through}
+.people-table tr.cad-group td{background:var(--raise);font-size:12.5px;padding-top:9px;padding-bottom:9px}
+.people-table tr.cad-group td b{margin-right:10px}
+.people-table tr.cad-group td button{margin-left:10px}
 .cad-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;border-top:1px solid var(--line);padding-top:10px}
 .cad-ctl .cad-line{margin:0;flex:1 1 140px;min-width:0}
 .cad-ctl .meta{margin:0;flex-basis:100%}
@@ -1392,7 +1409,17 @@ border-bottom:1px solid var(--line)}
 .cad-body h3{margin:18px 0 8px;color:var(--soft)}
 .cad-body h3:first-child,.cad-body .note+h3{margin-top:4px}
 .cad-body .note{margin:0 0 12px}
-.cad-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 22px;border-top:1px solid var(--line)}
+.cad-verdict{margin:0 0 4px;font-size:14px}
+.cad-body details.cad-group{margin:0 0 6px}
+.cad-body details.cad-group summary{cursor:pointer;font-size:13px;color:var(--soft);padding:4px 0}
+.cad-foot{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:8px;padding:14px 22px;
+border-top:1px solid var(--line)}
+.cad-why{flex:1 1 220px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.cad-why label.inline{font-size:13px}
+.cad-why .meta{margin:0}
+details.cad-send{border-bottom:1px solid var(--line);padding:8px 0}
+details.cad-send summary{display:flex;flex-wrap:wrap;gap:4px 14px;cursor:pointer;font-size:13px}
+details.cad-send .cad-list{margin:6px 0 0 18px}
 .cad-foot:empty{display:none}
 .cad-list{list-style:none;margin:0;padding:0}
 .cad-list li{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:4px 16px;padding:9px 0;
@@ -1408,7 +1435,8 @@ border-bottom:1px solid var(--line)}
 .cad-sum{margin:14px 0 0;font-size:13.5px}
 .cad-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:16px;padding-top:16px;
 border-top:1px solid var(--line)}
-form.cad-fields{margin:0;border:0}
+form.cad-fields,.cad-fields.top{margin:8px 0 4px;border:0;padding-top:0}
+form.cad-fields{margin:0}
 .cad-fields label{min-width:0}
 .cad-fields .wide{grid-column:1/-1}
 .cad-fields select,.cad-fields textarea,.cad-fields input[type=text]{width:100%;min-width:0}
