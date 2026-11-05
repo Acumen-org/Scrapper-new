@@ -6,7 +6,7 @@
   AI            the model provider behind Bellwether AI, its key and daily limit
   Verification  how email checking talks to mail servers, and whether it can
   Crawling      how firm websites and directories are read
-  Cadence       pushing contacts into Cadence's outreach sandbox (prospect/cadence_view.py)
+  Cadence       sending contacts to Cadence's Cold outreach (prospect/cadence_view.py)
   Firm types    what kind of firm each adviser is (independent RIA, custodian,
                 wirehouse, asset manager ...): counts, spot checks, corrections
                 by hand, Reclassify all and Rescore all
@@ -138,6 +138,16 @@ async def settings_save(request: Request):
     back = {"signin": "/settings/signin", "ai": "/settings/ai", "verify": "/settings/verify",
             "crawl": "/settings/crawl", "cadence": "/settings/cadence"}.get(group, "/settings")
     who = current_owner()
+    if group == "cadence" and form.get("cadence.enabled") == "on" and not settings.get_bool("cadence.enabled"):
+        # Switched on only after a test of the connection passed (B020).
+        from . import cadence
+        c = conn()
+        try:
+            why = cadence.cannot_switch_on(c) if cadence.ready(c) else "The Cadence tables are not ready yet."
+        finally:
+            c.close()
+        if why:
+            return RedirectResponse(f"{back}?{qs_join(err=why)}", status_code=303)
     try:
         for s in settings.SPECS:
             if s.group != group or settings.pinned(s.key):
@@ -234,11 +244,22 @@ def overview(msg: str = Query("")):
     try:
         from . import cadence
         why = cadence.problem()
+        c = conn()
+        try:
+            last = cadence.last_ping(c) if cadence.ready(c) else None
+        finally:
+            c.close()
+        # Connected only on the evidence of Cadence's last answer (B020).
+        failed = not why and last and not last.get("ok")
+        never = not why and not last
         rows.append(_status_row(
-            "Cadence", "ok" if not why else ("off" if not cadence.configured() else "look"),
-            "Everyone can push contacts into Cadence's outreach sandbox." if not why else esc(why),
-            "/settings/cadence", word="Connected" if not why else
-            ("Not set up" if not cadence.configured() else "Switched off")))
+            "Cadence", "off" if not cadence.configured() else "look" if (why or failed or never) else "ok",
+            esc(why) if why else
+            esc(f"The last test failed: {last.get('words')}") if failed else
+            "Not tested yet. Test the connection in Settings, Cadence." if never else
+            "Everyone can send contacts to Cadence's Cold outreach.",
+            "/settings/cadence", word="Not set up" if not cadence.configured() else
+            "Switched off" if why else "Failed" if failed else "Never tested" if never else "Connected"))
     except Exception:
         rows.append(_status_row("Cadence", "bad", "The Cadence module did not load.", "/settings/cadence"))
     c = conn()

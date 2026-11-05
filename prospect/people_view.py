@@ -15,9 +15,11 @@ product list and the Designation filter offers its titles (Head of Talent
 Acquisition for ATS, Chief Compliance Officer for Glynac), any number at once,
 or any title typed by hand. They are defined in config/designations.yml.
 
-Anyone can tick people (or every person the filter matches) and push them to
-Cadence's outreach sandbox; each row then says where the person stands there
-(prospect/cadence_view.py).
+Anyone can tick people (or every person the filter matches) and send them to
+Cold outreach in Cadence; each row then says where the person stands there
+(prospect/cadence_view.py). The Cold outreach filter covers every state, and
+"Sent by me" is My sends: each rep's sends, grouped by send, with each
+person's result and Retry (B080).
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from . import cadence, cadence_view, designations, people_index, products, roles, ui
 from .names import first_name
-from .webapp import conn, esc, escn, money, nice_name, page, qs_join
+from .webapp import conn, current_user, esc, escn, money, nice_name, page, qs_join
 
 router = APIRouter()
 
@@ -64,18 +66,37 @@ CRED = [("", "Any credential"), ("cfp", "CFP"), ("cfa", "CFA")]
 SRC = [("", "Anywhere"), ("sec", "SEC registration"), ("adv", "Form ADV officers only"),
        ("web", "Firm website or web search")]
 SIZE = [("", "Any firm size"), ("100", "$100M+"), ("500", "$500M+"), ("1000", "$1B+"), ("5000", "$5B+")]
-CAD = [("", "Any"), ("none", "Not pushed"), ("in", "In Cadence"), ("crm", "Moved to CRM"),
-       ("optout", "Opted out (Cadence)"), ("dnc", "Do not contact")]
+CAD = [("", "Any"), ("none", "Can be sent"), ("mine", "Sent by me"), ("waiting", "Waiting"),
+       ("failed", "Send failed"), ("refused", "Not sent: refused"), ("in", "In Cold outreach"),
+       ("unclaimed", "Unclaimed in Cold outreach"), ("crm", "Moved to CRM"), ("incrm", "Already in CRM"),
+       ("removed", "Removed from Cold outreach"), ("optout", "Do not contact · Cadence"),
+       ("dnc", "Do not contact · set here"), ("erased", "Erased in Cadence")]
 _CAD_PUSH = ("EXISTS (SELECT 1 FROM cadence_push cp WHERE cp.crd = people_index.crd"
              " AND cp.person_key = people_index.person_key{})")
+# A Do not contact reaches a person by their row, their firm, the SEC
+# individual (every firm they work at, N007) or the email shown.
 _CAD_SUPP = ("EXISTS (SELECT 1 FROM contact_suppression s WHERE s.lifted_at IS NULL AND {}"
              " AND ((s.scope = 'person' AND s.value = people_index.crd || ':' || people_index.person_key)"
-             " OR (s.scope = 'firm' AND s.value = people_index.crd)))")
-CAD_SQL = {"none": "NOT " + _CAD_PUSH.format(""),
-           "in": _CAD_PUSH.format(" AND cp.state IN ('sending', 'retry_wait', 'in_sandbox')"),
+             " OR (s.scope = 'firm' AND s.value = people_index.crd)"
+             " OR (s.scope = 'individual' AND s.value = LTRIM(people_index.indvl_pk, '0'))"
+             " OR (s.scope = 'email' AND s.value = LOWER(people_index.email))))")
+CAD_SQL = {"none": ("NOT " + _CAD_PUSH.format(" AND cp.state NOT IN ('failed', 'removed')")
+                    + " AND NOT " + _CAD_SUPP.format("1=1")),
+           "mine": _CAD_PUSH.format(" AND cp.pushed_by = ? AND cp.batch_id IS NOT NULL"),
+           "waiting": _CAD_PUSH.format(" AND cp.state IN ('sending', 'retry_wait')"),
+           "failed": _CAD_PUSH.format(" AND cp.state = 'failed'"),
+           "refused": _CAD_PUSH.format(" AND cp.state = 'rejected'"),
+           "in": _CAD_PUSH.format(" AND cp.state = 'in_sandbox'"),
+           "unclaimed": _CAD_PUSH.format(" AND cp.state = 'in_sandbox' AND cp.cadence_owner IS NULL"),
            "crm": _CAD_PUSH.format(" AND cp.state = 'moved_to_crm'"),
+           "incrm": _CAD_PUSH.format(" AND cp.state = 'in_crm'"),
+           "removed": _CAD_PUSH.format(" AND cp.state = 'removed'"),
            "optout": _CAD_SUPP.format("s.source = 'cadence'"),
-           "dnc": _CAD_SUPP.format("s.source = 'manual'")}
+           "dnc": _CAD_SUPP.format("s.source = 'manual'"),
+           "erased": _CAD_PUSH.format(" AND cp.erased_at IS NOT NULL")}
+# My sends, newest send first, each send's people together.
+MINE_ORDER = ("(SELECT COALESCE(cp.last_pushed_at, cp.first_pushed_at) FROM cadence_push cp"
+              " WHERE cp.crd = people_index.crd AND cp.person_key = people_index.person_key) DESC, name")
 SORTS = [("", "Best firms first"), ("joined", "Newest joiners"), ("name", "Name A to Z"),
          ("firm", "Firm A to Z"), ("aum", "Largest firms")]
 ORDER = {"": "priority DESC NULLS LAST, raum DESC NULLS LAST, name",
@@ -94,6 +115,8 @@ def _product(on: str) -> str | None:
 def _order(f: dict, cols: set) -> str:
     """Best firms first means best on the chosen list, when one is chosen."""
     p = _product(f["on"])
+    if not f["sort"] and f["cad"] == "mine":
+        return MINE_ORDER
     if not f["sort"] and p and f"sc_{p}" in cols:
         return f"sc_{p} DESC NULLS LAST, raum DESC NULLS LAST, name"
     return ORDER[f["sort"]]
@@ -143,6 +166,8 @@ def _where(f: dict, cols: set, skip: str = "") -> tuple[str, list]:
         args.append(f["src"])
     if f["cad"] in CAD_SQL:
         where.append(CAD_SQL[f["cad"]])
+        if f["cad"] == "mine":
+            args.append(f.get("me") or "")
     if skip != "des" and f["des"] and "desig" in cols:
         where.append(f"desig && ARRAY[{','.join('?' * len(f['des']))}]::text[]")
         args += list(f["des"])
@@ -280,6 +305,10 @@ def _person_row(r, prod_tags: list, active: tuple = (), cad: dict | None = None)
             f' aria-label="Select {esc(r["name"])}"></label>'
             if not info or info["can_push"] else "")
     line = cadence_view.status_html(info)
+    if info and info.get("stop") and reach:
+        # Not to be used: Do not contact, or erased in Cadence (B079).
+        reach = f'<div class="cad-stopped" title="Do not contact">{reach}</div>'
+
     return (f'<tr class="go" data-href="/firm/{esc(r["crd"])}#people">'
             f'<td class="pick">{pick}</td>'
             f'<td><div class="ent">{ui.mono(r["name"], "p")}<div><div class="t">{esc(r["name"])}</div>'
@@ -382,6 +411,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
                                         f'<p class="lede">{msg}</p></div>')
     f = _filters(q=q, st=st, on=on, view=view, role=role, joined=joined, cred=cred, disc=disc,
                  size=size, cat=cat, src=src, des=des, title=title, sort=sort, cad=cad)
+    f["me"] = current_user() or ""
     where, args = _where(f, cols)
     minute = int(time.monotonic() // 60)
     # The view tabs show how many people each one holds under the other filters.
@@ -415,7 +445,7 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
         more.append(("cat", "Firm type", [("", "Any firm type")] + cats))
     if "src" in cols:
         more.append(("src", "Found in", SRC))
-    more += [("cad", "Cadence", CAD), ("disc", "With a disclosure", "check"), ("sort", "Sort", SORTS)]
+    more += [("cad", "Cold outreach", CAD), ("disc", "With a disclosure", "check"), ("sort", "Sort", SORTS)]
     extra = [(designations.label_of(t),
               "/people?" + qs_join(**_vals(f, des=",".join(x for x in f["des"] if x != t))))
              for t in f["des"]]
@@ -447,10 +477,40 @@ def people_page(q: str = Query(""), st: str = Query(""), on: str = Query(""),
 <span class="muted small">Page {page_n} of {pages:,}</span></div>
 <div class="table-scroll"><table class="people-table"><thead><tr><th class="pick"><label><input type="checkbox" data-cad-all aria-label="Select everyone on this page"></label></th><th style="width:28%">Person</th><th>First name</th><th style="width:26%">Firm</th>
 <th>Contact</th><th style="width:14%">Joined firm</th></tr></thead>
-<tbody>{"".join(_person_row(r, prod_tags, f["des"], in_cadence) for r in rows) or empty}</tbody></table></div>
+<tbody>{_rows_html(rows, prod_tags, f, in_cadence) or empty}</tbody></table></div>
 <div class="pager"><span>{total:,} people</span><span class="acts">{prev}{nxt}</span></div>
 {cadence_view.context("people", _product(f["on"]) or "", total, qs)}</div>"""
     return page("People", "people", body)
+
+
+def _rows_html(rows, prod_tags: list, f: dict, cad: dict) -> str:
+    """The page's rows. Under Sent by me (My sends), each send heads its
+    people: when, what became of it, its results and a Retry of the ones
+    that failed, through the same checks as any send (B080, B217)."""
+    if f["cad"] != "mine":
+        return "".join(_person_row(r, prod_tags, f["des"], cad) for r in rows)
+    out, last = [], None
+    c = conn()
+    try:
+        for r in rows:
+            info = cad.get(cadence.contact_id(r["crd"], r["person_key"])) or {}
+            bid = (info.get("row") or {}).get("batch_id")
+            if bid and bid != last:
+                last = bid
+                v = cadence.batch_view(c, bid)
+                if v.get("ok"):
+                    failed = [x["id"] for x in v["results"] if x.get("retry")]
+                    retry = (f'<button type="button" class="sm" data-cad-retry="{esc(" ".join(failed))}">'
+                             f'Retry {len(failed):,}</button>' if failed else "")
+                    out.append(f'<tr class="cad-group"><td colspan="6"><b>{esc(v["title"])}</b>'
+                               f'<span class="muted">{esc(cadence._day(v["created_at"]))} '
+                               f'{esc(cadence._clock_time(v["created_at"]))} &middot; {esc(v["summary"])}</span>'
+                               f'<button type="button" class="sm ghost" data-cad-batch="{esc(bid)}">Results</button>'
+                               f'{retry}</td></tr>')
+            out.append(_person_row(r, prod_tags, f["des"], cad))
+    finally:
+        c.close()
+    return "".join(out)
 
 
 @router.get("/people/export.csv")
@@ -467,32 +527,49 @@ def people_export(q: str = "", st: str = "", on: str = "", view: str = "", role:
         cols = people_index.columns(c)
         f = _filters(q=q, st=st, on=on, view=view, role=role, joined=joined, cred=cred, disc=disc,
                      size=size, cat=cat, src=src, des=des, title=title, sort=sort, cad=cad)
+        f["me"] = current_user() or ""
         where, args = _where(f, cols)
         extra = ", src AS found_in, desig" if "desig" in cols else ""
-        if cadence.ready(c):
-            extra += (", (SELECT cp.state FROM cadence_push cp WHERE cp.crd = people_index.crd"
-                      " AND cp.person_key = people_index.person_key) AS cadence_status,"
-                      " (SELECT COALESCE(cp.cadence_owner_name, cp.cadence_owner) FROM cadence_push cp"
-                      " WHERE cp.crd = people_index.crd AND cp.person_key = people_index.person_key)"
-                      " AS cadence_owner")
         rows = c.execute(f"""SELECT name, first_name, title, firm_name AS firm, crd, state, bcity AS branch_city,
                 start_date AS at_firm_since, prior_firm, designations AS credentials, has_disclosure,
-                email, email_status, phone, phone_label, linkedin, iapd_link, category AS firm_type{extra}
-                FROM people_index WHERE {where} ORDER BY {_order(f, cols)} LIMIT 50000""", args).fetchall()
+                email, email_status, phone, phone_label, linkedin, iapd_link, category AS firm_type{extra},
+                person_key FROM people_index WHERE {where} ORDER BY {_order(f, cols)} LIMIT 50000""",
+                         args).fetchall()
+        # Where each person stands and whether they may be contacted at all,
+        # read the way the screens read it (B021).
+        cad = {}
+        if cadence.ready(c):
+            for i in range(0, len(rows), 1000):
+                part = rows[i:i + 1000]
+                cad.update(cadence.status_map(c, [(r["crd"], r["person_key"]) for r in part],
+                                              emails={cadence.contact_id(r["crd"], r["person_key"]): r["email"]
+                                                      for r in part}))
     finally:
         c.close()
     prod = _product(f["on"]) or designations.GENERAL
     mine = {designations.tag(prod, d["key"]) for d in designations.for_product(prod)}
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
-    cols_out = [k for k in (rows[0].keys() if rows else ["name", "first_name"]) if k != "desig"]
+    cols_out = [k for k in (rows[0].keys() if rows else ["name", "first_name"]) if k not in ("desig", "person_key")]
     if rows and "desig" in rows[0].keys():
         cols_out.append("designation")
+    cols_out += ["do_not_contact", "cold_outreach", "cold_outreach_owner"]
     w.writerow(cols_out)
     for r in rows:
+        info = cad.get(cadence.contact_id(r["crd"], r["person_key"])) or {}
+        row = info.get("row") or {}
         out = []
         for k in cols_out:
-            if k == "first_name":
+            if k == "do_not_contact":
+                out.append(info["text"] if info.get("stop") else "")
+            elif k == "cold_outreach":
+                out.append(cadence.STATE_WORDS.get(row.get("state"), "Other") if row else "")
+            elif k == "cold_outreach_owner":
+                out.append(row.get("cadence_owner_name") or row.get("cadence_owner") or "")
+            elif k in ("email", "phone") and info.get("stop"):
+                # Never handed on for someone who must not be contacted.
+                out.append("")
+            elif k == "first_name":
                 out.append(first_name(r["name"], r["first_name"]))
             elif k == "designation":
                 out.append("; ".join(designations.label_of(t) for t in (r["desig"] or []) if t in mine))

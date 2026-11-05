@@ -289,6 +289,13 @@ def _init_once() -> None:
             if empty:
                 from . import contacts
                 contacts.backfill(b)
+            # Once: names in any script get keys of their own (B064), and
+            # what Bellwether holds from Cadence follows the cold-outreach
+            # release's rules (N007, N037).
+            from . import cadence
+            if cadence.ready(b):
+                cadence.rekey_names(b)
+                cadence.backfill(b)
         except Exception:
             try:
                 b.rollback()
@@ -701,6 +708,7 @@ ICONS = {
     "out": f'<svg viewBox="0 0 24 24" {I}><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg>',
     "spark": f'<svg viewBox="0 0 24 24" {I}><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
     "mail": f'<svg viewBox="0 0 24 24" {I}><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3.5 7l8.5 6 8.5-6"/></svg>',
+    "stop": f'<svg viewBox="0 0 24 24" {I} aria-hidden="true"><path d="M8 3h8l5 5v8l-5 5H8l-5-5V8z"/><path d="M8 12h8"/></svg>',
     "phone": f'<svg viewBox="0 0 24 24" {I}><path d="M5 3.5h3.2l1.6 4.3-2.2 1.5a11 11 0 0 0 7.1 7.1l1.5-2.2 4.3 1.6V19a1.8 1.8 0 0 1-2 1.8A16.6 16.6 0 0 1 3.2 5.5 1.8 1.8 0 0 1 5 3.5z"/></svg>',
     "linkedin": '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.98 3.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM3 9.75h4v11H3zm6.5 0h3.8v1.6h.06c.53-1 1.83-2.06 3.77-2.06 4.03 0 4.77 2.65 4.77 6.1v5.36h-4v-4.75c0-1.13-.02-2.6-1.58-2.6-1.59 0-1.83 1.24-1.83 2.52v4.83h-4z"/></svg>',
     "globe": f'<svg viewBox="0 0 24 24" {I}><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.8 3.9 5.8 3.9 9s-1.3 6.2-3.9 9c-2.6-2.8-3.9-5.8-3.9-9S9.4 5.8 12 3z"/></svg>',

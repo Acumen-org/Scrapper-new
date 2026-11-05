@@ -7,20 +7,28 @@ No real Cadence, database, key or network is touched. scripts.qa_requirements
 imports these classes, so the Docker build runs them.
 
 What is proved: the payload (every mapped field, the 14.5 normalisation, the
-14.4 limits, no guesses, no shared inboxes, the main-line fallback, a probable
-LinkedIn kept to the notes); list:ATS and TOLLBOOTH never sent; each push
-result and its state; the check before a push (already in the CRM by email
-and by phone blocks the contact, and it is not sent); each error code of
-14.9; Idempotency-Key replay and conflict; the retry schedule; changedSince
-paging; an opt-out becoming a suppression shown as "Opted out (Cadence)";
-the pace under 30 push and 60 status requests a minute; the key never
-written anywhere; and a server with no Cadence settings explaining itself.
+14.4 limits, no guesses, no shared inboxes, the switchboard only as the
+firm's phone, a probable LinkedIn kept to the notes); list:ATS and TOLLBOOTH
+never sent; each push result and its state; the check before a push (already
+in the CRM by email and by phone blocks the contact, it is not sent, and it
+is remembered); each error code of 14.9; Idempotency-Key replay and
+conflict; the retry schedule; changedSince paging; an opt-out becoming a
+suppression shown as "Do not contact · Cadence"; the pace under 30 push and
+60 status requests a minute; the key never written anywhere; and a server
+with no Cadence settings explaining itself.
+
+Then the cold-outreach plan's Bellwether side (sections 7.1 to 7.3), one test
+per bug, named after its id: contract v1.1 and the fall back to v1, a Do not
+contact reaching Cadence, the person-level opt-out, the send dialog's
+answers, My sends, the chips, Settings, Cadence, the export, the name keys,
+and every call's hard deadline.
 
     python -m scripts.qa_cadence
 """
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -69,7 +77,7 @@ def tables(c) -> None:
             has_disclosure INTEGER, iapd_link TEXT, bcity TEXT, bstate TEXT, email TEXT,
             email_status TEXT, phone TEXT, phone_label TEXT, linkedin TEXT, firm_name TEXT,
             state TEXT, firm_city TEXT, raum INTEGER, products TEXT, cfp INTEGER, cfa INTEGER,
-            is_officer INTEGER, start_date TEXT, prior_firm TEXT, priority REAL);
+            is_officer INTEGER, start_date TEXT, prior_firm TEXT, priority REAL, category TEXT);
         CREATE TABLE firm_current (crd TEXT PRIMARY KEY, legal_name TEXT, business_name TEXT,
             website TEXT, city TEXT, state TEXT, country TEXT, phone TEXT, raum INTEGER,
             total_employees INTEGER);
@@ -100,7 +108,7 @@ class CadenceBase(unittest.TestCase):
                         patch.object(cadence, "max_per_push", lambda: 200),
                         patch.object(cadence, "daily_per_user", lambda: 500),
                         patch.object(cadence, "_name_of", lambda login: login or "someone"),
-                        patch.object(cadence, "owner_choices", lambda: [
+                        patch.object(cadence, "owner_choices", lambda conn=None: [
                             (ANA["email"], ANA["name"]), (LEE["email"], LEE["name"])])]
         for p in self.patches:
             p.start()
@@ -206,14 +214,17 @@ class PayloadChecks(CadenceBase):
             self.assertLessEqual(len(c[k]), n)
         self.assertTrue(all(len(t) <= 50 for t in c["tags"]))
 
-    def test_no_guess_no_shared_inbox_main_line_fallback_probable_linkedin_in_notes(self):
+    def test_B018_no_guess_no_shared_inbox_switchboard_only_as_firm_phone(self):
         cid = self.person("Sam Lee", guess="sam.lee@northstarwealth.com", role_email="info@northstarwealth.com",
                           linkedin="linkedin.com/in/samlee", li_status="probable")
         rec = cadence.load_records(self.c, [cid])[cid]
         c = cadence.build_contact(rec)
         self.assertIsNone(c["email"])
         self.assertNotIn("emailVerification", c)
-        self.assertEqual((c["phone"], c["phoneType"]), ("+12125550100", "main"))
+        # The firm's switchboard is never the person's phone (B018, contract v1.1).
+        self.assertIsNone(c["phone"])
+        self.assertNotIn("phoneType", c)
+        self.assertEqual(c["firm"]["phone"], "+12125550100")
         self.assertIsNone(c["linkedinUrl"])
         self.assertIn("Possible LinkedIn, not confirmed: https://www.linkedin.com/in/samlee", c["notes"])
         self.assertIsNone(c["bellwetherUrl"])
@@ -273,8 +284,8 @@ class PushResultChecks(CadenceBase):
         self.assertEqual(self.state(dup)["state"], "in_sandbox")
         self.assertEqual(self.state(dup)["cadence_owner_name"], "Leigh")
         lines = {r["id"]: r["line"] for r in res["results"]}
-        self.assertEqual(lines[made], "Added to sandbox (owner: Ana Ruiz)")
-        self.assertEqual(lines[dup], "Already in sandbox (owner: Leigh)")
+        self.assertEqual(lines[made], "Added to Cold outreach (owner: Ana Ruiz)")
+        self.assertEqual(lines[dup], "Already in Cold outreach (owner: Leigh)")
         # The CRM changes between the preview and the push: the push's own
         # answer is recorded the same way.
         pv = cadence.preview(self.c, [crm], account=ANA)
@@ -284,7 +295,7 @@ class PushResultChecks(CadenceBase):
         st = self.state(crm)
         self.assertEqual(st["state"], "in_crm")
         self.assertTrue(st["crm_url"].startswith("https://"))
-        self.assertIn("Already in the CRM", res["results"][0]["line"])
+        self.assertIn("Already in CRM", res["results"][0]["line"])
         self.assertIn("matched on email", res["results"][0]["line"])
 
     def test_each_rejection_and_suppressed_writes_a_suppression(self):
@@ -304,9 +315,17 @@ class PushResultChecks(CadenceBase):
         self.assertIn("lastName is empty", self.state(ids[0])["reason"])
         sup = self.c.execute("SELECT * FROM contact_suppression WHERE scope='person' AND value=?",
                              (ids[2],)).fetchone()
-        self.assertEqual((sup["source"], sup["channel"]), ("cadence", "all"))
-        # Refused and failed may be pushed again, as a new request with a new key.
+        self.assertEqual((sup["source"], sup["channel"], sup["for_id"]), ("cadence", "all", ids[2]))
+        # A refusal stands: the chip says why, and nothing offers to send
+        # again (B015, the plan's 7.1). A failure may go again, with a new key.
         del self.fake.forced[ids[0]]
+        again = self.push([ids[0]])
+        self.assertEqual(again["results"][0]["state"], "skipped")
+        self.assertIn("Not sent: a required field is missing", again["results"][0]["line"])
+        info = cadence.status_map(self.c, [cadence.parse_id(ids[0])])[ids[0]]
+        self.assertEqual((info["tone"], info["can_push"]), ("warn", False))
+        self.c.execute("UPDATE cadence_push SET state='failed' WHERE crd=? AND person_key=?",
+                       cadence.parse_id(ids[0]))
         self.push([ids[0]])
         keys = [r["idem"] for r in self.fake.requests_of("push")]
         self.assertEqual(len(set(keys)), 2)
@@ -335,9 +354,10 @@ class CheckBeforePushChecks(CadenceBase):
         self.fake.add_crm(phones=["+12125550100"], owner="andrew@acumen-strategy.com")
         pv = cadence.preview(self.c, [by_mail, by_phone, by_office, main_only, fine], account=ANA)
         skipped = {x["id"]: x for x in pv["skipped"]}
-        self.assertEqual(skipped[by_mail]["why"], "Already in the CRM · matched on email")
-        self.assertEqual(skipped[by_phone]["why"], "Already in the CRM · matched on phone")
-        self.assertEqual(skipped[by_office]["why"], "Already in the CRM · matched on phone")
+        andrew = "andrew@acumen-strategy.com"
+        self.assertEqual(skipped[by_mail]["why"], f"Already in CRM · {andrew} · matched on email")
+        self.assertEqual(skipped[by_phone]["why"], f"Already in CRM · {andrew} · matched on phone")
+        self.assertEqual(skipped[by_office]["why"], f"Already in CRM · {andrew} · matched on phone")
         self.assertTrue(skipped[by_mail]["crm_url"].startswith("https://"))
         self.assertEqual({x["id"] for x in pv["send"]}, {main_only, fine})
         self.assertEqual(len(self.fake.requests_of("check")), 1)
@@ -345,7 +365,12 @@ class CheckBeforePushChecks(CadenceBase):
         self.push([by_mail, by_phone, by_office, main_only, fine], preview_id=pv["preview_id"])
         sent = {c["bellwetherContactId"] for b in self.pushed() for c in b["contacts"]}
         self.assertEqual(sent, {main_only, fine})
-        self.assertIsNone(self.state(by_mail))
+        # Remembered, not forgotten (B083): Already in CRM, with its link, and no Send.
+        st = self.state(by_mail)
+        self.assertEqual((st["state"], st["cadence_owner"]), ("in_crm", andrew))
+        self.assertTrue(st["crm_url"].startswith("https://"))
+        info = cadence.status_map(self.c, [cadence.parse_id(by_mail)])[by_mail]
+        self.assertEqual((info["text"], info["tone"], info["can_push"]), (f"Already in CRM · {andrew}", "sky", False))
         ev = self.c.execute("SELECT outcome FROM cadence_push_event WHERE action='skipped'").fetchall()
         self.assertEqual(sorted(r["outcome"] for r in ev), ["skipped:already_in_crm"] * 3)
 
@@ -387,8 +412,8 @@ class CheckBeforePushChecks(CadenceBase):
         why = {x["id"]: x["why"] for x in pv["skipped"]}
         self.assertEqual(why[cust], "Firm marked Customer")
         self.assertEqual(why[none], "Firm marked Customer")
-        self.assertEqual(why[dnc], "Do not contact")
-        self.assertTrue(why[again].startswith("Already pushed from Disq Co"))
+        self.assertEqual(why[dnc], "Do not contact · set here")
+        self.assertTrue(why[again].startswith("Already sent from Disq Co"))
         self.assertEqual(pv["disqualified"], ["Disq Co"])
         self.assertEqual(pv["count"], 5)
         res = self.push([disq])
@@ -597,8 +622,11 @@ class StatusChecks(CadenceBase):
         cadence.sync(self.c)
         self.assertNotEqual(cadence._state_get(self.c, "status_since"), since)
         self.assertEqual(self.state(ids[4])["state"], "removed")
-        # A removed contact may be pushed again by anyone (decision 16).
-        self.assertTrue(self.push([ids[2]], account=dict(ANA, role="user"))["ok"])
+        # A removed contact may be sent again by anyone (decision 16), once
+        # they tick the question that says it was removed (B086).
+        asked = self.push([ids[2]], account=dict(ANA, role="user"))
+        self.assertTrue(asked.get("needs_confirm"), asked)
+        self.assertTrue(self.push([ids[2]], account=dict(ANA, role="user"), confirm_disqualified=True)["ok"])
 
     def test_not_found_by_id_leaves_a_push_in_flight_alone(self):
         cid = self.person("Nof Ound", email="nof@northstarwealth.com")
@@ -627,11 +655,11 @@ class OptOutChecks(CadenceBase):
             self.assertEqual(sorted(r["scope"] for r in rows), ["email", "person"])
             self.assertEqual(self.state(cid)["state"], "opted_out")
         info = cadence.status_map(self.c, [cadence.parse_id(a)])[a]
-        self.assertEqual(info["text"], "Opted out (Cadence)")
+        self.assertEqual(info["text"], "Do not contact · Cadence")
         self.assertFalse(info["can_push"])
-        self.assertIn("Opted out (Cadence)", cadence_view.status_html(info))
+        self.assertIn("Do not contact · Cadence", cadence_view.status_html(info))
         card = cadence_view.card_controls(a, "Opt Out", info)
-        self.assertIn("Opted out (Cadence)", card)
+        self.assertIn("Do not contact · Cadence", card)
         self.assertNotIn('data-cad-push="', card)
         row = dict(self.c.execute("SELECT * FROM people_index WHERE person_key=?",
                                   (cadence.parse_id(a)[1],)).fetchone())
@@ -639,10 +667,10 @@ class OptOutChecks(CadenceBase):
                    is_officer=0, start_date="2020-01-01", prior_firm=None, email=None, phone=None,
                    phone_label=None, linkedin=None, email_status=None)
         html = people_view._person_row(row, [], (), {a: info})
-        self.assertIn("Opted out (Cadence)", html)
+        self.assertIn("Do not contact · Cadence", html)
         self.assertNotIn('data-cad-id="', html)
         pv = cadence.preview(self.c, [a], account=ANA)
-        self.assertEqual(pv["skipped"][0]["why"], "Opted out (Cadence)")
+        self.assertEqual(pv["skipped"][0]["why"], "Do not contact · Cadence")
 
 
 class PaceChecks(CadenceBase):
@@ -748,6 +776,27 @@ class ContractFixtureChecks(CadenceBase):
         self.assertEqual((r["crm_id"], r["moved_at"]), (item["crmPersonId"], item["movedToCrmAt"]))
         self.assertTrue(fx["ping"]["ok"] and fx["ping"]["maxBatch"] == 500)
 
+    def test_the_v11_examples_read_with_bellwethers_parser(self):
+        fx = json.loads(self.FIXTURE.read_text(encoding="utf-8"))["v1_1"]
+        self.assertIn("1.1", fx["ping"]["contracts"])
+        now = cadence._iso()
+        for item in fx["status_response"]["results"]:
+            crd, _, key = item["bellwetherContactId"].partition(":")
+            self.c.execute("INSERT INTO cadence_push (crd, person_key, name, state, pushed_by, first_pushed_at)"
+                           " VALUES (?,?,?,'in_sandbox','qa',?)", (crd, key, key, now))
+            cadence.apply_status(self.c, item)
+        first, removed, refused, erased = (self.state(i["bellwetherContactId"])
+                                           for i in fx["status_response"]["results"])
+        self.assertEqual((first["last_outcome"], first["cadence_url"][:8]), ("not_interested", "https://"))
+        self.assertEqual(first["email_bounced_at"], "2026-11-10T09:00:00Z")
+        self.assertEqual((removed["state"], removed["removed_reason"]), ("removed", "Retired"))
+        self.assertEqual((refused["state"], refused["reason"]), ("rejected", "Cadence blocks this firm"))
+        self.assertEqual((erased["state"], erased["erased_at"]), ("opted_out", "2026-11-10T13:00:00Z"))
+        self.assertEqual(cadence.label(erased), ("Erased in Cadence", "muted"))
+        body = fx["suppress_request"]["contacts"][0]
+        self.assertEqual(set(body), {"bellwetherContactId", "emails", "phones", "individualCrd"})
+        self.assertEqual(fx["owners_response"]["owners"][0]["pods"], ["ALISA"])
+
     def test_a_request_bellwether_builds_keeps_to_the_14_4_tables(self):
         cid = self.person("Con Tract", indvl="42", email="contract@northstarwealth.com", phone="2125550199",
                           linkedin="linkedin.com/in/contract")
@@ -778,6 +827,701 @@ class ContractFixtureChecks(CadenceBase):
         # The owner Cadence does not know as a seller: created unclaimed (14.7).
         self.assertIsNone(self.state(cid)["cadence_owner"])
         self.assertEqual(self.push([cid])["results"][0]["state"], "skipped")
+
+
+class Borrowed:
+    """The test's connection, lent to a view: closing it leaves it open."""
+
+    def __init__(self, c):
+        self.c = c
+
+    def __getattr__(self, k):
+        return getattr(self.c, k)
+
+    def close(self):
+        pass
+
+
+class Pooled(Borrowed):
+    """A pooled connection: release() hands it back until the next statement."""
+
+    def __init__(self, c):
+        super().__init__(c)
+        self.out = False
+
+    def release(self):
+        self.c.commit()
+        self.out = True
+
+    def execute(self, *a):
+        self.out = False
+        return self.c.execute(*a)
+
+
+class ColdOutreachBase(CadenceBase):
+    """Contract v1.1 and the Bellwether screens of the cold-outreach plan
+    (section 7). Each test is named after the bug it proves fixed."""
+
+    def speak_11(self, contracts=("1", "1.1")):
+        self.fake.contracts = list(contracts)
+        ok, _, _ = cadence.ping(self.c)
+        self.assertTrue(ok)
+
+    def sent(self, name, **kw):
+        kw.setdefault("email", f"{name.split()[0].lower()}@northstarwealth.com")
+        cid = self.person(name, **kw)
+        self.assertTrue(self.push([cid])["ok"])
+        return cid
+
+    def sync_later(self, s=60):
+        self.clock.sleep(s)
+        return cadence.sync(self.c)
+
+    def view_conn(self):
+        from prospect import cadence_view, people_view
+        lent = Borrowed(self.c)
+        return [patch.object(cadence_view, "conn", lambda: lent), patch.object(people_view, "conn", lambda: lent)]
+
+    def info(self, cid):
+        return cadence.status_map(self.c, [cadence.parse_id(cid)])[cid]
+
+
+class ContractChecks(ColdOutreachBase):
+    def test_v11_header_only_once_cadence_lists_it_and_v1_answers_without(self):
+        a = self.sent("Una Ver")
+        self.assertIsNone(self.fake.requests_of("push")[-1]["contract"], "no ping yet: v1")
+        self.speak_11(("1",))
+        b = self.sent("Dos Ver")
+        self.assertIsNone(self.fake.requests_of("push")[-1]["contract"])
+        self.assertFalse(cadence.speaks_11(self.c))
+        self.speak_11()
+        self.sent("Tres Ver")
+        self.assertEqual(self.fake.requests_of("push")[-1]["contract"], "1.1")
+        self.assertIn("1.1", cadence.contracts(self.c))
+        self.assertTrue(a and b)
+
+    def test_unknown_states_read_as_other_and_offer_nothing(self):
+        cid = self.person("Fut Ure", email="future@northstarwealth.com")
+        crd, key = cadence.parse_id(cid)
+        self.c.execute("INSERT INTO cadence_push (crd, person_key, name, state, pushed_by, first_pushed_at)"
+                       " VALUES (?,?,?,?,?,?)", (crd, key, "Fut Ure", "parked_by_v2", "ana", cadence._iso()))
+        info = self.info(cid)
+        self.assertEqual((info["text"], info["can_push"]), ("Other", False))
+        self.assertEqual(self.push([cid])["results"][0]["state"], "skipped")
+
+    def test_B015_a_refusal_stays_refused_on_v1_and_v11(self):
+        for contracts in (("1",), ("1", "1.1")):
+            with self.subTest(contracts=contracts):
+                self.speak_11(contracts)
+                cid = self.person(f"Ref Use{len(contracts)}", email=f"refuse{len(contracts)}@northstarwealth.com")
+                self.fake.forced[cid] = {"result": "rejected", "reason": "blocked_account"}
+                self.push([cid])
+                self.clock.sleep(120)
+                cadence.refresh(self.c, [cid], "ana")
+                st = self.state(cid)
+                self.assertEqual(st["state"], "rejected")
+                self.assertEqual(st["reason"], "Cadence blocks this firm")
+                self.assertEqual(cadence.retry_failed(self.c, "admin", background=False)["sent"], 0)
+
+    def test_B012_internal_error_on_one_contact_fails_only_it_and_it_may_go_again(self):
+        bad = self.person("Int Err", email="interr@northstarwealth.com")
+        good = self.person("Int Fine", email="intfine@northstarwealth.com")
+        self.fake.forced[bad] = {"result": "rejected", "reason": "internal_error"}
+        res = self.push([bad, good])
+        self.assertEqual(self.state(good)["state"], "in_sandbox")
+        self.assertEqual(self.state(bad)["state"], "failed")
+        line = next(r["line"] for r in res["results"] if r["id"] == bad)
+        self.assertIn("Cadence hit an error on this contact", line)
+        self.assertTrue(self.info(bad)["can_push"])
+
+    def test_B062_changed_since_rereads_15_minutes_and_B061_owner_changes_count(self):
+        cid = self.sent("Own Er")
+        self.sync_later()
+        since = cadence._state_get(self.c, "status_since")
+        self.clock.sleep(600)
+        self.fake.claim(cid, LEE["email"], "Lee Park")
+        out = cadence.sync(self.c)
+        body = json.loads(self.fake.requests_of("status")[-1]["body"])
+        want = datetime.fromisoformat(since.replace("Z", "+00:00")) - timedelta(minutes=15)
+        self.assertEqual(body["changedSince"], want.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        self.assertEqual(out["changed"], 1)
+        self.assertEqual(self.state(cid)["cadence_owner_name"], "Lee Park")
+        self.assertEqual(self.info(cid)["text"], "In Cold outreach · Lee Park")
+        self.fake.claim(cid, ANA["email"], "Ana Ruiz")
+        self.clock.sleep(120)
+        self.assertEqual(cadence.refresh(self.c, [cid], "ana")["owners"], 1)
+
+    def test_B022_owners_list_and_unclaimed_verdict(self):
+        cid = self.person("Own List", email="ownlist@northstarwealth.com")
+        # v1: the check says Lee (Biz Ops) cannot own, so they arrive unclaimed.
+        pv = cadence.preview(self.c, [cid], account=ANA, owner_email=LEE["email"])
+        self.assertTrue(pv["owner_verdict"]["unclaimed"])
+        self.assertIn("unclaimed", pv["verdict"])
+        # v1.1: Cadence's own list, without Biz Ops.
+        self.speak_11()
+        listed = cadence.owners(self.c)
+        self.assertEqual([o["email"] for o in listed], [ANA["email"]])
+        self.assertEqual(self.fake.requests_of("owners")[-1]["contract"], "1.1")
+
+    def test_B176_open_in_cadence_from_cadence_url_and_last_outcome(self):
+        cid = self.sent("Lin K")
+        self.fake.set_status(cid, "removed", lastOutcome="not_interested", lastOutcomeAt="2026-11-03T17:00:00Z",
+                             removedBy="Alisa", removedAt="2026-11-03T18:00:00Z", removedReason="Wrong person")
+        self.sync_later()
+        st = self.state(cid)
+        self.assertTrue(st["cadence_url"].startswith("https://cadence.example.test/cold-outreach/"))
+        info = self.info(cid)
+        from prospect import cadence_view
+        html = cadence_view.status_html(info)
+        self.assertIn("Open in Cadence", html)
+        self.assertEqual(info["text"], "Removed · by Alisa: Wrong person")
+        self.assertEqual(info["outcome"], "Not interested · 3 Nov")
+        # B086: sending again asks first, and says why.
+        pv = cadence.preview(self.c, [cid], account=ANA)
+        self.assertIn("Removed from Cold outreach by Alisa on 3 Nov: Wrong person.", pv["again"][0]["why"])
+        self.assertIn("called on 3 Nov: Not interested", pv["again"][0]["why"])
+        self.assertTrue(self.push([cid]).get("needs_confirm"))
+
+    def test_N037_undo_clears_the_crm_fields_and_says_so(self):
+        cid = self.sent("Und O")
+        self.fake.set_status(cid, "moved_to_crm", crmPersonId="p9", movedToCrmAt="2026-11-04T10:00:00Z",
+                             crmUrl="https://twenty.example.test/object/person/p9")
+        self.sync_later()
+        self.assertEqual(self.state(cid)["crm_id"], "p9")
+        self.fake.set_status(cid, "in_sandbox", crmPersonId=None, crmUrl=None, movedToCrmAt=None)
+        self.sync_later()
+        st = self.state(cid)
+        self.assertEqual((st["state"], st["crm_id"], st["crm_url"], st["moved_at"]), ("in_sandbox", None, None, None))
+        from prospect import cadence_view
+        self.assertNotIn("Open in CRM", cadence_view.status_html(self.info(cid)))
+        crd, key = cadence.parse_id(cid)
+        self.assertIn("Move undone in Cadence", " ".join(cadence.history(self.c, crd)[key]))
+
+    def test_N039_erased_blanks_their_details_and_says_erased(self):
+        self.firm("200009", "OTHER CO")
+        cid = self.sent("Era Sed", phone="2125550111", indvl="8801")
+        crd, key = cadence.parse_id(cid)
+        other = self.person("Era Sed", crd="200009", indvl="8801", email="erased@other.example")
+        self.fake.set_status(cid, "opted_out", erasedAt="2026-11-04T10:00:00Z")
+        self.sync_later()
+        left = self.c.execute("SELECT COUNT(*) n FROM contact_point WHERE person_key=? AND kind IN ('email', 'phone')",
+                              (key,)).fetchone()["n"]
+        self.assertEqual(left, 0, "every firm's row of the person, blanked")
+        self.assertIsNone(self.state(cid)["email"])
+        self.assertEqual(self.info(cid)["text"], "Erased in Cadence")
+        self.assertFalse(self.info(cid)["can_push"])
+        self.assertFalse(self.info(other)["can_push"])
+
+    def test_N040_a_bounce_marks_the_address_invalid(self):
+        cid = self.sent("Bou Nce")
+        self.fake.set_status(cid, "in_sandbox", emailBounced=True, emailBouncedAt="2026-11-04T10:00:00Z")
+        self.sync_later()
+        r = self.c.execute("SELECT verify_status, verify_detail FROM contact_point WHERE value='bou@northstarwealth.com'"
+                           ).fetchone()
+        self.assertEqual((r["verify_status"], r["verify_detail"]), ("invalid", "Bounced in Cadence"))
+        from prospect import cadence_view
+        self.assertIn("Bounced in Cadence", cadence_view.status_html(self.info(cid)))
+        self.assertEqual(cadence.load_records(self.c, [cid])[cid]["emails"], [])
+
+    def test_opt_out_lifted_in_cadence_lifts_only_its_own_rows(self):
+        cid = self.sent("Lif Ted")
+        self.fake.set_status(cid, "opted_out")
+        self.sync_later()
+        cadence.suppress(self.c, "firm", "105943", reason="other", source="manual", by="karson")
+        self.c.commit()
+        self.fake.set_status(cid, "in_sandbox", optOutLiftedAt="2026-11-04T10:00:00Z")
+        self.sync_later()
+        active = self.c.execute("SELECT source FROM contact_suppression WHERE lifted_at IS NULL").fetchall()
+        self.assertEqual([r["source"] for r in active], ["manual"], "a lift never removes one set here")
+        self.assertEqual(self.state(cid)["opt_out_lifted_at"], "2026-11-04T10:00:00Z")
+
+    def test_B063_the_fake_answers_like_cadence(self):
+        cid = self.person("Fak E", email="fake@northstarwealth.com")
+        self.fake.sandbox_enabled = False
+        ok, _, words = cadence.ping(self.c)
+        self.assertFalse(ok)
+        self.assertIn("switched off", words)
+        self.fake.sandbox_enabled = True
+        v7 = "018f3b6e-8a5b-7c2d-9e1f-0a1b2c3d4e5f"
+        env = cadence.envelope(ANA, None, [{"bellwetherContactId": cid, "firstName": "F", "lastName": "E",
+                                            "firm": {"name": "F"}}])
+        self.assertEqual(cadence._call(self.c, "POST", "/contacts", cadence.body_bytes(env), idem_key=v7).status, 200)
+        self.fake.add_crm(emails=["fake2@northstarwealth.com"])
+        dup = self.person("Fak Ea", email="fake2@northstarwealth.com")
+        self.fake.forced.clear()
+        env = cadence.envelope(ANA, None, [cadence.build_contact(cadence.load_records(self.c, [dup])[dup])])
+        cadence._call(self.c, "POST", "/contacts", cadence.body_bytes(env), idem_key=str(uuid.uuid4()))
+        self.clock.sleep(5)
+        ans = cadence._call(self.c, "POST", "/contacts/status", cadence.body_bytes({"bellwetherContactIds": [dup]}),
+                            kind="status")
+        self.assertEqual(ans.data["results"][0]["status"], "already_in_crm", "a refusal is kept, never not_found")
+
+
+class DoNotContactChecks(ColdOutreachBase):
+    def test_B003_do_not_contact_reaches_cadence(self):
+        cid = self.sent("Dnc Sent", phone="2125550123", indvl="7001")
+        self.speak_11()
+        cadence.suppress(self.c, "person", cid, reason="opted_out", source="manual", by="karson")
+        sid = self.c.execute("SELECT id FROM contact_suppression WHERE value=?", (cid,)).fetchone()["id"]
+        told = cadence.tell_cadence(self.c, sid, "karson")
+        self.assertEqual(told["state"], "sent")
+        body = self.fake.suppress_calls[-1]
+        fx = json.loads(ContractFixtureChecks.FIXTURE.read_text(encoding="utf-8"))["v1_1"]["suppress_request"]
+        self.assertEqual(set(body), set(fx), "the shape the fixture shows Cadence")
+        item = body["contacts"][0]
+        self.assertEqual(set(item), set(fx["contacts"][0]))
+        self.assertEqual((item["bellwetherContactId"], item["individualCrd"]), (cid, "7001"))
+        self.assertIn("dnc@northstarwealth.com", item["emails"])
+        self.assertIn("+12125550123", item["phones"])
+        self.assertEqual((body["reason"], body["actor"]["email"]), ("opted_out", "karson"))
+        self.assertEqual(self.fake.statuses[cid]["status"], "opted_out")
+        info = self.info(cid)
+        self.assertEqual(info["text"], "Do not contact · set here")
+        self.assertIn("Cadence blocks this person too", info["tip"])
+        self.assertIsNone(info["live"])
+
+    def test_B003_interim_on_a_v1_cadence_then_told_once_it_speaks_v11(self):
+        cid = self.sent("Dnc Old")
+        self.speak_11(("1",))
+        cadence.suppress(self.c, "person", cid, reason="opted_out", source="manual", by="karson")
+        sid = self.c.execute("SELECT id FROM contact_suppression WHERE value=?", (cid,)).fetchone()["id"]
+        self.assertEqual(cadence.tell_cadence(self.c, sid, "karson")["state"], "not_sent")
+        self.assertEqual(self.fake.suppress_calls, [])
+        self.assertEqual(self.info(cid)["live"], "Still live in Cold outreach with Ana Ruiz: Cadence has not been told yet")
+        self.fake.contracts = ["1", "1.1"]
+        out = self.sync_later()
+        self.assertEqual(out["told"], 1)
+        r = self.c.execute("SELECT to_cadence FROM contact_suppression WHERE id=?", (sid,)).fetchone()
+        self.assertEqual(r["to_cadence"], "sent")
+
+    def test_B003_nobody_sent_tells_nobody(self):
+        cid = self.person("Dnc Never", email="never@northstarwealth.com")
+        self.speak_11()
+        cadence.suppress(self.c, "person", cid, reason="other", source="manual", by="karson")
+        sid = self.c.execute("SELECT id FROM contact_suppression WHERE value=?", (cid,)).fetchone()["id"]
+        self.assertIsNone(cadence.tell_cadence(self.c, sid, "karson")["state"])
+        self.assertEqual(self.fake.suppress_calls, [])
+
+    def test_B074_no_lift_on_a_cadence_opt_out(self):
+        from prospect import cadence_view
+        cid = self.sent("Lif No")
+        self.fake.set_status(cid, "opted_out")
+        self.sync_later()
+        sid = self.c.execute("SELECT id FROM contact_suppression WHERE source='cadence' AND scope='person'"
+                             ).fetchone()["id"]
+        done, words = cadence.lift(self.c, sid, "admin")
+        self.assertFalse(done)
+        self.assertIn("only be lifted there", words)
+        card = cadence_view.card_controls(cid, "Lif No", self.info(cid))
+        self.assertNotIn("/api/cadence/lift", card)
+        self.assertNotIn("data-cad-dnc", card)
+        self.assertIn("Only Cadence can lift it", self.info(cid)["tip"])
+
+    def test_B075_no_channel_and_the_whole_firm_needs_a_confirm(self):
+        from prospect import cadence_view
+        import inspect
+        self.assertNotIn("channel", inspect.signature(cadence_view.api_suppress).parameters)
+        cid = self.person("Fir M", email="firm@northstarwealth.com")
+        with self.view_conn()[0], patch.object(cadence_view, "current_user", lambda: "karson"):
+            no = json.loads(cadence_view.api_suppress(id=cid, scope="firm", reason="other", note="",
+                                                      confirm="").body)
+            self.assertFalse(no["ok"])
+            yes = json.loads(cadence_view.api_suppress(id=cid, scope="firm", reason="other", note="",
+                                                       confirm="1").body)
+        self.assertTrue(yes["ok"])
+        self.assertEqual(self.info(cid)["text"], "Do not contact · whole firm")
+        js = (ROOT / "prospect" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('name="channel"', js)
+
+    def test_N007_an_opt_out_follows_the_person_to_their_other_firm(self):
+        from prospect import people_view
+        self.firm("300001", "SECOND FIRM LLC")
+        a = self.sent("Lee Two", indvl="9901")
+        b = self.person("Lee Two", crd="300001", indvl="9901", email="lee2@second.example")
+        self.fake.set_status(a, "opted_out")
+        self.sync_later()
+        info = self.info(b)
+        self.assertEqual(info["text"], "Do not contact · Cadence at Northstar Wealth LLC")
+        self.assertFalse(info["can_push"])
+        self.assertIn("while at Northstar Wealth LLC", info["tip"])
+        pv = cadence.preview(self.c, [b], account=ANA)
+        self.assertEqual(pv["skipped"][0]["why"], "Do not contact · Cadence at Northstar Wealth LLC")
+        f = people_view._filters(cad="optout")
+        where, args = people_view._where(f, set())
+        keys = {r["person_key"] + "@" + r["crd"] for r in self.c.execute(
+            f"SELECT crd, person_key FROM people_index WHERE {where}", args)}
+        self.assertIn("i:9901@300001", keys)
+
+    def test_N041_each_line_credits_its_own_actor(self):
+        from prospect import cadence_view
+        cid = self.sent("Cre Dit")
+        cadence.suppress(self.c, "person", cid, reason="opted_out", source="manual", by="karson")
+        self.c.commit()
+        info = self.info(cid)
+        card = cadence_view.card_controls(cid, "Cre Dit", info)
+        self.assertIn("Sent by", card)
+        self.assertIn("Set in Bellwether by karson", info["tip"])
+
+
+class SendChecks(ColdOutreachBase):
+    def test_N092_one_send_per_sec_person_and_counts_of_people(self):
+        self.firm("300002", "THIRD FIRM LLC", website="third.example")
+        home = self.person("Dua L", indvl="4401", email="dual@northstarwealth.com")
+        away = self.person("Dua L", crd="300002", indvl="4401", email="dual@other.example", phone="2125550190")
+        pv = cadence.preview(self.c, [away, home], account=ANA)
+        self.assertEqual(pv["count"], 1)
+        self.assertEqual([x["id"] for x in pv["send"]], [home], "the row at their own firm goes")
+        self.assertEqual(pv["skipped"][0]["rule"], "same_person")
+        self.push([away, home])
+        sent = self.pushed()[-1]["contacts"]
+        self.assertEqual(len(sent), 1)
+        self.assertIn("dual@other.example", sent[0]["additionalEmails"])
+        self.assertIn("+12125550190", [p["number"] for p in sent[0]["additionalPhones"]])
+
+    def test_B001_B002_every_phone_and_the_crd_go(self):
+        cid = self.person("All Pho", indvl="5501", email="allpho@northstarwealth.com", phone="2125550140",
+                          label="direct")
+        crd, key = cadence.parse_id(cid)
+        self.c.execute("INSERT INTO contact_point (crd, person_key, person_name, kind, value, label, is_role, source,"
+                       " sources, confidence, verify_status, found_at, updated_at) VALUES"
+                       " (?,?,?,'phone','2125550141','office',0,'website','website',80,'unverified','x','x')",
+                       (crd, key, "All Pho"))
+        c = cadence.build_contact(cadence.load_records(self.c, [cid])[cid])
+        self.assertEqual(c["individualCrd"], "5501")
+        self.assertEqual(c["additionalPhones"], [{"number": "+12125550141", "type": "office"}])
+
+    def test_N093_the_cap_is_a_calendar_day_of_people(self):
+        crd, key = "105943", "n:cap day"
+        # 15:00 UTC is 09:00 in Chicago, whose day began at 06:00 UTC: 04:00 UTC was yesterday there.
+        for at in ("2026-11-03T04:00:00+00:00", "2026-11-03T06:00:00+00:00", "2026-11-03T07:00:00+00:00"):
+            self.c.execute("INSERT INTO cadence_push_event (at, actor, crd, person_key, action) VALUES"
+                           " (?,?,?,?,'push')", (at, ANA["login"], crd, key))
+        self.assertEqual(cadence.used_today(self.c, ANA["login"]), 1, "one person, today")
+        with patch.object(cadence, "daily_per_user", lambda: 1):
+            cid = self.person("Cap Over", email="capover@northstarwealth.com")
+            pv = cadence.preview(self.c, [cid], account=ANA)
+            self.assertEqual(pv["left_today"], 0)
+            self.assertFalse(pv["can_send"])
+            self.assertIn("midnight", pv["over_cap"])
+            self.assertIn("0 more today", self.push([cid])["message"])
+
+    def test_B065_a_new_owner_reuses_the_check_and_429_says_so(self):
+        cid = self.person("Reu Se", email="reuse@northstarwealth.com")
+        pv = cadence.preview(self.c, [cid], account=ANA)
+        again = cadence.preview(self.c, [cid], account=ANA, owner_email=LEE["email"], reuse=pv["preview_id"])
+        self.assertEqual(len(self.fake.requests_of("check")), 1)
+        self.assertEqual(again["check"]["state"], "ok")
+        self.fake.then("check", status=429, code="rate_limited", retry_after=12)
+        busy = cadence.preview(self.c, [cid], account=ANA)
+        self.assertIn("Too many sends a minute", busy["check"]["message"])
+        self.assertIn("12 seconds", busy["check"]["message"])
+
+    def test_B084_nothing_to_send_says_why_and_B181_title(self):
+        cid = self.person("Not Hing", email="nothing@northstarwealth.com")
+        cadence.suppress(self.c, "person", cid, reason="other", source="manual", by="k")
+        pv = cadence.preview(self.c, [cid], account=ANA)
+        self.assertFalse(pv["can_send"])
+        self.assertIsNone(pv["verdict"])
+        self.assertTrue(pv["nothing"])
+        res = self.push([cid])
+        self.assertEqual((res["title"], res["summary"]), ("Nothing sent", "1 skipped"))
+        ok = self.person("Som Ething", email="something@northstarwealth.com")
+        res = self.push([ok, cid])
+        self.assertEqual(res["title"], "Sent 1, skipped 1")
+
+    def test_B082_the_checks_warnings_show_before_the_send(self):
+        cid = self.person("War N", email="warn@northstarwealth.com")
+        orig = self.fake._one
+
+        def warned(c, *a):
+            r = orig(c, *a)
+            r["warnings"] = [{"code": "possible_crm_match", "field": None, "crmPersonId": "p1", "detail": "Jane Doe"}]
+            return r
+        with patch.object(self.fake, "_one", warned):
+            pv = cadence.preview(self.c, [cid], account=ANA)
+        self.assertEqual(pv["send"][0]["warnings"], ["Possible match in the CRM: Jane Doe"])
+
+    def test_B077_the_first_ones_of_a_filter_over_the_cap(self):
+        from prospect import cadence_view, people_index
+        for i in range(3):
+            self.person(f"Fir St{chr(97 + i)}", email=f"first{i}@northstarwealth.com")
+        with patch.object(cadence, "max_per_push", lambda: 2), self.view_conn()[0], \
+                patch.object(people_index, "exists", lambda c: True), \
+                patch.object(people_index, "columns", lambda c: set()):
+            ids, qs, err, over = cadence_view._selection({"filter": ""})
+            self.assertIn("Send the first 2", err)
+            self.assertTrue(over)
+            ids, qs, err, over = cadence_view._selection({"filter": "", "first": True})
+            self.assertEqual((len(ids), err, over), (2, None, False))
+            self.assertIn("on this page", cadence_view._selection({"filter": "", "origin": "firm"})[2])
+
+    def test_B078_a_send_is_found_by_its_key_after_a_gateway_error(self):
+        from prospect import cadence_view
+        cid = self.person("Gat Eway", email="gateway@northstarwealth.com")
+        first = self.push([cid], client_key="dialog-key-1")
+        again = self.push([cid], client_key="dialog-key-1")
+        self.assertEqual(first["batch_id"], again["batch_id"], "the same send, not a second one")
+        with self.view_conn()[0], patch.object(cadence_view, "current_user", lambda: ANA["login"]):
+            got = json.loads(cadence_view.api_batch_by_key(key="dialog-key-1").body)
+        self.assertEqual(got["batch_id"], first["batch_id"])
+
+    def test_B085_a_hold_says_what_cadence_did(self):
+        cid = self.person("Hol D", email="hold@northstarwealth.com")
+        self.fake.then("push", status=503, code="integration_disabled")
+        res = self.push([cid])
+        self.assertIn("Waiting: Cadence has the integration switched off", res["results"][0]["line"])
+        self.assertEqual(self.info(cid)["text"], "Waiting · Cadence has the integration switched off")
+
+    def test_B177_a_shared_inbox_alone_says_so(self):
+        self.firm("300003", "INBOX CO")
+        cid = self.person("Sha Red", crd="300003", role_email="info@inbox.example")
+        pv = cadence.preview(self.c, [cid], account=ANA)
+        self.assertEqual(pv["skipped"][0]["why"], "Only a shared inbox, and no valid phone")
+
+    def test_B217_admin_retry_asks_and_counts_against_nobody(self):
+        self.firm("300004", "LATER DISQ CO")
+        cid = self.person("Ret Ry", crd="300004", email="retry@later.example")
+        self.fake.then("push", status=422, code="invalid_request")
+        self.push([cid])
+        self.assertEqual(self.state(cid)["state"], "failed")
+        self.firm("300004", "LATER DISQ CO", status="disqualified")
+        before = cadence.used_today(self.c, ANA["login"])
+        ask = cadence.retry_failed(self.c, "admin", background=False)
+        self.assertIn("Disqualified", ask["ask"])
+        self.assertEqual(ask["sent"], 0)
+        with patch("prospect.users.get", lambda login: ANA if login == ANA["login"] else None):
+            done = cadence.retry_failed(self.c, "admin", background=False, confirm=True)
+            cadence.drain(self.c)
+        self.assertEqual(done["sent"], 1)
+        self.assertEqual(cadence.used_today(self.c, ANA["login"]), before)
+        ev = self.c.execute("SELECT actor FROM cadence_push_event WHERE action='resend'").fetchone()
+        self.assertEqual(ev["actor"], "admin")
+
+    def test_B205_days_are_cadences_days(self):
+        self.assertEqual(cadence._day("2026-11-04T03:00:00Z"), "3 Nov")
+        self.assertEqual(cadence._clock_time("2026-11-03T23:05:00Z"), "17:05")
+
+
+class ScreenChecks(ColdOutreachBase):
+    def test_B019_hidden_always_hides(self):
+        css = (ROOT / "prospect" / "static" / "app.css").read_text(encoding="utf-8")
+        self.assertIn("[hidden]{display:none!important}", css)
+
+    def test_B079_do_not_contact_is_a_red_stop_and_the_details_are_greyed(self):
+        from prospect import cadence_view, people_view
+        cid = self.person("Sto P", email="stop@northstarwealth.com")
+        cadence.suppress(self.c, "person", cid, reason="opted_out", source="manual", by="k")
+        info = self.info(cid)
+        html = cadence_view.status_html(info)
+        self.assertIn('class="cad-chip stop"', html)
+        self.assertIn("<svg", html)
+        row = dict(self.c.execute("SELECT * FROM people_index WHERE person_key=?",
+                                  (cadence.parse_id(cid)[1],)).fetchone())
+        row.update(firm_name="Northstar", firm_city="NEW YORK", raum=1, products="", cfp=0, cfa=0,
+                   is_officer=0, start_date="2020-01-01", prior_firm=None, email="stop@northstarwealth.com",
+                   phone=None, phone_label=None, linkedin=None, email_status="valid")
+        self.assertIn('class="cad-stopped"', people_view._person_row(row, [], (), {cid: info}))
+
+    def test_B080_my_sends_filters_and_groups_by_send(self):
+        from prospect import people_view
+        a = self.sent("Min E")
+        self.fake.then("push", status=422, code="invalid_request")
+        b = self.sent("Max E")
+        self.assertEqual(self.state(b)["state"], "failed")
+        f = dict(people_view._filters(cad="mine"), me=ANA["login"])
+        where, args = people_view._where(f, set())
+        rows = [dict(r) for r in self.c.execute(
+            f"SELECT * FROM people_index WHERE {where} ORDER BY {people_view._order(f, set())}", args)]
+        self.assertEqual({cadence.contact_id(r["crd"], r["person_key"]) for r in rows}, {a, b})
+        f2 = people_view._filters(cad="failed")
+        w2, a2 = people_view._where(f2, set())
+        self.assertEqual([r["person_key"] for r in self.c.execute(f"SELECT person_key FROM people_index WHERE {w2}", a2)],
+                         [cadence.parse_id(b)[1]])
+        for r in rows:
+            r.update(firm_name="Northstar", firm_city="NEW YORK", raum=1, products="", cfp=0, cfa=0,
+                     is_officer=0, start_date="2020-01-01", prior_firm=None, phone_label=None, linkedin=None,
+                     email_status=None)
+        cad = cadence.status_map(self.c, [(r["crd"], r["person_key"]) for r in rows])
+        with self.view_conn()[1]:
+            html = people_view._rows_html(rows, [], f, cad)
+        self.assertEqual(html.count('class="cad-group"'), 2)
+        self.assertIn(f'data-cad-retry="{b}"', html)
+
+    def test_B021_the_export_has_a_do_not_contact_column_in_words(self):
+        from prospect import people_index, people_view
+        a = self.sent("Exp Ort")
+        b = self.person("Exp Dnc", email="expdnc@northstarwealth.com")
+        self.c.execute("UPDATE people_index SET email='expdnc@northstarwealth.com' WHERE person_key=?",
+                       (cadence.parse_id(b)[1],))
+        cadence.suppress(self.c, "person", b, reason="other", source="manual", by="k")
+        self.c.commit()
+        with self.view_conn()[1], patch.object(people_index, "exists", lambda c: True), \
+                patch.object(people_index, "columns", lambda c: set()):
+            out = people_view.people_export().body.decode("utf-8")
+        import csv
+        rows = {r["name"]: r for r in csv.DictReader(io.StringIO(out))}
+        self.assertEqual(rows["Exp Dnc"]["do_not_contact"], "Do not contact · set here")
+        self.assertEqual(rows["Exp Dnc"]["email"], "", "never handed on")
+        self.assertEqual(rows["Exp Ort"]["cold_outreach"], "In Cold outreach")
+        self.assertEqual(rows["Exp Ort"]["do_not_contact"], "")
+        self.assertTrue(a)
+
+    def test_B081_newer_details_say_what_and_what_to_do(self):
+        cid = self.sent("New Er")
+        words = cadence.newer_details(self.state(cid), "new.er@northstarwealth.com", None)
+        self.assertIn("new.er@northstarwealth.com", words)
+        self.assertIn("tell the owner", words)
+
+    def test_B178_N094_a_refresh_keeps_the_history_and_the_card(self):
+        from prospect import cadence_view
+        cid = self.sent("His Tory")
+        self.fake.set_status(cid, "removed")
+        self.clock.sleep(120)
+        cadence.refresh(self.c, [cid], "ana")
+        line = cadence_view._lines(self.c, [cid], cards=True)[cid]
+        self.assertIn("data-tip", line["html"])
+        self.assertIn("Removed from Cold outreach", line["html"])
+        self.assertIn(f'data-cad-push="{cid}"', line["card"], "Send again is back without a reload")
+        self.assertIn("Send again", line["card"])
+
+    def test_B216_recent_activity_is_one_row_a_send(self):
+        from prospect import cadence_view
+        ids = [self.person(f"Gro Up{chr(97 + i)}", email=f"group{i}@northstarwealth.com") for i in range(3)]
+        self.push(ids)
+        html = cadence_view._sends(self.c, True)
+        self.assertEqual(html.count('<details class="cad-send">'), 1)
+        self.assertEqual(html.count("<li>"), 3)
+
+    def test_B020_the_banner_shows_the_last_real_test_and_gates_the_switch(self):
+        from prospect import cadence_view
+        self.assertIn("Never tested", cadence_view._banner(self.c, True, None))
+        self.assertIn("Test the connection first", cadence.cannot_switch_on(self.c))
+        self.fake.key = "another-key"
+        cadence.ping(self.c, by="admin")
+        self.assertIn("Failed", cadence_view._banner(self.c, True, None))
+        self.assertIn("refused the key", cadence.cannot_switch_on(self.c))
+        self.fake.key = KEY
+        cadence.ping(self.c, by="admin")
+        self.assertIn("Connected: Cadence answered", cadence_view._banner(self.c, True, None))
+        self.assertIsNone(cadence.cannot_switch_on(self.c))
+        self.clock.sleep(25 * 3600)
+        self.assertIn("more than a day old", cadence.cannot_switch_on(self.c))
+
+    def test_B066_a_lifted_hold_sends_now(self):
+        from prospect import cadence_view
+        cid = self.person("Now Go", email="nowgo@northstarwealth.com")
+        self.fake.then("push", status=401, code="unauthorized")
+        self.push([cid])
+        self.assertEqual(cadence.held(self.c), "unauthorized")
+        drained = []
+        with self.view_conn()[0], patch.object(cadence, "drain_now", lambda: drained.append(1)):
+            res = json.loads(cadence_view.settings_test().body)
+        self.assertTrue(res["ok"])
+        self.assertIsNone(cadence.held(self.c))
+        self.assertEqual(drained, [1])
+        self.assertIn("going now", res["message"])
+
+
+class NameKeyChecks(ColdOutreachBase):
+    def test_B064_names_in_any_script_get_keys_and_go(self):
+        self.assertEqual(contacts.name_key("José Müller"), "n:jose muller")
+        self.assertEqual(contacts.name_key("Mary O'Brien"), "n:mary brien", "ASCII keys unchanged")
+        self.assertEqual(contacts.name_key("Иван Петров"), "n:иван петров")
+        self.assertEqual(contacts.name_key("王伟"), "n:王伟")
+        self.assertNotEqual(contacts.name_key("王伟"), contacts.name_key("李娜"))
+        cid = self.person("王伟", key="n:王伟", email="wang@northstarwealth.com")
+        # Found on a website: no filed first and last name, only the name as written.
+        self.c.execute("UPDATE people_index SET first_name=NULL, last_name=NULL WHERE person_key='n:王伟'")
+        self.assertEqual(cadence.parse_id(cid), ("105943", "n:王伟"))
+        self.assertEqual(cadence.anchor("n:王伟"), "p-n-王伟")
+        self.assertTrue(self.push([cid])["ok"])
+        sent = self.pushed()[-1]["contacts"][0]
+        self.assertEqual((sent["firstName"], sent["lastName"]), ("伟", "王"))
+
+    def test_B064_rekey_moves_only_the_never_sent(self):
+        crd = "105943"
+        for name, old, sent in (("José Müller", "n:jos ller", False), ("Zoë Ångström", "n:zo ngstr m", True)):
+            self.c.execute("INSERT INTO contact_point (crd, person_key, person_name, kind, value, is_role, source,"
+                           " sources, confidence, verify_status, found_at, updated_at) VALUES"
+                           " (?,?,?,'email',?,0,'website','website',80,'valid','x','x')",
+                           (crd, old, name, f"{old[2:5].strip()}@northstarwealth.com"))
+            if sent:
+                self.c.execute("INSERT INTO cadence_push (crd, person_key, name, state, pushed_by, first_pushed_at)"
+                               " VALUES (?,?,?,'in_sandbox','ana','x')", (crd, old, name))
+        self.c.commit()
+        out = cadence.rekey_names(self.c)
+        self.assertEqual((out["moved"], out["kept_sent"]), (1, 1))
+        keys = {r["person_name"]: r["person_key"] for r in self.c.execute(
+            "SELECT person_name, person_key FROM contact_point")}
+        self.assertEqual(keys["José Müller"], "n:jose muller")
+        self.assertEqual(keys["Zoë Ångström"], "n:zo ngstr m", "Cadence knows them by the old key")
+        self.assertEqual(cadence.rekey_names(self.c), {"done": False}, "once")
+
+
+class BackfillChecks(ColdOutreachBase):
+    def test_N007_N037_the_release_backfill_widens_old_opt_outs_and_clears_stale_links(self):
+        old = self.person("Old Opt", indvl="6601", email="oldopt@northstarwealth.com", phone="2125550177")
+        crd, key = cadence.parse_id(old)
+        undone = self.person("Old Undo", email="oldundo@northstarwealth.com")
+        ucrd, ukey = cadence.parse_id(undone)
+        for c, k, st, url in ((crd, key, "opted_out", None),
+                              (ucrd, ukey, "in_sandbox", "https://twenty.example.test/object/person/p1")):
+            self.c.execute("INSERT INTO cadence_push (crd, person_key, indvl_pk, name, email, state, crm_url,"
+                           " pushed_by, first_pushed_at) VALUES (?,?,?,?,?,?,?,'ana','x')",
+                           (c, k, "6601" if st == "opted_out" else None, "x", None, st, url))
+        # How the build before this release wrote an opt-out: the row only.
+        self.c.execute("INSERT INTO contact_suppression (scope, value, channel, reason, source, set_at)"
+                       " VALUES ('person', ?, 'all', 'opted_out', 'cadence', 'x')", (old,))
+        self.c.commit()
+        out = cadence.backfill(self.c)
+        self.assertEqual((out["opt_outs"], out["linked"], out["crm_cleared"]), (1, 1, 1))
+        scopes = {r["scope"]: r["for_id"] for r in self.c.execute(
+            "SELECT scope, for_id FROM contact_suppression WHERE lifted_at IS NULL")}
+        self.assertEqual(scopes, {"person": old, "individual": old, "email": old, "phone": old})
+        self.assertIsNone(self.state(undone)["crm_url"])
+        self.assertEqual(cadence.backfill(self.c), {"done": False}, "once")
+
+
+class DeadlineChecks(ColdOutreachBase):
+    def test_B016_every_call_ends_by_its_deadline(self):
+        import time as real
+        self.fake.then("push", action="timeout")
+        self.fake.slow_s = 3
+        with patch.object(cadence, "TIMEOUT_S", 0.5):
+            t = real.monotonic()
+            ans = cadence._call(self.c, "POST", "/contacts", b"{}", idem_key=str(uuid.uuid4()))
+            self.assertEqual(ans.kind, "timeout")
+            self.assertLess(real.monotonic() - t, 2.0)
+
+    def test_B016_a_slow_name_lookup_is_inside_the_deadline(self):
+        import socket
+        import time as real
+        slow_dns = socket.getaddrinfo
+
+        def slow(*a, **k):
+            real.sleep(3)
+            return slow_dns(*a, **k)
+        with patch.object(socket, "getaddrinfo", slow), patch.object(cadence, "PING_TIMEOUT_S", 0.5):
+            t = real.monotonic()
+            ok, _, words = cadence.ping(self.c)
+            self.assertFalse(ok)
+            self.assertIn("did not answer within 0.5 seconds", words)
+            self.assertLess(real.monotonic() - t, 2.0)
+
+    def test_B016_no_pooled_connection_is_held_during_a_call(self):
+        pooled = Pooled(self.c)
+        seen = []
+        real_fetch = cadence._fetch
+
+        def spy(*a, **k):
+            seen.append(pooled.out)
+            return real_fetch(*a, **k)
+        cid = self.person("Poo Led", email="pooled@northstarwealth.com")
+        with patch.object(cadence, "_fetch", spy):
+            cadence.push(pooled, [cid], account=ANA, background=False)
+            cadence.ping(pooled)
+            cadence.refresh(pooled, [cid], "ana")
+        self.assertTrue(seen and all(seen), seen)
 
 
 if __name__ == "__main__":

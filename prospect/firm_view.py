@@ -23,8 +23,8 @@ stays at the top:
   Compliance   who runs compliance, disclosures, registration
 
 The Workspace tab holds status, owner, notes and saved lists. Bellwether AI
-opens in a drawer scoped to this firm. Each person card can be pushed to
-Cadence's outreach sandbox, alone or ticked with others, and says where the
+opens in a drawer scoped to this firm. Each person card can be sent to
+Cadence's Cold outreach, alone or ticked with others, and says where the
 person stands there (prospect/cadence_view.py).
 
 Rules this page enforces:
@@ -416,7 +416,8 @@ def _person_card(person: dict, key: str, points: list, hunt: dict | None = None,
         lines += _hunt_line(hunt)
     iapd = (f'<a class="more" href="{esc(person["iapd_link"])}" target="_blank" rel="noopener" '
             f'data-noprefetch>SEC record</a>' if person.get("iapd_link") else "")
-    anchor = "p-" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
+    from .cadence import anchor as card_anchor
+    anchor = card_anchor(key)
     tag, colour, primary = _icp_tags(icp_hits or [])
     cls, style = "pcard", ""
     if tag:
@@ -519,7 +520,8 @@ def _people_section(c, crd: str, roster: list, cps_by_person: dict, web_people: 
 
     def controls(person, key):
         if not cadence.parse_id(cadence.contact_id(crd, key)):
-            return ""
+            # Say why there is no Send, rather than leaving it out (B064).
+            return cadence_view.unkeyed_controls()
         cid = cadence.contact_id(crd, key)
         info = cad.get(cid)
         newer = cadence.newer_details((info or {}).get("row"), best(key, "email"),
@@ -1090,7 +1092,7 @@ def firm_detail(crd: str, p: str = Query(""), saved: str = Query("")):
                            sub="How reachable their people are, and tools to find more")
                   + ui.panel("People", people_html, count=pc["people"],
                              sub="From SEC records and their website, best to call first at the top")
-                  + cadence_view.context("firm", focus))
+                  + cadence_view.context("firm", focus, firm=profile_name, people=pc["people"]))
     fit_tab = ui.panel("Product fit", _fit_section(crd, results, ranks, focus),
                        sub="Each product's score and the evidence behind it, best fit first")
     activity_tab = (ui.panel("Signals", trig_html, count=signals_n, anchor="signals",

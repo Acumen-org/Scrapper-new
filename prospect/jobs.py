@@ -334,9 +334,10 @@ JOBS: list[Job] = [
     # search slice. Backlog: requests due a resend, and claims a dead process
     # left (prospect/cadence.py STALE_CLAIM_S).
     Job("cadence_sync", "Cadence",
-        "Reads from Cadence what happened to every contact pushed there: claimed, moved to the "
-        "CRM, opted out or removed, and shows it on People and the firm page. An opt-out in "
-        "Cadence becomes a do-not-contact here. Also resends a push a restart interrupted.",
+        "Reads from Cadence what happened to every contact sent to Cold outreach: claimed, moved "
+        "to the CRM, opted out or removed, and shows it on People and the firm page. An opt-out in "
+        "Cadence becomes a Do not contact here, and a Do not contact set here reaches Cadence. Also "
+        "resends a send a restart interrupted.",
         "scripts.cadence_sync", (), every_hours=1 / 6, timeout_s=540, needs="cadence",
         group="contacts", lane="cadence", min_gap_minutes=5,
         backlog_sql="SELECT COUNT(*) n FROM cadence_request WHERE (state='retry_wait' AND next_retry_at <= '{now}') OR (state='sending' AND claimed_at < '{ago_min:5}')",

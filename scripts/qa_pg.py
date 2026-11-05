@@ -97,7 +97,7 @@ print("9. cadence schema created twice without error OK")
 CLAIM = ("INSERT INTO cadence_push (crd, person_key, name, state, pushed_by, first_pushed_at, claimed_at)"
          " VALUES ('105943', 'i:1', 'Jane Doe', 'sending', ?, '2026-11-03T15:00:00+00:00',"
          " '2026-11-03T15:00:00+00:00') ON CONFLICT (crd, person_key) DO UPDATE SET state='sending',"
-         " pushed_by=excluded.pushed_by WHERE cadence_push.state IN ('rejected', 'failed', 'removed')"
+         f" pushed_by=excluded.pushed_by WHERE cadence_push.state IN ({','.join(repr(x) for x in cadence.REPUSH)})"
          " RETURNING id")
 
 
@@ -130,16 +130,17 @@ wins = race(claim, 4)
 assert wins.count(True) == 1, wins
 print("10. four connections claim one contact at once: exactly one wins OK")
 
-conn.execute("UPDATE cadence_push SET state='in_sandbox'")
-conn.commit()
-assert conn.execute(CLAIM, ("again",)).fetchone() is None
-conn.rollback()
-for st in ("rejected", "failed", "removed"):
+for st in ("in_sandbox", "rejected", "in_crm"):
+    conn.execute("UPDATE cadence_push SET state=?", (st,))
+    conn.commit()
+    assert conn.execute(CLAIM, ("again",)).fetchone() is None, st
+    conn.rollback()
+for st in cadence.REPUSH:
     conn.execute("UPDATE cadence_push SET state=?", (st,))
     conn.commit()
     assert conn.execute(CLAIM, ("again",)).fetchone() is not None, st
     conn.commit()
-print("11. a push again claims only from rejected, failed and removed OK")
+print("11. a send again claims only from failed and removed; a refusal stands (B015) OK")
 
 conn.execute("INSERT INTO cadence_request (request_key, batch_id, body, body_sha256, contacts, state,"
              " first_sent_at, next_retry_at) VALUES ('k1', 'b1', '{}', 'x', 1, 'retry_wait',"
@@ -167,7 +168,8 @@ assert all(b - a >= cadence.PUSH_GAP_S - 1e-6 for a, b in zip(ordered, ordered[1
 print("13. three connections reserving pace slots never share one, 2.5 s apart OK")
 
 # A temporary stand-in shadows any real people_index for this session only.
-conn.execute("CREATE TEMP TABLE people_index (crd TEXT, person_key TEXT, name TEXT)")
+conn.execute("CREATE TEMP TABLE people_index (crd TEXT, person_key TEXT, name TEXT, indvl_pk TEXT,"
+             " email TEXT)")
 conn.commit()
 from prospect import webapp  # noqa: E402,F401  (the views import through the app)
 from prospect import people_view  # noqa: E402
@@ -181,10 +183,25 @@ plan = "\n".join(r[0] for r in conn.execute(
 assert "ix_cadence_push" in plan or "cadence_push_crd_person_key_key" in plan, plan
 for knob in ("enable_seqscan", "enable_hashjoin", "enable_mergejoin"):
     conn.execute(f"RESET {knob}")
+print("14. the People Cadence filter reads cadence_push through an index OK")
+
+# Every Cold outreach filter, My sends and the daily cap, in Postgres's own SQL.
+conn.execute("INSERT INTO people_index VALUES ('105943', 'i:1', 'Jane Doe', '0001', 'jane@x.example')")
+cadence.suppress(conn, "individual", "1", reason="opted_out", source="cadence", for_id="105943:i:1")
+conn.commit()
+for k, sql in people_view.CAD_SQL.items():
+    args = ["user0"] if k == "mine" else []
+    conn.execute(f"SELECT COUNT(*) n FROM people_index WHERE {sql}", args).fetchone()
+hit = conn.execute("SELECT COUNT(*) n FROM people_index WHERE " + people_view.CAD_SQL["optout"]).fetchone()["n"]
+assert hit == 1, hit
+assert cadence.used_today(conn, "user0") >= 0
+info = cadence.status_map(conn, [("105943", "i:1")])["105943:i:1"]
+assert info["text"].startswith("Do not contact") and not info["can_push"], info
+conn.rollback()
 conn.execute("DROP TABLE pg_temp.people_index")
 for t in reversed(cadence.TABLES):
     conn.execute(f"DROP TABLE IF EXISTS {t}")
 conn.commit()
-print("14. the People Cadence filter reads cadence_push through an index OK")
+print("15. every Cold outreach filter runs, and an opt-out reaches the person by their SEC id (N007) OK")
 
 print("\nINTEGRATION CHECKS PASS")

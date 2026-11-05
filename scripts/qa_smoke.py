@@ -607,6 +607,9 @@ def pass_cadence(base: str, port: int) -> None:
     fake.add_user(f"{QA_USER}@acumen-strategy.test", "QA Harness", "senior_fo")
     c = db.connect()
     try:
+        # Sending is switched on only after a test passes (B020).
+        st, ping = _json(base, "/settings/cadence/test", {})
+        (ok if st == 200 and ping.get("ok") else fail)(f"Test the connection: {ping.get('message')}")
         post(base, "/settings/save", {"_group": "cadence", "cadence.enabled": "on",
                                       "cadence.max_per_push": "200", "cadence.daily_per_user": "500"})
         ids = [cadence.contact_id(r["crd"], r["person_key"]) for r in c.execute(
@@ -617,8 +620,6 @@ def pass_cadence(base: str, port: int) -> None:
         if len(ids) < 6:
             fail(f"Cadence pass needs six people with an email; found {len(ids)}")
             return
-        st, ping = _json(base, "/settings/cadence/test", {})
-        (ok if st == 200 and ping.get("ok") else fail)(f"Test the connection: {ping.get('message')}")
         plain = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
         plain.open(urllib.request.Request(base + "/login", data=urllib.parse.urlencode(
             {"username": QA_PLAIN, "password": QA_PASS, "next": "/"}).encode()), timeout=20)
@@ -636,7 +637,7 @@ def pass_cadence(base: str, port: int) -> None:
         fake.add_crm(emails=[email], owner="crm-owner@acumen-strategy.test")
         st, pv = _json(base, "/api/cadence/preview", {"ids": ids[:2]})
         crm = [x for x in pv.get("skipped", []) if x["id"] == ids[1]]
-        (ok if crm and crm[0]["why"].startswith("Already in the CRM") else fail)(
+        (ok if crm and crm[0]["why"].startswith("Already in CRM") else fail)(
             "the check blocks a contact already in the CRM")
         st, res = _json(base, "/api/cadence/push", {"ids": ids[:2], "preview_id": pv.get("preview_id")})
         states = {r["id"]: r["state"] for r in res.get("results", [])}
@@ -699,15 +700,15 @@ def pass_cadence(base: str, port: int) -> None:
         fake.set_status(ids[0], "opted_out")
         st, rf = _json(base, "/api/cadence/refresh", {"ids": [ids[0]]})
         line = (rf.get("lines") or {}).get(ids[0], {}).get("html", "")
-        (ok if "Opted out (Cadence)" in line else fail)("an opt-out read by id shows as Opted out (Cadence)")
+        (ok if "Do not contact · Cadence" in line else fail)("an opt-out read by id shows as Do not contact · Cadence")
         st, body, _ = get(base, "/people?cad=optout")
-        (ok if "Opted out (Cadence)" in body else fail)("People shows Opted out (Cadence)")
+        (ok if "Do not contact · Cadence" in body else fail)("People shows Do not contact · Cadence")
         crd = ids[0].split(":", 1)[0]
         st, body, _ = get(base, f"/firm/{crd}")
-        (ok if "data-cad-push" in body and "Opted out (Cadence)" in body else fail)(
-            "the firm page shows push buttons and the opt-out")
+        (ok if "data-cad-push" in body and "Do not contact · Cadence" in body else fail)(
+            "the firm page shows Send buttons and the opt-out")
         st, body, _ = get(base, "/settings/cadence")
-        (ok if "Recent activity" in body else fail)("Settings, Cadence shows the audit")
+        (ok if "Recent sends" in body else fail)("Settings, Cadence shows the sends")
         from scripts import qa_html
         before = len(qa_html.FAILURES)
         for pth in ("/people", "/people?cad=in", "/people?cad=optout", f"/firm/{crd}", "/settings/cadence"):
