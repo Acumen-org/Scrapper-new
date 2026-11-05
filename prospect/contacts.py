@@ -34,6 +34,7 @@ mailbox is, and a wrong one sends a salesperson to a stranger.
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlparse
 
@@ -212,13 +213,29 @@ def is_role_email(email: str) -> bool:
     return bool(ROLE_RE.match(norm_email(email).split("@", 1)[0]))
 
 
+def unspaced(word: str) -> bool:
+    """A Chinese, Japanese or Korean name, which is written without a space
+    between the family name and the given name."""
+    return len(word) >= 2 and all(
+        unicodedata.name(ch, "").startswith(("CJK UNIFIED", "CJK COMPATIBILITY IDEOGRAPH", "HIRAGANA",
+                                             "KATAKANA", "HANGUL")) for ch in word)
+
+
 def name_key(name: str) -> str:
     """A person key for someone not matched to an IAPD record: lowercase first and
-    last name, punctuation and middle names dropped."""
-    parts = [p for p in re.sub(r"[^a-z ]", " ", (name or "").lower()).split() if p]
+    last name, punctuation and middle names dropped. Accents fold (José Müller and
+    Jose Muller are one key) and every other script is kept, so a name in Cyrillic
+    or Chinese keys as itself instead of colliding with others or keying as
+    nothing (B064); a Chinese, Japanese or Korean name written as one word keys
+    as that word. Plain ASCII names key exactly as they always did."""
+    s = unicodedata.normalize("NFKD", (name or "").lower())
+    s = unicodedata.normalize("NFC", "".join(ch for ch in s if not unicodedata.combining(ch)))
+    parts = [p for p in "".join(ch if ch.isalpha() else " " for ch in s).split() if p]
     parts = [p for p in parts if p not in ("jr", "sr", "ii", "iii", "iv", "mr", "mrs",
                                            "ms", "dr", "cfp", "cfa", "cpa", "chfc",
                                            "clu", "aif", "crpc", "cima", "esq")]
+    if len(parts) == 1 and unspaced(parts[0]):
+        return f"n:{parts[0]}"
     if len(parts) < 2:
         return ""
     return f"n:{parts[0]} {parts[-1]}"
