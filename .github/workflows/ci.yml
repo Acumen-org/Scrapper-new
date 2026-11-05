@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # CI for Bellwether (Acumen-org/Scrapper-new).
 #
-#   test    — self-hosted, like the rest. The send to Cadence against the fake
+#   test    : self-hosted, like the rest. The send to Cadence against the fake
 #             Cadence and the contract fixture (qa_cadence), the offline
 #             regressions (qa_requirements), the style rule (qa_style), and the
 #             Postgres adapter on a real, throwaway Postgres (qa_pg). Nothing
