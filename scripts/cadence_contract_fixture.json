@@ -1,11 +1,15 @@
 {
-  "_about": "The JSON examples of the shared contract (docs/outreach-sandbox-plan.md, 14.3 ping, 14.8 push response, 14.12 status response), copied by script. scripts/qa_cadence.py reads them with Bellwether's parser and checks they still match the plan. v1_1 holds Bellwether's reading of contract v1.1, read by the same tests.",
+  "_about": "The JSON examples of the shared contract (docs/outreach-sandbox-plan.md, section 14: 14.3 ping, 14.8 push response, 14.12 status response, and contract v1.1's push and status answers, 14.15 Do not contact and 14.16 owners), made by scripts/contract_fixture.py. scripts/qa_cadence.py reads them with Bellwether's parser and checks they still match the plan.",
   "ping": {
     "ok": true,
     "version": "1",
     "sandboxEnabled": true,
     "maxBatch": 500,
-    "serverTime": "2026-11-03T15:04:05Z"
+    "serverTime": "2026-11-03T15:04:05Z",
+    "contracts": [
+      "1",
+      "1.1"
+    ]
   },
   "push_response": {
     "pushId": "6f1c2a9e-1b7d-4c1e-9a55-2f0f1d3c8b10",
@@ -103,7 +107,7 @@
     ]
   },
   "v1_1": {
-    "_about": "Bellwether's reading of contract v1.1 (the cold-outreach plan, 7.3) until section 14 carries it: what Bellwether sends and what it reads. Every field only adds to v1, and a request without X-Cadence-Contract: 1.1 gets the v1 answers above.",
+    "_about": "Contract v1.1 (the cold-outreach plan, 7.3): what Cadence answers a request that carries X-Cadence-Contract: 1.1, and what Bellwether sends. Every field only adds to v1; a request without the header gets the v1 answers above.",
     "ping": {
       "ok": true,
       "version": "1",
@@ -113,6 +117,90 @@
       "contracts": [
         "1",
         "1.1"
+      ]
+    },
+    "push_response": {
+      "pushId": "6f1c2a9e-1b7d-4c1e-9a55-2f0f1d3c8b10",
+      "replayed": false,
+      "receivedAt": "2026-11-10T15:04:05Z",
+      "owner": {
+        "email": "alyssa@acumen-strategy.com",
+        "name": "Alyssa Example"
+      },
+      "summary": {
+        "created": 1,
+        "duplicate_in_sandbox": 1,
+        "already_in_crm": 0,
+        "rejected": 1
+      },
+      "results": [
+        {
+          "bellwetherContactId": "105943:i:7712003",
+          "result": "created",
+          "cadenceContactId": "7c40...",
+          "reason": null,
+          "detail": null,
+          "matchedOn": null,
+          "crmPersonId": null,
+          "crmUrl": null,
+          "ownerEmail": "alyssa@acumen-strategy.com",
+          "ownerName": "Alyssa Example",
+          "filledFields": [],
+          "warnings": [
+            {
+              "code": "possible_sandbox_duplicate",
+              "field": null,
+              "crmPersonId": null,
+              "detail": "Possibly the same person as Bob Okafor, already in Cold outreach at the same firm."
+            }
+          ],
+          "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/7c40..."
+        },
+        {
+          "bellwetherContactId": "105943:i:7712002",
+          "result": "duplicate_in_sandbox",
+          "cadenceContactId": "5d21...",
+          "reason": null,
+          "detail": null,
+          "matchedOn": "individual_crd",
+          "crmPersonId": null,
+          "crmUrl": null,
+          "ownerEmail": "leigh@acumen-strategy.com",
+          "ownerName": "Leigh Example",
+          "filledFields": [
+            "linkedinUrl"
+          ],
+          "warnings": [
+            {
+              "code": "note_added",
+              "field": "notes",
+              "crmPersonId": null,
+              "detail": "The person is already in Cold outreach, so the note was added to that contact."
+            },
+            {
+              "code": "details_changed",
+              "field": null,
+              "crmPersonId": null,
+              "detail": "Newer details from Bellwether: email jane@northstarwealth.com added; their firm there is Northstar Wealth."
+            }
+          ],
+          "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/5d21..."
+        },
+        {
+          "bellwetherContactId": "288810:n:john roe",
+          "result": "rejected",
+          "cadenceContactId": null,
+          "reason": "internal_error",
+          "detail": "Cadence hit an error on this contact and finished the rest. Send it again; if it happens again, report it.",
+          "matchedOn": null,
+          "crmPersonId": null,
+          "crmUrl": null,
+          "ownerEmail": null,
+          "ownerName": null,
+          "filledFields": [],
+          "warnings": [],
+          "cadenceUrl": null
+        }
       ]
     },
     "status_response": {
@@ -132,17 +220,18 @@
           "crmPersonId": null,
           "crmUrl": null,
           "statusChangedAt": "2026-11-10T16:22:00Z",
-          "cadenceUrl": "https://cadence.example.test/cold-outreach/0b6a...",
+          "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/0b6a...",
           "removedBy": null,
           "removedAt": null,
           "removedReason": null,
           "erasedAt": null,
-          "emailBounced": true,
+          "emailBounced": "jane.doe@northstarwealth.com",
           "emailBouncedAt": "2026-11-10T09:00:00Z",
           "possibleCrmPersonId": null,
           "lastOutcome": "not_interested",
           "lastOutcomeAt": "2026-11-10T16:22:00Z",
-          "optOutLiftedAt": "2026-11-09T12:00:00Z"
+          "optOutLiftedAt": "2026-11-09T12:00:00Z",
+          "reason": null
         },
         {
           "bellwetherContactId": "105943:i:7712002",
@@ -157,9 +246,18 @@
           "crmPersonId": null,
           "crmUrl": null,
           "statusChangedAt": "2026-11-10T15:00:00Z",
+          "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/5d21...",
           "removedBy": "Alisa Example",
           "removedAt": "2026-11-10T15:00:00Z",
-          "removedReason": "Retired"
+          "removedReason": "Retired",
+          "erasedAt": null,
+          "emailBounced": null,
+          "emailBouncedAt": null,
+          "possibleCrmPersonId": null,
+          "lastOutcome": "not_interested",
+          "lastOutcomeAt": "2026-11-10T14:40:00Z",
+          "optOutLiftedAt": null,
+          "reason": null
         },
         {
           "bellwetherContactId": "288810:n:jane doe",
@@ -174,6 +272,17 @@
           "crmPersonId": null,
           "crmUrl": null,
           "statusChangedAt": "2026-11-10T14:00:00Z",
+          "cadenceUrl": null,
+          "removedBy": null,
+          "removedAt": null,
+          "removedReason": null,
+          "erasedAt": null,
+          "emailBounced": null,
+          "emailBouncedAt": null,
+          "possibleCrmPersonId": null,
+          "lastOutcome": null,
+          "lastOutcomeAt": null,
+          "optOutLiftedAt": null,
           "reason": "blocked_account"
         },
         {
@@ -189,7 +298,18 @@
           "crmPersonId": null,
           "crmUrl": null,
           "statusChangedAt": "2026-11-10T13:00:00Z",
-          "erasedAt": "2026-11-10T13:00:00Z"
+          "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/9c3e...",
+          "removedBy": null,
+          "removedAt": null,
+          "removedReason": null,
+          "erasedAt": "2026-11-10T13:00:00Z",
+          "emailBounced": null,
+          "emailBouncedAt": null,
+          "possibleCrmPersonId": null,
+          "lastOutcome": "connected",
+          "lastOutcomeAt": "2026-11-09T10:00:00Z",
+          "optOutLiftedAt": null,
+          "reason": null
         }
       ]
     },

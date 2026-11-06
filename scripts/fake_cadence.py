@@ -51,7 +51,8 @@ UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 LIMITS = {"push": 30, "check": 30, "suppress": 30, "status": 60, "owners": 60}
 V11_FIELDS = ("cadenceUrl", "removedBy", "removedAt", "removedReason", "erasedAt", "emailBounced",
               "emailBouncedAt", "possibleCrmPersonId", "lastOutcome", "lastOutcomeAt", "optOutLiftedAt")
-OWNING = {"admin", "junior_fo", "senior_fo", "sales_leader", "pod_manager"}
+# Who owns contacts (14.7 in contract 1.1): sales reps only, never an admin or Biz Ops.
+OWNING = {"junior_fo", "senior_fo", "sales_leader", "pod_manager"}
 SHARED_TYPES = {"main", "toll_free"}
 PHONE_TYPES = {"direct", "mobile", "office", "main", "toll_free", "unknown"}
 PRODUCTS = {"PHH", "TOLLBOOTH", "ACUBOOTH", "GLYNAC"}
@@ -101,6 +102,8 @@ class FakeCadence:
         self.internal_domains = {"acumen-strategy.com"}
         self.blocked_domains: set[str] = set()
         self.users: dict[str, tuple[str, str]] = {}   # email -> (name, role)
+        self.pods: dict[str, list[str]] = {}          # email -> the pods they work (podOwner values)
+        self.pushed_pods: list[str | None] = []       # the `pod` of each push, as received
         self.statuses: dict[str, dict] = {}       # id -> status item
         self.forced: dict[str, dict] = {}         # id -> result fields a push answers with
         self.script: list[dict] = []              # answers for the next requests, by kind
@@ -142,8 +145,9 @@ class FakeCadence:
         self.httpd.server_close()
 
     # ------------------------------------------------------------ seeding
-    def add_user(self, email: str, name: str, role: str = "senior_fo") -> None:
+    def add_user(self, email: str, name: str, role: str = "senior_fo", pods=("ALISA",)) -> None:
         self.users[email.lower()] = (name, role)
+        self.pods[email.lower()] = list(pods)
 
     def add_crm(self, *, emails=(), phones=(), linkedin=None, owner=None, name="CRM Person",
                 company_phone=None) -> str:
@@ -285,7 +289,7 @@ class FakeCadence:
         if wait is not None:
             return self._error(h, 429, "rate_limited", headers={"Retry-After": str(int(wait))})
         if kind == "owners":
-            return self._send(h, 200, {"owners": [{"email": e, "name": n, "pods": []}
+            return self._send(h, 200, {"owners": [{"email": e, "name": n, "pods": list(self.pods.get(e) or [])}
                                                   for e, (n, role) in sorted(self.users.items())
                                                   if role in OWNING]})
         if not (h.headers.get("Content-Type") or "").lower().startswith("application/json"):
@@ -348,7 +352,9 @@ class FakeCadence:
             return 413, ("payload_too_large", "more than 500 contacts")
         owner_email = str((at or pb).get("email")).lower()
         name, role = self.users.get(owner_email, (None, None))
-        owner = {"email": owner_email, "name": name} if role in OWNING else None
+        owner = {"email": owner_email, "name": name} if role in OWNING and self.pods.get(owner_email) else None
+        if write:
+            self.pushed_pods.append(body.get("pod"))
         results, seen_ids, seen_mail = [], set(), set()
         summary = {"created": 0, "duplicate_in_sandbox": 0, "already_in_crm": 0, "rejected": 0}
         for c in contacts:
@@ -524,12 +530,15 @@ class FakeCadence:
     # ------------------------------------------------------------ status
     def _shown(self, item: dict, v11: bool) -> dict:
         """A status row as one version of the contract sees it: v1 gets exactly
-        the v1 fields, and a v1.1-only status as the v1 answer it had."""
+        the v1 fields, and a v1.1-only status as the v1 answer it had; 1.1
+        gets every 1.1 field, null when it does not apply, as Cadence sends it."""
         out = dict(item)
         if v11:
             s = self.sandbox.get(out["bellwetherContactId"]) or {}
             if s.get("cadenceContactId"):
                 out.setdefault("cadenceUrl", f"https://cadence.example.test/cold-outreach/{s['cadenceContactId']}")
+            for f in V11_FIELDS + ("reason",):
+                out.setdefault(f, None)
             return out
         for f in V11_FIELDS + ("reason",):
             out.pop(f, None)

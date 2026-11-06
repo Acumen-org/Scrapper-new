@@ -745,15 +745,15 @@ class ContractFixtureChecks(CadenceBase):
     FIXTURE = Path(__file__).with_name("cadence_contract_fixture.json")
 
     def test_fixture_matches_the_plan_when_the_plan_is_here(self):
+        """The fixture is what scripts/contract_fixture.py makes of section 14:
+        a section copied over from Cadence without a new fixture fails here."""
         plan = ROOT / "docs" / "outreach-sandbox-plan.md"
         if not plan.exists():
             self.skipTest("docs/ is not in the image")
-        t = plan.read_text(encoding="utf-8")
-        h = "## Shared contract with Bellwether"
-        sec = t[t.index(h):t.index("\n## Field mapping", t.index(h))]
-        blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", sec, re.S)]
+        from scripts import contract_fixture
         fx = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
-        self.assertEqual(blocks, [fx["ping"], fx["push_response"], fx["status_response"]])
+        self.assertEqual(contract_fixture.build(plan.read_text(encoding="utf-8")), fx)
+        self.assertEqual(fx["ping"]["contracts"], ["1", "1.1"])
 
     def test_the_contract_examples_read_with_bellwethers_parser(self):
         fx = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
