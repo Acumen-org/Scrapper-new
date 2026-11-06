@@ -113,6 +113,10 @@ jobs:
           platforms: linux/amd64
           tags: ${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.IMAGE_TAG }}
 
+      # The runner has no Tesseract, so qa_requirements skips its OCR check there; the image must ship it.
+      - name: The image ships Tesseract
+        run: docker run --rm --entrypoint tesseract "${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.IMAGE_TAG }}" --version
+
   # ------------------------------------------------------------------- deploy
   deploy:
     name: deploy to Nomad
