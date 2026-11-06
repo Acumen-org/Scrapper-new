@@ -140,7 +140,7 @@ def api_preview(request: Request, payload: dict = Body(default={})):
     try:
         out = cadence.preview(c, ids, account=acct, product=payload.get("product"),
                               owner_email=owner, note=payload.get("note"), base_url=_base(request),
-                              reuse=str(payload.get("reuse") or "") or None)
+                              reuse=str(payload.get("reuse") or "") or None, pod=payload.get("pod"))
         owners = [{"email": e, "name": n} for e, n in cadence.owner_choices(c)]
     finally:
         c.close()
@@ -165,7 +165,8 @@ def api_push(request: Request, payload: dict = Body(default={})):
                            confirm_disqualified=bool(payload.get("confirm")),
                            preview_id=str(payload.get("preview_id") or "") or None,
                            origin=str(payload.get("origin") or "people"), filter_qs=qs,
-                           base_url=_base(request), client_key=key if KEY_RE.match(key) else None)
+                           base_url=_base(request), client_key=key if KEY_RE.match(key) else None,
+                           pod=payload.get("pod"))
         if out.get("ok"):
             out["lines"] = _lines(c, [r["id"] for r in out["results"] if r.get("id")])
     finally:

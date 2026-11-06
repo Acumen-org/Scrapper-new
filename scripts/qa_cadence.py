@@ -1163,6 +1163,77 @@ class DoNotContactChecks(ColdOutreachBase):
         self.assertIn("Set in Bellwether by karson", info["tip"])
 
 
+class ContractV11Checks(ColdOutreachBase):
+    """Contract v1.1 as section 14 now says it (S9): the pod, the outcome
+    words, and the push rules both apps run."""
+
+    def test_S3_the_owners_pod_goes_with_the_send(self):
+        self.fake.add_user(ANA["email"], ANA["name"], "senior_fo", pods=["ALISA", "LEIGH"])
+        self.speak_11()
+        a = self.person("Pod One", email="podone@northstarwealth.com")
+        pv = cadence.preview(self.c, [a], account=ANA)
+        self.assertEqual((pv["pods"], pv["pod"]), (["ALISA", "LEIGH"], None), "two pods: the sender chooses")
+        self.assertEqual(cadence.preview(self.c, [a], account=ANA, pod="leigh")["pod"], "LEIGH")
+        self.assertTrue(self.push([a], pod="leigh")["ok"])
+        self.assertEqual(self.pushed()[-1]["pod"], "LEIGH")
+        self.assertEqual(self.pushed("check")[-1]["pod"], "LEIGH")
+        # One pod: it goes without asking. A pod the owner does not work never goes.
+        self.fake.add_user(ANA["email"], ANA["name"], "senior_fo", pods=["ALISA"])
+        self.clock.sleep(cadence.OWNERS_TTL_S + 1)
+        b = self.person("Pod Two", email="podtwo@northstarwealth.com")
+        self.assertTrue(self.push([b], pod="ANDREW")["ok"])
+        self.assertEqual(self.pushed()[-1]["pod"], "ALISA")
+        # A Cadence that speaks v1 only has no owners list: no pod, as before.
+        self.speak_11(("1",))
+        c = self.person("Pod Three", email="podthree@northstarwealth.com")
+        self.assertTrue(self.push([c])["ok"])
+        self.assertIsNone(self.pushed()[-1]["pod"])
+
+    def test_contract_v11_last_outcome_in_cadences_words(self):
+        cid = self.sent("Out Come")
+        self.fake.set_status(cid, "in_sandbox", lastOutcome="no_conversation", lastOutcomeAt="2026-11-03T17:00:00Z")
+        self.sync_later()
+        self.assertEqual(self.info(cid)["outcome"], "Line connected, no conversation · 3 Nov")
+        self.assertEqual(cadence.outcome_words("do_not_contact"), "Asked not to be contacted")
+        self.assertEqual(cadence.outcome_words("left_message_with_pa"), "Left message with pa")
+
+    def test_B169_linkedin_is_decoded_before_it_is_lower_cased(self):
+        self.assertEqual(cadence.norm_linkedin("https://www.linkedin.com/in/%C3%89lodie-D/?trk=x"),
+                         "linkedin.com/in/\u00e9lodie-d")
+        self.assertEqual(cadence.norm_linkedin("UK.LinkedIn.com/in/JaneDoe-1"), "linkedin.com/in/janedoe-1")
+
+    def test_B172_B174_titles_cut_at_a_word_and_names_in_any_alphabet(self):
+        from prospect import roles
+        from prospect.names import nice_name
+        long = "MANAGING DIRECTOR AND SENIOR VICE PRESIDENT OF PRIVATE WEALTH MANAGEMENT, INSTITUTIONAL CLIENT SERVICES"
+        self.assertEqual(roles.clean_title(long),
+                         "Managing Director and Senior Vice President of Private Wealth Management, Institutional")
+        cid = self.person("Ti Tle", email="title@northstarwealth.com", title=long + " AND OPERATIONS" * 10)
+        c = cadence.build_contact(cadence.load_records(self.c, [cid])[cid])
+        self.assertLessEqual(len(c["jobTitle"]), 200)
+        self.assertTrue(roles.clean_title(long + " AND OPERATIONS" * 10, 400).startswith(c["jobTitle"] + " "))
+        self.assertEqual(nice_name("\u00d6STERREICH CAPITAL LLC"), "\u00d6sterreich Capital LLC")
+        self.assertEqual(nice_name("Z\u00dcRICH WEALTH PARTNERS AG"), "Z\u00fcrich Wealth Partners AG")
+
+    def test_B173_the_firm_that_uses_the_domain_keeps_the_email(self):
+        self.firm("300003", "OTHER ADVISORS LLC", website="other.example")
+        away = self.person("Jan Away", crd="300003", email="jan@northstarwealth.com")
+        home = self.person("Jan Home", email="jan@northstarwealth.com")
+        pv = cadence.preview(self.c, [away, home], account=ANA)
+        self.assertEqual([x["id"] for x in pv["send"]], [home], "whatever the selection order")
+        self.assertEqual([(x["id"], x["rule"]) for x in pv["skipped"]], [(away, "same_in_push")])
+        self.assertIn("whose firm uses that address", pv["skipped"][0]["why"])
+
+    def test_B017_cadences_possible_duplicate_names_who(self):
+        a = self.person("Dup Lic", email="duplic@northstarwealth.com")
+        warning = {"code": "possible_sandbox_duplicate", "field": None, "crmPersonId": None,
+                   "detail": "Possibly the same person as Bob Lic, already in Cadence at the same firm."}
+        real = self.fake._one
+        with patch.object(self.fake, "_one", lambda c, *x, **k: dict(real(c, *x, **k), warnings=[warning])):
+            pv = cadence.preview(self.c, [a], account=ANA)
+        self.assertEqual(pv["send"][0]["warnings"], ["Possibly the same person as Bob Lic, already in Cadence at the same firm."])
+
+
 class SendChecks(ColdOutreachBase):
     def test_N092_one_send_per_sec_person_and_counts_of_people(self):
         self.firm("300002", "THIRD FIRM LLC", website="third.example")

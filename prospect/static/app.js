@@ -626,14 +626,14 @@
     }
     function open(sel, from) {
       opener = from || document.activeElement;
-      st = { sel: sel, product: ctx.dataset.product || "", owner: "", note: "", confirm: false, key: key() };
+      st = { sel: sel, product: ctx.dataset.product || "", owner: "", pod: "", note: "", confirm: false, key: key() };
       dialog();
       if (!dlg.open) dlg.showModal();
       preview();
     }
     function payload() {
       return { ids: st.sel.ids, filter: st.sel.filter, first: st.sel.first, product: st.product, owner: st.owner,
-               note: st.note, origin: ctx.dataset.origin, confirm: st.confirm, send_key: st.key };
+               pod: st.pod, note: st.note, origin: ctx.dataset.origin, confirm: st.confirm, send_key: st.key };
     }
     function preview(reuse) {
       title("Send to Cold outreach");
@@ -651,6 +651,8 @@
     function showPreview(d) {
       st.preview = d;
       if (!st.owner) st.owner = d.owner || "";
+      // The owner's pod goes with the send (S3): asked only when Cadence lists more than one for them.
+      st.pod = d.pod || "";
       if ("product" in d) st.product = d.product || "";
       var k = (d.send || []).length, n = d.count || 0, h = "";
       // The dialog's order (B076): the verdict, the choices, then who goes and who does not.
@@ -690,6 +692,11 @@
           (ov.unclaimed ? '<span class="meta warnc">These ' + plural(k, "person", "people") + ' will arrive unclaimed: ' +
             esc(ov.name || "this person") + ' cannot own contacts in Cadence.</span>' :
            '<span class="meta">Only people who can own contacts in Cadence are listed.</span>') + '</label>' +
+          ((d.pods || []).length > 1 ? '<label>Pod<select data-cad-pod>' + '<option value="">Choose a pod</option>' +
+            d.pods.map(function (p) {
+              return '<option value="' + esc(p) + '"' + (p === st.pod ? " selected" : "") + '>' + esc(p) + '</option>';
+            }).join("") + '</select><span class="meta">' + esc(ov.name || "This owner") +
+            ' works in ' + d.pods.length + ' pods. Without a choice the contacts go to the first by name.</span></label>' : "") +
           '<label>Product<select data-cad-product>' + prods + '</select></label>' +
           '<label class="wide">' + (k > 1 ? "Note for all " + k.toLocaleString() + " people (copied to each)" : "Note") +
           '<textarea data-cad-note maxlength="' + (d.note_max || 500) + '" rows="2" placeholder="Optional, the first note in Cold outreach">' +
@@ -754,7 +761,9 @@
       var own = dlg.querySelector("[data-cad-owner]"), prod = dlg.querySelector("[data-cad-product]"),
           note = dlg.querySelector("[data-cad-note]");
       // A new owner or product keeps the check Cadence already answered (B065).
-      if (own) own.addEventListener("change", function () { st.owner = own.value; preview(d.preview_id); });
+      if (own) own.addEventListener("change", function () { st.owner = own.value; st.pod = ""; preview(d.preview_id); });
+      var podSel = dlg.querySelector("[data-cad-pod]");
+      if (podSel) podSel.addEventListener("change", function () { st.pod = podSel.value; });
       if (prod) prod.addEventListener("change", function () { st.product = prod.value; preview(d.preview_id); });
       if (note) note.addEventListener("input", function () { st.note = note.value; });
       if (go) go.addEventListener("click", function () { push(go); });

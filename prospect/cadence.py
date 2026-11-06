@@ -299,11 +299,27 @@ WARN_WORDS = {"email_dropped": "Cadence dropped the email",
               "value_defaulted": "Cadence did not recognise a value and used its default",
               "no_reach": "No email, phone or LinkedIn profile to reach them",
               "possible_sandbox_duplicate": "Possibly the same person as a contact already in Cold outreach"}
-# The latest call outcome Cadence reports (v1.1 lastOutcome), in words.
-OUTCOME_WORDS = {"connected": "Connected", "not_interested": "Not interested",
-                 "meeting_booked": "Meeting booked", "voicemail": "Voicemail", "no_answer": "No answer",
-                 "busy": "Busy", "gatekeeper": "Gatekeeper", "wrong_number": "Wrong number",
-                 "call_back": "Call back", "opted_out": "Asked not to be contacted"}
+# The v1 warning codes (14.8). Contract v1.1's warnings carry a plain sentence
+# saying who or what (B017, B068, B070, B072), shown as Cadence wrote it.
+V1_WARNINGS = {"email_dropped", "phone_dropped", "linkedin_dropped", "product_dropped", "pod_ignored",
+               "possible_crm_match"}
+
+
+def warn_line(w: dict) -> str:
+    """One warning of Cadence's check, in words, under the person it is about."""
+    code, detail = w.get("code") or "", w.get("detail")
+    if detail and code not in V1_WARNINGS:
+        return str(detail)
+    return WARN_WORDS.get(code, code) + (f": {detail}" if code == "possible_crm_match" and detail else "")
+
+# The latest call outcome Cadence reports (v1.1 lastOutcome, section 14.12):
+# the post-call form's outcome keys, in Cadence's own words. A key an admin
+# added in Cadence's Settings is shown humanised.
+OUTCOME_WORDS = {"connected": "Connected", "gatekeeper": "Spoke to gatekeeper",
+                 "voicemail": "Left voicemail", "no_answer": "No answer", "busy": "Busy / call back",
+                 "wrong_number": "Wrong number", "not_interested": "Not interested",
+                 "meeting_booked": "Meeting booked", "do_not_contact": "Asked not to be contacted",
+                 "no_conversation": "Line connected, no conversation"}
 
 # Injected by the tests, so retries and pacing run on a fake clock.
 _clock = time.time
@@ -467,13 +483,15 @@ def readable_phone(e164: str, ext: str | None = None) -> str:
 
 
 def norm_linkedin(v) -> str | None:
-    """linkedin.com/in/<slug>: lower case, no scheme, no www. or country
-    subdomain, no query, fragment or trailing path. Anything else is None."""
-    s = str(v or "").strip().lower()
-    s = re.sub(r"^[a-z]+://", "", s).split("#")[0].split("?")[0]
-    s = re.sub(r"^(?:www\.|[a-z]{2,3}\.)", "", s)
-    m = re.match(r"^linkedin\.com/in/([^/\s]+)", s)
-    return f"linkedin.com/in/{m.group(1)}" if m else None
+    """linkedin.com/in/<slug>: no scheme, no www. or country subdomain, no
+    query, fragment or trailing path, the slug percent-decoded and then lower
+    case, as Cadence does (14.5, B169). Anything else is None."""
+    from urllib.parse import unquote
+    s = str(v or "").strip()
+    s = re.sub(r"^[a-z]+://", "", s, flags=re.I).split("#")[0].split("?")[0]
+    s = re.sub(r"^(?:www\.|[a-z]{2,3}\.)", "", s, flags=re.I)
+    m = re.match(r"^linkedin\.com/in/([^/\s]+)", s, re.I)
+    return f"linkedin.com/in/{unquote(m.group(1)).lower()}" if m else None
 
 
 def norm_crd(v) -> str | None:
@@ -800,7 +818,7 @@ def build_contact(rec: dict, *, product: str | None = None, note: str | None = N
     out = {
         "bellwetherContactId": rec["id"],
         "firstName": first, "lastName": last,
-        "jobTitle": _cut(roles.clean_title(rec.get("title") or ""), 200),
+        "jobTitle": _cut(roles.clean_title(rec.get("title") or "", 200), 200),
         "email": email,
         "emailVerification": VERIFICATION.get((em or {}).get("verify_status"), "unknown") if email else "unknown",
         "additionalEmails": extra[:5],
@@ -875,7 +893,10 @@ def account_email(account: dict | None) -> str | None:
     return norm_email(a.get("email")) or norm_email(a.get("login"))
 
 
-def envelope(account: dict, owner_email: str | None, contacts: list[dict]) -> dict:
+def envelope(account: dict, owner_email: str | None, contacts: list[dict], pod: str | None = None) -> dict:
+    """The 14.4 envelope. `pod` is the owner's pod as Cadence's owners list
+    names it (push_pod), so a rep in several pods gets the contacts in the
+    pod the sender chose, not the first of theirs by name."""
     me = account_email(account)
     pushed_by = {"email": me}
     if account.get("name"):
@@ -885,7 +906,7 @@ def envelope(account: dict, owner_email: str | None, contacts: list[dict]) -> di
     owner = norm_email(owner_email)
     return {"pushedBy": pushed_by,
             "assignTo": {"email": owner} if owner and owner != me else None,
-            "pod": None,
+            "pod": pod or None,
             "contacts": [scrub(dict(c)) for c in contacts]}
 
 
@@ -1405,6 +1426,12 @@ def assess(conn, recs: dict[str, dict], ids: list[str]) -> dict:
         if pk and (pk not in lead or (at_home(cid) and not at_home(lead[pk]))):
             lead[pk] = cid
     leads = set(lead.values())
+    # B173: when two people in one send share an email, the one whose firm's
+    # website has the address's domain keeps it, whatever the selection order.
+    home_mail: dict[str, str] = {}
+    for cid in ids:
+        if cid in recs and at_home(cid):
+            home_mail.setdefault(_reach(recs[cid])[0], cid)
     where_in = {cid: n for n, cid in enumerate(ids)}
     for cid in sorted(ids, key=lambda i: (pk_of(i) is not None and i not in leads, where_in[i])):
         rec = recs.get(cid)
@@ -1456,6 +1483,11 @@ def assess(conn, recs: dict[str, dict], ids: list[str]) -> dict:
             skipped.append((cid, "same_email", f"Same {'email' if r['email'] == email else 'LinkedIn'} as "
                             f"{r['name']} at {_firm_label(conn, r['crd'])}, sent "
                             f"{_day(r.get('last_pushed_at') or r['first_pushed_at'])}", rec))
+            continue
+        keeper = home_mail.get(email or "")
+        if email and keeper and keeper != cid:
+            skipped.append((cid, "same_in_push", f"Same email as {recs[keeper]['name']} in this send, "
+                            "whose firm uses that address", rec))
             continue
         if email and email in seen_mail:
             skipped.append((cid, "same_in_push", f"Same email as {seen_mail[email]} in this send", rec))
@@ -1618,7 +1650,8 @@ def cap_words(left: int) -> str:
 
 def preview(conn, ids: list[str], *, account: dict, product: str | None = None,
             owner_email: str | None = None, note: str | None = None,
-            base_url: str | None = None, check: bool = True, reuse: str | None = None) -> dict:
+            base_url: str | None = None, check: bool = True, reuse: str | None = None,
+            pod: str | None = None) -> dict:
     """What sending these ids would do: the contacts that would go, with the
     email and phone each carries and the check's warnings under each, and
     those that would not, with why. The contacts that pass Bellwether's rules
@@ -1634,7 +1667,8 @@ def preview(conn, ids: list[str], *, account: dict, product: str | None = None,
     owner = norm_email(owner_email) or me
     out = {"ok": True, "problem": problem(), "count": len(ids), "send": [], "skipped": [],
            "disqualified": [], "again": [], "check": {"state": "off", "message": ""},
-           "product": product, "preview_id": None, "owner": owner}
+           "product": product, "preview_id": None, "owner": owner,
+           "pods": owner_pods(conn, owner), "pod": push_pod(conn, owner, pod)}
     if not me:
         out["problem"] = out["problem"] or ("Your Bellwether account needs an email address to send. "
                                             "An admin adds it in Settings, Users.")
@@ -1662,7 +1696,7 @@ def preview(conn, ids: list[str], *, account: dict, product: str | None = None,
         checked = memo["checked"]
         out["check"] = {"state": memo["state"], "message": memo.get("message") or ""}
     elif check and contacts and not out["problem"] and not held(conn):
-        chk = _check(conn, envelope(account, owner, contacts))
+        chk = _check(conn, envelope(account, owner, contacts, out["pod"]))
         checked = chk["results"]
         out["check"] = {"state": chk["state"], "message": chk["message"]}
         if chk["state"] == "refused":
@@ -1691,9 +1725,7 @@ def preview(conn, ids: list[str], *, account: dict, product: str | None = None,
                 (readable_phone(fphone) if fphone else None),
                 "phone_type": c.get("phoneType") if c["phone"] else ("firm" if fphone else None),
                 "disqualified": rec["crd"] in a["disqualified"], "note": None,
-                "warnings": [WARN_WORDS.get(w.get("code"), w.get("code") or "") +
-                             (f": {w['detail']}" if w.get("code") == "possible_crm_match" and w.get("detail") else "")
-                             for w in res.get("warnings") or [] if isinstance(w, dict) and w.get("code")],
+                "warnings": [warn_line(w) for w in res.get("warnings") or [] if isinstance(w, dict) and w.get("code")],
                 "again": a["again"].get(rec["id"])}
         if a["extras"].get(rec["id"]):
             line["note"] = ("Also at " + ", ".join(_firm_name(x["firm"]) or x["crd"] for x in a["extras"][rec["id"]])
@@ -1748,7 +1780,7 @@ def push(conn, ids: list[str], *, account: dict, product: str | None = None,
          confirm_disqualified: bool = False, preview_id: str | None = None,
          origin: str = "people", filter_qs: str | None = None, base_url: str | None = None,
          inline: bool = True, background: bool = True, actor: str | None = None,
-         daily_cap: bool = True, client_key: str | None = None) -> dict:
+         daily_cap: bool = True, client_key: str | None = None, pod: str | None = None) -> dict:
     """Send these contacts. The rules run again, the contacts the preview's
     check stopped stay out (or the check runs now, without a fresh preview),
     each contact is claimed so nobody else sends it at the same moment, and
@@ -1780,6 +1812,7 @@ def push(conn, ids: list[str], *, account: dict, product: str | None = None,
     if owner and owner != me and owner not in {e for e, _ in owner_choices(conn)}:
         return {"ok": False, "message": "Choose an owner from the list."}
     product = push_product(product)
+    pod = push_pod(conn, owner or me, pod)
     note = (note or "").strip()[:NOTE_MAX] or None
     if client_key:
         ex = _rows(conn, "SELECT id FROM cadence_batch WHERE client_key=? AND created_by=?",
@@ -1805,7 +1838,7 @@ def push(conn, ids: list[str], *, account: dict, product: str | None = None,
     memo = _recall(preview_id, login, _sig(product, owner))
     blocked = dict(memo["blocked"]) if memo else {}
     if memo is None and contacts:
-        chk = _check(conn, envelope(account, owner, list(contacts.values())))
+        chk = _check(conn, envelope(account, owner, list(contacts.values()), pod))
         if chk["state"] == "refused":
             return {"ok": False, "message": chk["message"]}
         blocked = {cid: check_words(r) for cid, r in chk["results"].items() if check_words(r)}
@@ -1864,7 +1897,7 @@ def push(conn, ids: list[str], *, account: dict, product: str | None = None,
     keys = []
     size = _chunk_size(conn)
     for i, chunk in enumerate(_chunks(claimed, size)):
-        env = envelope(account, owner, [contacts[c] for c in chunk])
+        env = envelope(account, owner, [contacts[c] for c in chunk], pod)
         body = body_bytes(env)
         key = str(uuid.uuid4())
         keys.append(key)
@@ -1918,6 +1951,23 @@ def owners(conn) -> list[dict] | None:
         _state_set(conn, "contracts", "1")
         conn.commit()
     return json.loads(cached) if cached else None
+
+
+def owner_pods(conn, owner: str | None) -> list[str]:
+    """The pods Cadence's owners list (v1.1) gives this owner, as it wants
+    them back in `pod`. Empty when Cadence speaks v1 only or does not list them."""
+    o = norm_email(owner)
+    return next((list(x.get("pods") or []) for x in owners(conn) or [] if x["email"] == o), []) if o else []
+
+
+def push_pod(conn, owner: str | None, chosen: str | None = None) -> str | None:
+    """The pod a send names (S3 asked Bellwether to send it): the one the
+    sender chose among the owner's pods, else the owner's only pod, else none,
+    and Cadence takes the owner's first pod by name."""
+    pods = owner_pods(conn, owner)
+    want = str(chosen or "").strip().lower()
+    hit = next((p for p in pods if p.lower() == want), None) if want else None
+    return hit or (pods[0] if len(pods) == 1 else None)
 
 
 def owner_choices(conn=None) -> list[tuple[str, str]]:
