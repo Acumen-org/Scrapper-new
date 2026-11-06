@@ -141,12 +141,14 @@ ONLY = " AND crd IN (SELECT crd FROM pi_crds)"
 def _contacts_and_scores(conn, keys: list[str], only: str = "") -> None:
     """Each person's best email, phone and LinkedIn, and each firm's score on
     every product, worked out once for both kinds of row. Ties go to the
-    oldest contact, so a refresh and a full build pick the same one."""
+    oldest contact, so a refresh and a full build pick the same one. A shared
+    inbox is never a person's email here, the same rule a send to Cold
+    outreach keeps (B177)."""
     for t in TEMP:
         conn.execute(f"DROP TABLE IF EXISTS {t}")
     conn.execute(f"""CREATE TEMP TABLE pi_em AS
         SELECT DISTINCT ON (crd, person_key) crd, person_key, value, verify_status, source, title
-        FROM usable_contact_point WHERE kind = 'email' AND person_key != ''{only}
+        FROM usable_contact_point WHERE kind = 'email' AND person_key != '' AND is_role = 0{only}
         ORDER BY crd, person_key, (verify_status = 'valid') DESC, confidence DESC, id""")
     conn.execute(f"""CREATE TEMP TABLE pi_ph AS
         SELECT DISTINCT ON (crd, person_key) crd, person_key, value, label, title

@@ -5,8 +5,9 @@ Written 2026-11-02 from Rahul's brief (`Tech Projects/cadence-outreach-sandbox-b
 Decisions at the end; they override anything else here). Rahul gave the go-ahead on 3 November, and
 the whole plan is built in one pass on the local branch `outreach-sandbox`. Cadence's plan
 (`Sequencer/docs/outreach-sandbox-plan.md`) owns the push API. Its section 14, version 1 of the
-contract (14.1 to 14.14), is copied below byte for byte, by script, as Shared contract with
-Bellwether, and this plan follows it.
+contract with the additions of contract 1.1 (14.1 to 14.16), is copied below byte for byte as
+Shared contract with Bellwether, and this plan follows it. `python -m scripts.contract_fixture`
+then makes the test fixture from it, and each app's tests check the copy and the fixture.
 
 Bellwether's part of the brief is requirement 5: users push **contacts, not firms**, one or many,
 into Cadence's outreach sandbox, and Bellwether shows per contact whether it went to Cadence and
@@ -167,9 +168,19 @@ One dialog serves every entry point:
 
 ## Shared contract with Bellwether
 
-Section 14 of this plan; its parts are numbered 14.1 to 14.14. Version 1. Cadence serves this API and Bellwether calls it. Bellwether's plan copies this section
-word for word. Changes within v1 are additive only (new optional request fields, new response
+Section 14 of this plan; its parts are numbered 14.1 to 14.16. Version 1, with the additions of
+contract 1.1 (cold outreach plan, 7.3, 6 Nov 2026). Cadence serves this API and Bellwether calls it.
+Bellwether's plan copies this section word for word, and its test fixture
+(`scripts/cadence_contract_fixture.json`) is generated from the JSON examples below; a test in each
+app checks both. Changes within v1 are additive only (new optional request fields, new response
 fields, new warning codes). Anything else is a v2 path.
+
+**Contract versions.** `ping` lists the versions Cadence speaks in `contracts` (`["1", "1.1"]`), to
+every caller. A caller that finds `"1.1"` there sends **`X-Cadence-Contract: 1.1`** on every
+request and reads the 1.1 answers: the new fields and warning codes, and the status `refused`. A
+request without the header gets exactly the v1 answer, so either app can be deployed, and rolled
+back, on its own. The parts marked **(1.1)** below apply only to a request that carries the header.
+The rules that decide who is refused, deduped or owned apply to every caller.
 
 ### 14.1 Base URL and transport
 
@@ -179,6 +190,7 @@ fields, new warning codes). Anything else is a v2 path.
 - Times are ISO 8601 UTC with `Z` (`2026-11-03T15:04:05Z`). Dates are `YYYY-MM-DD`.
 - Cadence ignores request fields it does not know. Bellwether ignores response fields it does not
   know.
+- **(1.1)** The header `X-Cadence-Contract: 1.1` asks for contract 1.1's answers.
 
 ### 14.2 Authentication
 
@@ -195,14 +207,16 @@ fields, new warning codes). Anything else is a v2 path.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/integrations/bellwether/v1/ping` | Key and connectivity check. |
+| GET | `/api/integrations/bellwether/v1/ping` | Key and connectivity check, and the contract versions Cadence speaks. |
 | POST | `/api/integrations/bellwether/v1/contacts` | Push 1 to 500 contacts into the sandbox. |
 | POST | `/api/integrations/bellwether/v1/contacts/status` | Status of pushed contacts, by id or by change time. |
 | POST | `/api/integrations/bellwether/v1/contacts/check` | The per-contact results a push would give, without writing anything (14.14). |
+| POST | `/api/integrations/bellwether/v1/contacts/suppress` | A Do not contact set in Bellwether opts the person out in Cadence (14.15). Contract 1.1. |
+| GET | `/api/integrations/bellwether/v1/owners` | Who can own contacts, with their pods (14.16). Contract 1.1. |
 
-**Ping**, 200:
+**Ping**, 200. `contracts` is in every answer, so a caller learns of 1.1 before it sends the header:
 ```json
-{ "ok": true, "version": "1", "sandboxEnabled": true, "maxBatch": 500, "serverTime": "2026-11-03T15:04:05Z" }
+{ "ok": true, "version": "1", "sandboxEnabled": true, "maxBatch": 500, "serverTime": "2026-11-03T15:04:05Z", "contracts": ["1", "1.1"] }
 ```
 
 ### 14.4 Push request
@@ -219,21 +233,21 @@ Envelope:
 | `pushedBy.microsoftObjectId` | string | no | Entra ID object id (GUID). Matched first. |
 | `assignTo` | object or null | no | Owner when it is not the pusher. |
 | `assignTo.email` | string | yes, if `assignTo` is given | Matched to a Cadence user. |
-| `pod` | string or null | no | A Twenty `podOwner` value such as `ALISA`. Used only when the owner works that pod. |
+| `pod` | string or null | no | A Twenty `podOwner` value such as `ALISA`, compared in any case. Used only when the owner works that pod. Bellwether sends the owner's pod: their only one, or the one the sender chose among those `GET /owners` lists. |
 | `contacts` | array of Contact | yes | 1 to 500 items. |
 
 Contact:
 
 | Field | Type | Required | Rules |
 |---|---|---|---|
-| `bellwetherContactId` | string | yes | 1 to 200 characters. Stable for the life of the contact in Bellwether. Compared exactly (case-sensitive). Recommended form: `<firmCrd>:<personKey>`. |
+| `bellwetherContactId` | string | yes | 1 to 200 characters, not only spaces, no control characters. Stable for the life of the contact in Bellwether. Compared exactly (case-sensitive). Recommended form: `<firmCrd>:<personKey>`. |
 | `firstName` | string | yes | 1 to 100 characters after trimming. |
 | `lastName` | string | yes | 1 to 100 characters after trimming. |
-| `jobTitle` | string or null | no | ≤ 200. |
+| `jobTitle` | string or null | no | ≤ 200. A longer one is cut at a word, with a warning. |
 | `email` | string or null | no | ≤ 254, basic address syntax. |
-| `emailVerification` | `"valid"`, `"risky"` or `"unknown"` | no | Default `"unknown"`. `valid`: a mail server confirmed the mailbox. `risky`: catch-all or accept-all. Addresses known to bounce are not sent. |
+| `emailVerification` | `"valid"`, `"risky"`, `"unknown"` or `"invalid"` | no | Default `"unknown"`. `valid`: a mail server confirmed the mailbox. `risky`: catch-all or accept-all. `invalid`: known to bounce; Cadence keeps it but never emails it. Addresses known to bounce are not sent. |
 | `additionalEmails` | string[] | no | ≤ 5. |
-| `phone` | string or null | no | ≤ 40. E.164 preferred. Any format accepted; the region is taken from `country`, defaulting to US. |
+| `phone` | string or null | no | ≤ 40. The person's own line, never the firm's switchboard (that goes only in `firm.phone`). E.164 preferred. Any format accepted; the region is taken from `country`, defaulting to US. |
 | `phoneType` | `"direct"`, `"mobile"`, `"office"`, `"main"`, `"toll_free"` or `"unknown"` | no | Default `"unknown"`. |
 | `phoneExtension` | string or null | no | Digits, ≤ 10. |
 | `additionalPhones` | array of `{ "number": string, "type": phoneType }` | no | ≤ 5. |
@@ -245,79 +259,111 @@ Contact:
 | `designations` | string[] | no | ≤ 20, each ≤ 20, e.g. `"CFP"`. |
 | `productInterest` | string[] | no | Twenty `productInterest` values: `PHH`, `TOLLBOOTH`, `ACUBOOTH`, `GLYNAC`. |
 | `tags` | string[] | no | ≤ 20, each ≤ 50. Kept in the sandbox only. |
-| `notes` | string or null | no | ≤ 5000. Becomes the contact's first sandbox note. |
+| `notes` | string or null | no | ≤ 5000. Becomes the contact's first sandbox note. A longer one is cut at a word, with a warning. |
 | `bellwetherUrl` | string or null | no | HTTPS link to the contact in Bellwether. |
 | `source` | string or null | no | ≤ 200. Where Bellwether found the person, e.g. `"SEC IAPD"` or `"firm website"`. |
 | `collectedAt` | string (date) or null | no | When Bellwether collected the data. |
-| `doNotContact` | boolean | no | Default `false`. `true` means the contact is rejected (`do_not_contact`). |
+| `doNotContact` | boolean | no | Default `false`. `true` (also `"true"`, `"yes"` or `1`) means the contact is rejected (`do_not_contact`). |
 | `firm` | object | yes | The contact's firm. |
 | `firm.name` | string | yes | 1 to 200 characters. |
 | `firm.crd` | string or null | no | SEC/FINRA firm CRD, digits. |
 | `firm.website` | string or null | no | URL. |
 | `firm.domain` | string or null | no | Bare domain. Derived from `website` when absent. |
 | `firm.city`, `firm.state`, `firm.country` | string or null | no | Main office. Same formats as the contact's. |
-| `firm.phone` | string or null | no | Main office line. Kept for reference; never used to match. |
-| `firm.aumUsd` | integer or null | no | Regulatory AUM, whole US dollars. |
-| `firm.employees` | integer or null | no | |
+| `firm.phone` | string or null | no | Main office line (the switchboard). Kept for reference; never used to match. A contact phone equal to it is kept as the firm's line (type `main`), with a warning. |
+| `firm.aumUsd` | integer or null | no | Regulatory AUM, whole US dollars, at most 22 digits. |
+| `firm.employees` | integer or null | no | 0 to 2,147,483,647. |
 
 **Validation.**
 - Envelope problems are refused for the whole request with 422. Those are: no `Idempotency-Key`,
   no `pushedBy.email`, `contacts` missing or empty, an `assignTo` with no email.
 - More than 500 contacts gets 413.
 - A contact with a missing or invalid **required** field is `rejected` / `invalid_field`, with the
-  field named in `detail`. The rest of the batch is still processed.
+  field named in `detail` ("lastName is empty", "firm.name is longer than 200 characters"). The rest
+  of the batch is still processed.
 - An invalid **optional** field is dropped with a warning, and the contact is still created. This
-  covers a bad email, phone or LinkedIn URL, and an unknown product value.
+  covers a bad email, phone or LinkedIn URL, and an unknown product value. Nothing is dropped or
+  changed silently: a value over its limit, a country or option Cadence does not know (it then
+  uses the default), or a number out of range carries `value_defaulted`, and a cut note
+  `note_truncated` (1.1).
+- Options (`emailVerification`, `phoneType`) are read in any case. Control characters are removed
+  from every text.
 
 ### 14.5 Normalisation (Cadence applies it; Bellwether should apply the same before sending)
 
 | Value | Rule |
 |---|---|
-| email | Trim, lower-case the whole address. Dots and `+tags` are kept. |
-| phone | Parse to E.164 with the region from `country` (default US). The extension is split off. |
-| linkedinUrl | Lower-case. Remove the scheme, `www.` or a country subdomain, the query, the fragment and a trailing slash, giving `linkedin.com/in/<slug>`. Anything that is not `/in/` is dropped. |
+| email | Trim, lower-case the whole address, drop a leading `mailto:` and a trailing dot. Dots and `+tags` are kept. The domain needs a top level of two letters or more. |
+| phone | Parse to E.164 with the region from `country` (default US). The extension is split off. A North American number has 10 digits, or 11 with the leading 1; any other count is a typo and is dropped, never read as a foreign number. A `(0)` after the country code (`+44 (0)20 ...`) is dropped. |
+| linkedinUrl | Percent-decode the slug, then lower-case. Remove the scheme, `www.` or a country subdomain, the query, the fragment and a trailing slash, giving `linkedin.com/in/<slug>`. Anything that is not `/in/` is dropped. |
+| country | ISO 3166-1 alpha-2. `UK` is `GB`; an English country name or a common alias (`United Kingdom`, `USA`) is its code. |
 | CRDs | Digits only, leading zeros removed. |
 | domain | Lower-case. Remove the scheme, `www.` and any path. |
+| firm name (compared) | Lower-case, letters of every alphabet kept, punctuation and legal suffixes (LLC, Inc., Ltd, Corp, LP) removed. |
+| names, notes, titles | Plain text: HTML tags go, a markdown link keeps its words and an `https` address, any other address is dropped. Names lose brackets too. |
 
 ### 14.6 Dedupe rules (in this order; the first hit decides)
 
-1. **Within the request.** A second contact with the same `bellwetherContactId` or the same
-   normalised email is `rejected` / `duplicate_in_request`.
-2. **Suppression.** The email, a direct or mobile phone, the LinkedIn URL or the
-   `bellwetherContactId` is on Cadence's suppression list: `rejected` / `suppressed`.
-3. **Internal or blocked.** The email or firm domain is one of Acumen's own domains:
-   `rejected` / `internal_contact`. The firm is a blocked account or on the "Never prospects"
-   list in Cadence (by domain or normalised name): `rejected` / `blocked_account`.
+Before rule 4 is judged, Twenty itself is asked once per push (3 Nov): the people it has for the
+pushed emails, phones and LinkedIn URLs go into Cadence's copy, and a copy hit Twenty no longer
+has is marked deleted. When Twenty cannot be reached, the copy decides on its own.
+
+1. **Within the request.** A second contact with the same `bellwetherContactId` is `rejected` /
+   `duplicate_in_request`. So is a contact whose personal email another contact of the request
+   keeps: the one whose firm's domain is the address's domain keeps it, else the first; `detail`
+   names who has it. A shared inbox (`info@`, `sales@`, `office@` and the like) belongs to nobody
+   and never makes a duplicate.
+2. **Suppression.** Any key of the contact is on Cadence's suppression list: an email, **any phone
+   whatever its type** (a firm's office, main or unknown line is suppressed for the one person it
+   was suppressed for, never their colleagues), the LinkedIn URL, the `bellwetherContactId` or the
+   individual CRD. So is a personal email, the CRD, the LinkedIn URL or a direct or mobile phone of a
+   contact who asked not to be contacted. And a CRM person with the same first and last name at the
+   same firm (by name, domain or CRD) who is marked Do not contact in the CRM or opted out in Cadence.
+   Each is `rejected` / `suppressed`, and the status reads `opted_out`.
+3. **Internal or blocked.** The email or firm domain is one of Acumen's own domains, or the firm
+   name is one of its own (compared without legal suffixes): `rejected` / `internal_contact`. The
+   firm is a blocked account or on the "Never prospects" list in Cadence (by domain or normalised
+   name): `rejected` / `blocked_account`.
 4. **CRM.** A live Twenty person in Cadence's copy (not deleted, not a team member) has the same
-   email (primary or additional), the same LinkedIn URL, or the same phone (primary or
+   email (primary or additional, in any case), the same LinkedIn URL, or the same phone (primary or
    additional). A pushed phone (`phone`, or an entry of `additionalPhones`, each judged by its own
    type) matches when its type is `direct` or `mobile`, and also when it is `office` or
    `unknown`, unless the number equals `firm.phone` or the main line of the matching person's
    company in Twenty. A phone typed `main` or `toll_free` never matches. Result
    `already_in_crm`, with `matchedOn` and `crmPersonId`. This includes contacts moved from the
-   sandbox earlier.
+   sandbox earlier; a contact moved to that very person keeps reading `moved_to_crm`.
 5. **Sandbox.** An ACTIVE sandbox contact has the same `bellwetherContactId`, `individualCrd`,
-   email, LinkedIn URL, or `direct`/`mobile` phone. Result `duplicate_in_sandbox`. Empty fields on
-   the existing contact are filled from the push, and nothing is ever overwritten. The filled
-   fields are listed in `filledFields`. The owner does not change.
+   personal email, LinkedIn URL, or `direct`/`mobile` phone. Result `duplicate_in_sandbox`. Empty
+   fields on the existing contact are filled from the push, and nothing is ever overwritten. When
+   the push has the person at another firm, only their own details fill (emails, direct and mobile
+   phones, LinkedIn, CRD), never the new firm's title, office line or address. The filled fields are
+   listed in `filledFields`. The owner does not change. A note is added to the contact (an identical
+   one is not added twice; `note_added`, 1.1). A different email, or a direct or mobile phone the
+   contact does not have, is added to its extra emails and phones, and a new firm or title is only
+   reported: the owner reads them in a note on the contact (`details_changed`, 1.1).
 6. Otherwise the result is **`created`**. A sandbox contact REMOVED by retention does not block a
    new one.
 
-Outside rule 4, phones typed `office`, `main`, `toll_free` or `unknown`, and `firm.phone`, never
-match: they are shared lines. In rule 4, `main`, `toll_free` and `firm.phone` never match. Name
-and firm alone never match. When Twenty has a person with the same first and
-last name at a company with the same domain or CRD, the contact is still created and carries the
-warning `possible_crm_match` with that person's id.
+Outside rules 2 and 4, phones typed `office`, `main`, `toll_free` or `unknown`, and `firm.phone`,
+never match: they are shared lines. In rule 4, `main`, `toll_free` and `firm.phone` never match.
+Name and firm alone never match. When Twenty has a person with the same first and last name at a
+company with the same domain or CRD, the contact is still created and carries the warning
+`possible_crm_match` with that person's id. When an active contact in Cadence has the same last
+name at the same firm, or shares an office or unknown line, the contact is still created and
+carries `possible_sandbox_duplicate` naming them (1.1).
 
 ### 14.7 Ownership on push
 
 1. The owner is `assignTo` if given, else `pushedBy`. Cadence matches the user by
-   `microsoftObjectId`, then email, then alias, among active users.
-2. If that user is an Admin, Junior FO, Senior FO, Sales Leader or Pod Manager, they own the new
-   contacts. Otherwise (unknown, Biz Ops, inactive) the contacts are created unclaimed, and
-   `owner` is null in the response.
-3. The pod is `pod` if the owner works that pod, else the owner's only pod, else null. A null pod
-   is chosen in Cadence before Move to CRM.
+   `microsoftObjectId`, then email, then alias.
+2. If that user is an active Junior FO, Senior FO, Sales Leader or Pod Manager in at least one
+   pod, they own the new contacts. Otherwise (unknown, inactive, an admin, Biz Ops, in no pod) the
+   contacts are created unclaimed, `owner` is null in the response, and each created contact carries
+   `owner_not_found`, or `assign_to_not_found` when `assignTo` was given, saying who and why (1.1).
+   `GET /owners` (14.16) lists exactly the people who can own.
+3. The pod is `pod` if the owner works that pod (by its value or its name, in any case), else the
+   owner's only pod, else the first of their pods by name. A contact with an owner always has a pod.
+4. A push is not a claim: the funnel's "Claimed" counts a later claim or assignment only.
 
 ### 14.8 Push response
 
@@ -354,21 +400,60 @@ HTTP 200 whenever the envelope was valid, even if every contact was rejected:
 }
 ```
 
+**(1.1)** The same push read with `X-Cadence-Contract: 1.1` carries `cadenceUrl` on each result and
+the 1.1 warning codes:
+
+```json
+{
+  "pushId": "6f1c2a9e-1b7d-4c1e-9a55-2f0f1d3c8b10",
+  "replayed": false,
+  "receivedAt": "2026-11-10T15:04:05Z",
+  "owner": { "email": "alyssa@acumen-strategy.com", "name": "Alyssa Example" },
+  "summary": { "created": 1, "duplicate_in_sandbox": 1, "already_in_crm": 0, "rejected": 1 },
+  "results": [
+    { "bellwetherContactId": "105943:i:7712003", "result": "created",
+      "cadenceContactId": "7c40...", "reason": null, "detail": null, "matchedOn": null,
+      "crmPersonId": null, "crmUrl": null,
+      "ownerEmail": "alyssa@acumen-strategy.com", "ownerName": "Alyssa Example",
+      "filledFields": [],
+      "warnings": [{ "code": "possible_sandbox_duplicate", "field": null, "crmPersonId": null,
+                     "detail": "Possibly the same person as Bob Okafor, already in Cold outreach at the same firm." }],
+      "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/7c40..." },
+    { "bellwetherContactId": "105943:i:7712002", "result": "duplicate_in_sandbox",
+      "cadenceContactId": "5d21...", "reason": null, "detail": null, "matchedOn": "individual_crd",
+      "crmPersonId": null, "crmUrl": null,
+      "ownerEmail": "leigh@acumen-strategy.com", "ownerName": "Leigh Example",
+      "filledFields": ["linkedinUrl"],
+      "warnings": [{ "code": "note_added", "field": "notes", "crmPersonId": null,
+                     "detail": "The person is already in Cold outreach, so the note was added to that contact." },
+                   { "code": "details_changed", "field": null, "crmPersonId": null,
+                     "detail": "Newer details from Bellwether: email jane@northstarwealth.com added; their firm there is Northstar Wealth." }],
+      "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/5d21..." },
+    { "bellwetherContactId": "288810:n:john roe", "result": "rejected",
+      "cadenceContactId": null, "reason": "internal_error",
+      "detail": "Cadence hit an error on this contact and finished the rest. Send it again; if it happens again, report it.",
+      "matchedOn": null, "crmPersonId": null, "crmUrl": null,
+      "ownerEmail": null, "ownerName": null, "filledFields": [], "warnings": [], "cadenceUrl": null }
+  ]
+}
+```
+
 `results` are in request order, one per contact. Each result:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `bellwetherContactId` | string | As sent. |
+| `bellwetherContactId` | string | As sent (without control characters). |
 | `result` | `"created"`, `"duplicate_in_sandbox"`, `"already_in_crm"` or `"rejected"` | |
 | `cadenceContactId` | string (UUID) or null | The sandbox contact, for `created` and `duplicate_in_sandbox`. |
-| `reason` | string or null | `rejected` only: `invalid_field`, `do_not_contact`, `suppressed`, `blocked_account`, `internal_contact`, `duplicate_in_request`. |
+| `reason` | string or null | `rejected` only: `invalid_field`, `do_not_contact`, `suppressed`, `blocked_account`, `internal_contact`, `duplicate_in_request`, or `internal_error` (Cadence failed on this one contact and finished the rest; it may be sent again, and it is never kept as a refusal). `internal_error` reaches every caller. |
 | `detail` | string or null | One plain sentence for a person to read. |
 | `matchedOn` | `"bellwether_contact_id"`, `"individual_crd"`, `"email"`, `"linkedin_url"`, `"phone"` or null | Set for `duplicate_in_sandbox` and `already_in_crm`. |
 | `crmPersonId` | string or null | `already_in_crm`: the Twenty person id. |
 | `crmUrl` | string or null | `already_in_crm`: the person in Twenty. |
-| `ownerEmail`, `ownerName` | string or null | The sandbox owner (`created`, `duplicate_in_sandbox`), or the Twenty Assigned To (`already_in_crm`). |
+| `ownerEmail`, `ownerName` | string or null | The sandbox owner (`created`, `duplicate_in_sandbox`; null when the owner no longer has access), or the Twenty Assigned To (`already_in_crm`). |
 | `filledFields` | string[] | `duplicate_in_sandbox`: payload field names written into empty fields. Otherwise `[]`. |
-| `warnings` | array of `{ "code": string, "field": string or null, "crmPersonId": string or null, "detail": string }` | Codes: `email_dropped`, `phone_dropped`, `linkedin_dropped`, `product_dropped`, `pod_ignored`, `possible_crm_match`. |
+| `warnings` | array of `{ "code": string, "field": string or null, "crmPersonId": string or null, "detail": string }` | v1 codes: `email_dropped`, `phone_dropped`, `linkedin_dropped`, `product_dropped`, `pod_ignored`, `possible_crm_match`. (1.1) also: `owner_not_found`, `assign_to_not_found`, `note_added`, `details_changed`, `note_truncated`, `value_defaulted`, `no_reach` (no usable email, phone or LinkedIn is left), `possible_sandbox_duplicate`. A v1 caller gets only the v1 codes. |
+| `cadenceUrl` | string or null | (1.1) The contact's page in Cadence, for `created` and `duplicate_in_sandbox`. |
 
 ### 14.9 Errors
 
@@ -386,26 +471,31 @@ Body: `{ "error": { "code": string, "message": string, "fields": [ { "path": str
 | 422 | `invalid_request` | Envelope validation (14.4). |
 | 429 | `rate_limited` | Over the limit. Has `Retry-After` in seconds. |
 | 503 | `integration_disabled` | The key is not configured in Cadence, or the sandbox is switched off. |
-| 503 | `unavailable` | Cadence's database or the sandbox is down. Retry later. |
+| 503 | `unavailable` | Cadence's database cannot be reached. Retry later. Nothing else is a 503: one contact Cadence fails on is that contact's `internal_error`, and the push still finishes. |
 | 500 | `internal` | A bug. Retry once with the same key, then stop and report. |
 
 ### 14.10 Idempotency
 
 - Every push request carries an `Idempotency-Key` (UUID v4). One user action gets one key. When
-  Bellwether splits a large selection into several requests, each request gets its own key.
+  Bellwether splits a large selection into several requests, each request gets its own key. Cadence
+  compares the key in lower case.
 - Cadence keeps the key, a SHA-256 of the raw body and the response for **7 days**.
-  - Same key and same body: Cadence replays the stored response with `"replayed": true`.
+  - Same key and same body: Cadence replays the stored response with `"replayed": true`, in the
+    contract version the replay asked for.
   - Same key and a different body: 409 `idempotency_conflict`.
 - After a timeout, a 5xx or a 429, Bellwether retries with the **same** key and body. The backoff
   is 5 s, 30 s, then 2 min, at most 3 retries, and Bellwether honours `Retry-After`.
+- A push that stopped part-way (Cadence restarted, its database went away) is marked failed after
+  10 minutes; a retry with its key runs it again, and what it created already is then
+  `duplicate_in_sandbox`.
 - Apart from the key, the dedupe rules alone mean a contact pushed again never makes a second
   sandbox contact.
 
 ### 14.11 Limits and timing
 
 - 500 contacts per push. 500 ids per status request. 2 MB body.
-- 30 push requests and 60 status requests per minute per key. Check requests (14.14) count as push
-  requests.
+- 30 push requests and 60 status requests per minute per key. Check (14.14) and suppress (14.15)
+  requests count as push requests; owners (14.16) requests count as status requests.
 - Cadence answers a 500-contact push within 30 seconds. Bellwether's client timeout is 60
   seconds.
 
@@ -417,7 +507,13 @@ Body: `{ "error": { "code": string, "message": string, "fields": [ { "path": str
 - `{ "changedSince": "2026-11-03T00:00:00Z", "cursor": null, "limit": 500 }`. This returns every
   contact ever pushed from Bellwether whose status changed at or after `changedSince`, oldest
   change first, up to `limit` (≤ 500). Follow `nextCursor` until it is null. Bellwether polls this
-  way every 10 minutes, and by id when a user opens a contact.
+  way every 10 minutes, starting 15 minutes before the last `serverTime` it was given, and by id
+  when a user opens a contact.
+
+`statusChangedAt` and `serverTime` come from Cadence's database clock. `statusChangedAt` moves when
+the status changes and also when the owner changes (claim, assignment, release, the owner losing
+access), when a call outcome is filed, when an email bounces and when an opt-out is lifted, so a
+read of changes carries each of them.
 
 Response 200:
 ```json
@@ -436,15 +532,71 @@ Response 200:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `status` | `"in_sandbox"`, `"moved_to_crm"`, `"already_in_crm"`, `"opted_out"`, `"removed"` or `"not_found"` | `in_sandbox`: active in Cadence, claimed or not. `moved_to_crm`: a Cadence user moved it (an undo makes it `in_sandbox` again). `already_in_crm`: the push was refused because the person was already in the CRM. `opted_out`: asked not to be contacted; Bellwether should block further pushes. `removed`: removed in Cadence or by retention; may be pushed again. `not_found`: Cadence never received it. |
+| `status` | `"in_sandbox"`, `"moved_to_crm"`, `"already_in_crm"`, `"opted_out"`, `"removed"`, `"not_found"`, or (1.1) `"refused"` | `in_sandbox`: active in Cadence, claimed or not. `moved_to_crm`: a Cadence user moved it (an undo makes it `in_sandbox` again). `already_in_crm`: the push was refused because the person was already in the CRM. `opted_out`: asked not to be contacted; Bellwether should block further pushes. `removed`: removed in Cadence or by retention; may be pushed again. `not_found`: Cadence never received it. `refused` (1.1): the push was refused for another reason, in `reason`; a v1 caller never sees it (such an id reads as it would without the refusal). |
 | `cadenceContactId` | string or null | |
-| `ownerEmail`, `ownerName` | string or null | The sandbox owner. For `moved_to_crm` and `already_in_crm`, the Twenty Assigned To. |
+| `ownerEmail`, `ownerName` | string or null | The sandbox owner, null when unclaimed or when the owner no longer has access. For `moved_to_crm` and `already_in_crm`, the Twenty Assigned To. |
 | `campaignName` | string or null | The sandbox campaign the contact is in now. |
 | `callCount` | integer | Calls logged in Cadence for this contact. |
 | `lastActivityAt` | string or null | |
 | `movedToCrmAt` | string or null | |
 | `crmPersonId`, `crmUrl` | string or null | Set for `moved_to_crm` and `already_in_crm`. |
-| `statusChangedAt` | string | When `status` last changed. |
+| `statusChangedAt` | string | When the row last changed (above). |
+
+**(1.1)** Each row also carries these fields, always present and null when they do not apply:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `cadenceUrl` | string or null | The contact's page in Cadence. |
+| `removedBy`, `removedAt`, `removedReason` | string or null | `removed`: the name of who removed it (null for retention), when, and the reason they gave (retention gives its own). |
+| `erasedAt` | string or null | An admin erased the person; comes with `opted_out`. Bellwether blanks the person's emails and phones and keeps the public SEC record. |
+| `emailBounced`, `emailBouncedAt` | string or null | The address that bounced in Cadence, and when. Bellwether marks that address invalid. |
+| `possibleCrmPersonId` | string or null | A CRM person the push thought might be this contact. |
+| `lastOutcome`, `lastOutcomeAt` | string or null | The latest post-call outcome and when it was filed: the form's outcome key, one of `connected`, `gatekeeper`, `voicemail`, `no_answer`, `busy`, `wrong_number`, `not_interested`, `meeting_booked`, `do_not_contact`, `no_conversation`, or a key an admin added in Settings, Rules. |
+| `optOutLiftedAt` | string or null | When Cadence last lifted an opt-out of this contact (only an opt-out from the post-call form can be lifted), sent once the status is no longer `opted_out`. Bellwether then lifts only the suppression that opt-out wrote there. A Cadence lift never removes a Do not contact set in Bellwether, and a Bellwether lift never lifts a Cadence opt-out. |
+| `reason` | string or null | `refused`: the push's reason (`invalid_field`, `do_not_contact`, `blocked_account`, `internal_contact`, `duplicate_in_request`). |
+
+```json
+{
+  "serverTime": "2026-11-10T16:30:00Z",
+  "nextCursor": null,
+  "results": [
+    { "bellwetherContactId": "105943:i:7712001", "status": "in_sandbox",
+      "cadenceContactId": "0b6a...", "ownerEmail": "alyssa@acumen-strategy.com", "ownerName": "Alyssa Example",
+      "campaignName": null, "callCount": 1, "lastActivityAt": "2026-11-10T16:22:00Z",
+      "movedToCrmAt": null, "crmPersonId": null, "crmUrl": null, "statusChangedAt": "2026-11-10T16:22:00Z",
+      "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/0b6a...",
+      "removedBy": null, "removedAt": null, "removedReason": null, "erasedAt": null,
+      "emailBounced": "jane.doe@northstarwealth.com", "emailBouncedAt": "2026-11-10T09:00:00Z",
+      "possibleCrmPersonId": null, "lastOutcome": "not_interested", "lastOutcomeAt": "2026-11-10T16:22:00Z",
+      "optOutLiftedAt": "2026-11-09T12:00:00Z", "reason": null },
+    { "bellwetherContactId": "105943:i:7712002", "status": "removed",
+      "cadenceContactId": "5d21...", "ownerEmail": "alyssa@acumen-strategy.com", "ownerName": "Alyssa Example",
+      "campaignName": null, "callCount": 1, "lastActivityAt": "2026-11-10T16:22:00Z",
+      "movedToCrmAt": null, "crmPersonId": null, "crmUrl": null, "statusChangedAt": "2026-11-10T15:00:00Z",
+      "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/5d21...",
+      "removedBy": "Alisa Example", "removedAt": "2026-11-10T15:00:00Z", "removedReason": "Retired", "erasedAt": null,
+      "emailBounced": null, "emailBouncedAt": null,
+      "possibleCrmPersonId": null, "lastOutcome": "not_interested", "lastOutcomeAt": "2026-11-10T14:40:00Z",
+      "optOutLiftedAt": null, "reason": null },
+    { "bellwetherContactId": "288810:n:jane doe", "status": "refused",
+      "cadenceContactId": null, "ownerEmail": null, "ownerName": null,
+      "campaignName": null, "callCount": 0, "lastActivityAt": null,
+      "movedToCrmAt": null, "crmPersonId": null, "crmUrl": null, "statusChangedAt": "2026-11-10T14:00:00Z",
+      "cadenceUrl": null, "removedBy": null, "removedAt": null, "removedReason": null, "erasedAt": null,
+      "emailBounced": null, "emailBouncedAt": null, "possibleCrmPersonId": null,
+      "lastOutcome": null, "lastOutcomeAt": null, "optOutLiftedAt": null, "reason": "blocked_account" },
+    { "bellwetherContactId": "288810:n:john roe", "status": "opted_out",
+      "cadenceContactId": "9c3e...", "ownerEmail": "alyssa@acumen-strategy.com", "ownerName": "Alyssa Example",
+      "campaignName": null, "callCount": 1, "lastActivityAt": "2026-11-10T16:22:00Z",
+      "movedToCrmAt": null, "crmPersonId": null, "crmUrl": null, "statusChangedAt": "2026-11-10T13:00:00Z",
+      "cadenceUrl": "https://cadence.pmx.acumen-strategy.com/cold-outreach/9c3e...",
+      "removedBy": null, "removedAt": null, "removedReason": null, "erasedAt": "2026-11-10T13:00:00Z",
+      "emailBounced": null, "emailBouncedAt": null,
+      "possibleCrmPersonId": null, "lastOutcome": "connected", "lastOutcomeAt": "2026-11-09T10:00:00Z",
+      "optOutLiftedAt": null, "reason": null }
+  ]
+}
+```
 
 ### 14.13 Field mapping, Bellwether to sandbox
 
@@ -479,6 +631,7 @@ that column.
 | `firm.employees` | `companyEmployees` | `firm.total_employees` |
 | `pushedBy.email` | `pushedByEmail` | `app_user.email` |
 | `pushedBy.microsoftObjectId` | (owner match) | `app_user.ms_oid` |
+| `pod` | `podId` (the owner's pod) | the owner's pods from `GET /owners` |
 
 Sandbox to Twenty is section 8.2.
 
@@ -489,19 +642,72 @@ is no `Idempotency-Key`; one that is sent is ignored.
 
 - The body is the same as a push (14.4) and is validated the same way: the same 400, 413, 415 and
   422 answers, and the same per-contact `rejected` / `invalid_field` results.
-- Cadence applies the same normalisation (14.5), dedupe (14.6) and ownership (14.7) a push would
-  apply at that moment, and **writes nothing**: no sandbox contact, no filled field, no note, no
-  idempotency record, no push record.
+- Cadence runs exactly the push's steps (14.5 to 14.7) at that moment, Twenty's own answer included,
+  inside a transaction it then rolls back, and so **writes nothing**: no sandbox contact, no filled
+  field, no note, no refusal, no change to its copy of the CRM, no idempotency record, no push
+  record. Two contacts of one check that are the same person answer as they would in the push.
 - Response 200 has the push response's shape (14.8), with `"pushId": null` and
   `"replayed": false`. Each result is the one the push would give now. `created` means "would be
-  created", and its `cadenceContactId` is null. `filledFields` on a `duplicate_in_sandbox` lists
-  the fields a push would fill.
+  created", and its `cadenceContactId` is null; so is that of a contact the check matches to one it
+  would create. `filledFields` on a `duplicate_in_sandbox` lists the fields a push would fill.
 - It counts against the push rate limit (30 requests a minute per key, 14.11). The 500-contact and
   2 MB limits apply.
 - Errors are as in 14.9; `idempotency_conflict` and `idempotency_in_progress` never occur.
 - Bellwether calls it for the push preview and blocks every contact whose result is
   `already_in_crm` (the email or phone matched a CRM contact; `matchedOn` says which). The push
   itself still returns `already_in_crm` if the CRM changed in between.
+
+### 14.15 Do not contact from Bellwether (1.1)
+
+`POST /api/integrations/bellwether/v1/contacts/suppress`. A Do not contact set in Bellwether on a
+person it has sent opts them out in Cadence: the cold contacts the id answers for, live ones with
+the same personal email or individual CRD, moved contacts (through their CRM person) and CRM
+people with the same email, the CRM's own Do not contact included. Its keys go on the suppression
+list either way, so a later push of the person is refused; a phone protects only the people it
+matched, never a colleague on the same line.
+
+Request (1 to 500 contacts; each needs its `bellwetherContactId`, else 422 with
+`contacts[i].bellwetherContactId`; `reason` is `opted_out`, `do_not_call`, `do_not_email` or
+`other`; `actor` is required):
+```json
+{
+  "contacts": [
+    { "bellwetherContactId": "105943:i:7712001", "emails": ["jane.doe@northstarwealth.com"], "phones": ["+12125550142"], "individualCrd": "7712001" }
+  ],
+  "reason": "opted_out",
+  "note": "Asked on a call",
+  "actor": { "email": "karson@acumen-strategy.com", "name": "Karson Example" }
+}
+```
+
+Response 200, one result per contact in request order: `opted_out` (something was opted out
+now), `already_opted_out` (everything that matched was already), or `not_found` (Cadence has
+nobody it covers). An id no cold contact answers for reads `opted_out` in the status from then on.
+```json
+{
+  "results": [
+    { "bellwetherContactId": "105943:i:7712001", "result": "opted_out", "cadenceContactId": "0b6a...", "crmPersonId": null }
+  ]
+}
+```
+
+A Do not contact set in Bellwether is marked on every record it reaches in Cadence, so lifting a
+post-call-form opt-out in Cadence never takes it away. A 404 from a Cadence before 1.1 means the
+person stays live there; Bellwether then shows "Still live in Cadence with <owner>".
+
+### 14.16 Owners (1.1)
+
+`GET /api/integrations/bellwether/v1/owners`. Who can own contacts pushed from Bellwether, by the
+rules of 14.7 (active sales reps in at least one pod; never admins or Biz Ops), by name, each with
+the pods they work as Bellwether sends them in `pod`. Bellwether's owner picker lists only these,
+and asks for the pod when the owner has more than one.
+```json
+{
+  "owners": [
+    { "email": "alyssa@acumen-strategy.com", "name": "Alyssa Example", "pods": ["ALISA"] }
+  ]
+}
+```
 
 ## Field mapping
 

@@ -453,8 +453,15 @@ class Connection:
         # run is in flight, and the ingest loops upsert thousands of rows.
         self._shapes: dict = {}
 
+    def _live(self) -> psycopg.Connection:
+        """The psycopg connection, taken from the pool again after release()."""
+        if self._conn is None:
+            self._conn = self._pool.getconn()
+            self._returned = False
+        return self._conn
+
     def cursor(self) -> Cursor:
-        return Cursor(self._conn.cursor(), self._shapes)
+        return Cursor(self._live().cursor(), self._shapes)
 
     def execute(self, sql: str, params: Sequence | None = None) -> Cursor:
         return self.cursor().execute(sql, params)
@@ -465,16 +472,37 @@ class Connection:
     def executescript(self, script: str) -> Cursor:
         """sqlite3's multi-statement helper. psycopg will run a multi-statement
         string directly, so this is only here to keep the name callers use."""
-        cur = self._conn.cursor()
+        cur = self._live().cursor()
         cur.execute(translate(script, False))  # type: ignore[arg-type]
         self._shapes.clear()  # DDL just ran; any cached shape may be stale
         return Cursor(cur, self._shapes)
 
     def commit(self) -> None:
-        self._conn.commit()
+        if self._conn is not None:
+            self._conn.commit()
 
     def rollback(self) -> None:
-        self._conn.rollback()
+        if self._conn is not None:
+            self._conn.rollback()
+
+    def release(self) -> None:
+        """Hand a pooled connection back while the caller waits on something
+        slow, a call to Cadence above all, and take one again on the next
+        statement. A request that waits a minute on another server must not
+        keep one of the pool's ten connections the whole time. Work done so far
+        is committed first: a caller releases between units of work, never in
+        the middle of one. A private connection is kept."""
+        if self._pool is None or self._conn is None or self._returned:
+            return
+        try:
+            if not self._conn.closed and self._conn.info.transaction_status != 0:
+                self._conn.commit()
+        finally:
+            try:
+                self._pool.putconn(self._conn)
+            except Exception:
+                pass
+            self._conn = None
 
     def close(self) -> None:
         """Hand a pooled connection back, or close a private one.
@@ -484,6 +512,9 @@ class Connection:
         the next request never inherits half of somebody else's work."""
         if self._pool is None:
             self._conn.close()
+            return
+        if self._conn is None:
+            self._returned = True
             return
         if self._returned:
             return
@@ -503,13 +534,15 @@ class Connection:
         # pooled connection forever, and a pool that leaks a connection per
         # error eventually makes every page wait for one.
         try:
-            if self._pool is not None and not self._returned:
+            if self._pool is not None and not self._returned and self._conn is not None:
                 self.close()
         except Exception:
             pass
 
     @property
     def closed(self) -> bool:
+        if self._conn is None:
+            return self._returned
         return self._conn.closed or self._returned
 
     def __enter__(self):

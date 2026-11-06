@@ -133,12 +133,12 @@ SPECS: list[Spec] = [
     # ---- Cadence. Its address and key are not settings: they come from the
     # server environment only (CADENCE_API_URL, CADENCE_API_KEY), and are never
     # stored here (the shared contract, 14.1 and 14.2).
-    Spec("cadence.enabled", "Pushing to Cadence", "cadence", default="off", choices=("on", "off"),
-         help="Off until Test the connection passes. Once on, everyone can push."),
-    Spec("cadence.max_per_push", "Contacts in one push, at most", "cadence", default="200",
-         help="Cadence takes up to 500 in one request. A bigger selection is asked to narrow down."),
-    Spec("cadence.daily_per_user", "Contacts one person may push in 24 hours, at most", "cadence",
-         default="500"),
+    Spec("cadence.enabled", "Sending to Cold outreach", "cadence", default="off", choices=("on", "off"),
+         help="Switched on only after Test the connection passes. Once on, everyone can send."),
+    Spec("cadence.max_per_push", "People in one send, at most", "cadence", default="200",
+         help="Cadence takes up to 500 in one request. A bigger selection is offered its first ones."),
+    Spec("cadence.daily_per_user", "People one person may send in a day, at most", "cadence",
+         default="500", help="The day is Cadence's calendar day, from midnight."),
 ]
 BY_KEY = {s.key: s for s in SPECS}
 
@@ -259,10 +259,10 @@ def set(key: str, value: str | None, by: str = "") -> None:  # noqa: A001
             raise ValueError("Contact retry interval must be a whole number from 1 to 90 days.")
     if key == "cadence.max_per_push" and value not in (None, ""):
         if not value.isdigit() or not 1 <= int(value) <= 500:
-            raise ValueError("Contacts in one push must be a whole number from 1 to 500.")
+            raise ValueError("People in one send must be a whole number from 1 to 500.")
     if key == "cadence.daily_per_user" and value not in (None, ""):
         if not value.isdigit() or not 1 <= int(value) <= 5000:
-            raise ValueError("Contacts a day must be a whole number from 1 to 5,000.")
+            raise ValueError("People a day must be a whole number from 1 to 5,000.")
     from . import db
     c = db.connect()
     try:

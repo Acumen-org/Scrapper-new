@@ -22,6 +22,9 @@ pdfplumber==0.11.10
 pypdfium2==5.14.0
 PyYAML==6.0.3
 requests==2.33.0
+# The IANA time zones, so Cold outreach dates and the daily send cap use
+# Cadence's workspace day (America/Chicago) on a slim image too.
+tzdata==2026.5
 
 # The database. [binary] ships the libpq wheel, so no system Postgres client is
 # needed in the image or on a developer's machine. The pool keeps a few

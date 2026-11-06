@@ -53,7 +53,18 @@ KEEP_UPPER = {"CEO", "CFO", "COO", "CIO", "CCO", "CTO", "CFP", "CFA", "CPA", "CH
               "II", "III", "IV", "HR", "IT"}
 
 
-def clean_title(raw: str | None) -> str:
+def cut_words(text: str, limit: int) -> str:
+    """At most `limit` characters, cut where a word ends, never inside one
+    (B172, B174), and without a trailing comma or ampersand. A single word
+    longer than the limit is cut at the limit."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit + 1]
+    cut = head[:head.rstrip().rfind(" ")] if " " in head.rstrip() else text[:limit]
+    return cut.rstrip(" ,;/&-") or text[:limit]
+
+
+def clean_title(raw: str | None, limit: int = 90) -> str:
     t = " ".join((raw or "").replace("(R)", "").replace("®", "").split()).strip(" ,;-")
     if not t:
         return ""
@@ -68,7 +79,7 @@ def clean_title(raw: str | None) -> str:
             words.append(w[:1].upper() + w[1:].lower())
         else:
             words.append(w)
-    return "".join(words)[:90]
+    return cut_words("".join(words), limit)
 
 
 def classify(raw: str | None) -> str:

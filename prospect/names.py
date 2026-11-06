@@ -71,6 +71,10 @@ ROB SAL SID VIC COX LIM LOW RYE ADA ORO PAZ RIO LOS LAS SAN EL LA LE DEL VON VAN
 _ACRONYMS4 = {"PGIM", "HSBC", "TIAA", "BBVA", "CIBC", "AXA", "AEGON", "ICMA", "NAPFA", "FINRA"}
 
 
+# Vowels, accented ones included, so ÉLAN is a word and not an initialism.
+_VOWELS = r"[AEIOUYÀÁÂÃÄÅÆÈÉÊËÌÍÎÏÒÓÔÕÖØÙÚÛÜÝ]"
+
+
 def nice_name(name) -> str:
     """Firm names arrive from the SEC in capitals. Title case reads faster,
     but LLC, LP and initialisms keep their capitals, legal suffixes read as
@@ -98,7 +102,7 @@ def nice_name(name) -> str:
             return w.lower()
         if bare.isalpha() and (2 <= len(bare) <= 3 and bare not in _WORDS and bare not in _SMALL
                                or bare in _ACRONYMS4
-                               or (len(bare) <= 5 and not re.search(r"[AEIOUY]", bare))):
+                               or (len(bare) <= 5 and not re.search(_VOWELS, bare))):
             return w
         # O'NEIL -> O'Neil; MCDONALD stays McDonald via the Mc prefix.
         out = w[:1] + w[1:].lower()
@@ -106,4 +110,5 @@ def nice_name(name) -> str:
         if re.match(r"Mc[a-z]", out):
             out = "Mc" + out[2:3].upper() + out[3:]
         return out
-    return re.sub(r"[A-Z][A-Z.']*", word, s)
+    # Words of any alphabet (B174): MÜLLER is one word, not M + LLER.
+    return re.sub(r"[^\W\d_][^\W\d_.']*", word, s)

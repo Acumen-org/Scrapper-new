@@ -9,10 +9,11 @@ from unittest.mock import Mock, patch
 
 from prospect import ai, assistant, contacts, directory, emailguess, harvest, jobs, msauth, products, users, verify
 # The push to Cadence, against the fake Cadence (scripts/qa_cadence.py).
-from scripts.qa_cadence import (AtsAndTollboothChecks, CheckBeforePushChecks,  # noqa: F401
-                                ContractFixtureChecks, ErrorChecks, IdempotencyChecks, OptOutChecks,
-                                PaceChecks, PayloadChecks, PushResultChecks, SecretAndSetupChecks,
-                                StatusChecks)
+from scripts.qa_cadence import (AtsAndTollboothChecks, BackfillChecks, CheckBeforePushChecks,  # noqa: F401
+                                ContractChecks, ContractFixtureChecks, ContractV11Checks, DeadlineChecks,
+                                DoNotContactChecks, ErrorChecks, IdempotencyChecks, NameKeyChecks,
+                                OptOutChecks, PaceChecks, PayloadChecks, PushResultChecks, ScreenChecks,
+                                SecretAndSetupChecks, SendChecks, StatusChecks)
 
 
 class ContactDiscoveryChecks(unittest.TestCase):

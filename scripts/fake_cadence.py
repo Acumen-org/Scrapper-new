@@ -1,12 +1,22 @@
 """An offline Cadence, for testing Bellwether's push without the real one.
 
 A small HTTP server on localhost built from the shared contract (sections
-14.3 to 14.14 of docs/outreach-sandbox-plan.md): the key header, a UUID v4
-Idempotency-Key, the envelope rules, the 500-contact and 2 MB limits, the
-content type, the dedupe rules in their order (14.6, including the wider CRM
-phone rule), ownership (14.7), the push and check answers, replay and
-conflict on a key, and the status endpoint by id and by changedSince with
+14.3 to 14.14 of docs/outreach-sandbox-plan.md) and contract v1.1 (the
+cold-outreach plan, 7.3): the key header, an Idempotency-Key that is any UUID,
+the envelope rules, the 500-contact and 2 MB limits, the content type, the
+dedupe rules in their order (14.6, including the wider CRM phone rule),
+ownership (14.7), the push and check answers, replay and conflict on a key,
+the per-minute limits, and the status endpoint by id and by changedSince with
 nextCursor. It keeps nothing on disk.
+
+It behaves like the real Cadence where Bellwether's bugs were (B063): the key
+and the switch are checked before anything, ping included (503 when Cold
+outreach is off, 401 for a wrong key); a refusal is recorded, so the status
+endpoint answers already_in_crm or opted_out for it, never not_found; any UUID
+version is a valid key. With "1.1" in `contracts` its ping lists it, a request
+carrying X-Cadence-Contract: 1.1 gets the new status fields and every refusal
+as status "refused" with its reason, and /contacts/suppress and /owners exist.
+A request without the header gets exactly the v1 answers.
 
 The tests drive it directly: seed CRM people, sandbox contacts, suppressions,
 users and statuses, force a result for one contact, or script the next
@@ -36,8 +46,13 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 API = "/api/integrations/bellwether/v1"
-UUID4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
-OWNING = {"admin", "junior_fo", "senior_fo", "sales_leader", "pod_manager"}
+# Cadence's own check (bellwether-api.ts UUID): any version.
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+LIMITS = {"push": 30, "check": 30, "suppress": 30, "status": 60, "owners": 60}
+V11_FIELDS = ("cadenceUrl", "removedBy", "removedAt", "removedReason", "erasedAt", "emailBounced",
+              "emailBouncedAt", "possibleCrmPersonId", "lastOutcome", "lastOutcomeAt", "optOutLiftedAt")
+# Who owns contacts (14.7 in contract 1.1): sales reps only, never an admin or Biz Ops.
+OWNING = {"junior_fo", "senior_fo", "sales_leader", "pod_manager"}
 SHARED_TYPES = {"main", "toll_free"}
 PHONE_TYPES = {"direct", "mobile", "office", "main", "toll_free", "unknown"}
 PRODUCTS = {"PHH", "TOLLBOOTH", "ACUBOOTH", "GLYNAC"}
@@ -87,6 +102,8 @@ class FakeCadence:
         self.internal_domains = {"acumen-strategy.com"}
         self.blocked_domains: set[str] = set()
         self.users: dict[str, tuple[str, str]] = {}   # email -> (name, role)
+        self.pods: dict[str, list[str]] = {}          # email -> the pods they work (podOwner values)
+        self.pushed_pods: list[str | None] = []       # the `pod` of each push, as received
         self.statuses: dict[str, dict] = {}       # id -> status item
         self.forced: dict[str, dict] = {}         # id -> result fields a push answers with
         self.script: list[dict] = []              # answers for the next requests, by kind
@@ -95,6 +112,10 @@ class FakeCadence:
         self.sandbox_enabled = True
         self.max_batch = 500
         self.slow_s = 1.5
+        self.contracts = ["1", "1.1"]             # what ping lists; ["1"] is a Cadence before v1.1
+        self.refusals: dict[str, dict] = {}       # id -> {status, reason, crmPersonId, at, ...}
+        self.suppress_calls: list[dict] = []      # each /contacts/suppress body, as received
+        self.rate_limits = True
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -124,8 +145,9 @@ class FakeCadence:
         self.httpd.server_close()
 
     # ------------------------------------------------------------ seeding
-    def add_user(self, email: str, name: str, role: str = "senior_fo") -> None:
+    def add_user(self, email: str, name: str, role: str = "senior_fo", pods=("ALISA",)) -> None:
         self.users[email.lower()] = (name, role)
+        self.pods[email.lower()] = list(pods)
 
     def add_crm(self, *, emails=(), phones=(), linkedin=None, owner=None, name="CRM Person",
                 company_phone=None) -> str:
@@ -140,9 +162,16 @@ class FakeCadence:
         self.suppressed.add(_email(value) or _phone(value) or _linkedin(value) or value)
 
     def set_status(self, cid: str, status: str, **fields) -> None:
+        """Change a contact's status the way Cadence would, stamping the change.
+        v1.1 fields (removedBy, erasedAt, lastOutcome ...) go in **fields."""
         item = self.statuses.get(cid) or self._status_item(cid, status)
         item.update(status=status, statusChangedAt=_z(self.clock()), **fields)
         self.statuses[cid] = item
+
+    def claim(self, cid: str, email: str | None, name: str | None = None) -> None:
+        """Claim, assign or release in Cadence: the owner changes and so does
+        statusChangedAt (B061)."""
+        self.set_status(cid, "in_sandbox", ownerEmail=email, ownerName=name)
 
     def then(self, kind: str = "any", status: int | None = None, code: str | None = None,
              retry_after: float | None = None, action: str | None = None, times: int = 1) -> None:
@@ -193,31 +222,56 @@ class FakeCadence:
             err["fields"] = fields
         self._send(h, status, {"error": err}, headers)
 
+    def _limited(self, kind: str) -> float | None:
+        """Seconds to wait when this request is over the per-minute limit
+        (14.11), else None. Push and check share one limit, as in Cadence."""
+        if not self.rate_limits or kind not in LIMITS:
+            return None
+        share = ("push", "check", "suppress") if kind in ("push", "check", "suppress") else ("status", "owners")
+        now = self.clock()
+        recent = sorted(r["t"] for r in self.log[:-1] if r["kind"] in share and r.get("counted")
+                        and now - r["t"] < 60)
+        if len(recent) >= LIMITS[kind]:
+            return max(1.0, 60 - (now - recent[0]))
+        self.log[-1]["counted"] = True
+        return None
+
+    def _v11(self, h) -> bool:
+        return "1.1" in self.contracts and h.headers.get("X-Cadence-Contract") == "1.1"
+
     def _handle(self, h, method: str) -> None:
         path = h.path.split("?")[0]
         kind = {f"{API}/ping": "ping", f"{API}/contacts": "push", f"{API}/contacts/check": "check",
-                f"{API}/contacts/status": "status"}.get(path)
+                f"{API}/contacts/status": "status", f"{API}/contacts/suppress": "suppress",
+                f"{API}/owners": "owners"}.get(path)
+        if kind in ("suppress", "owners") and "1.1" not in self.contracts:
+            kind = None
         n = int(h.headers.get("Content-Length") or 0)
         raw = h.rfile.read(n) if n else b""
         with self.lock:
             self.log.append({"t": self.clock(), "kind": kind, "method": method,
                              "key": h.headers.get("X-Cadence-Api-Key"),
                              "idem": h.headers.get("Idempotency-Key"),
+                             "contract": h.headers.get("X-Cadence-Contract"),
                              "ctype": h.headers.get("Content-Type"), "body": raw})
             step = None
             for i, s in enumerate(self.script):
                 if s["kind"] in ("any", kind):
                     step = self.script.pop(i)
                     break
-        if kind is None or (kind == "ping") != (method == "GET"):
+        if kind is None or (kind in ("ping", "owners")) != (method == "GET"):
             return self._error(h, 404, "not_found")
         if step and step["action"] == "drop":
             return self._drop(h)
         if step and step["action"] == "timeout":
             time.sleep(self.slow_s)
             return self._error(h, 503, "unavailable", "too late")
+        # Cadence's authorize(): no key configured, then the switch, then the
+        # key itself. Ping goes through it like every other request.
         if not self.key:
             return self._error(h, 503, "integration_disabled")
+        if not self.sandbox_enabled:
+            return self._error(h, 503, "integration_disabled", "the sandbox is switched off")
         if h.headers.get("X-Cadence-Api-Key") != self.key:
             return self._error(h, 401, "unauthorized")
         if step and step["status"]:
@@ -225,10 +279,19 @@ class FakeCadence:
             fields = [{"path": "contacts", "problem": "scripted"}] if step["status"] == 422 else None
             return self._error(h, step["status"], step["code"] or "scripted", fields=fields, headers=headers)
         if kind == "ping":
-            return self._send(h, 200, {"ok": True, "version": "1", "sandboxEnabled": self.sandbox_enabled,
-                                       "maxBatch": self.max_batch, "serverTime": _z(self.clock())})
-        if not self.sandbox_enabled:
-            return self._error(h, 503, "integration_disabled", "the sandbox is switched off")
+            out = {"ok": True, "version": "1", "sandboxEnabled": True, "maxBatch": self.max_batch,
+                   "serverTime": _z(self.clock())}
+            if "1.1" in self.contracts:
+                out["contracts"] = list(self.contracts)
+            return self._send(h, 200, out)
+        with self.lock:
+            wait = self._limited(kind)
+        if wait is not None:
+            return self._error(h, 429, "rate_limited", headers={"Retry-After": str(int(wait))})
+        if kind == "owners":
+            return self._send(h, 200, {"owners": [{"email": e, "name": n, "pods": list(self.pods.get(e) or [])}
+                                                  for e, (n, role) in sorted(self.users.items())
+                                                  if role in OWNING]})
         if not (h.headers.get("Content-Type") or "").lower().startswith("application/json"):
             return self._error(h, 415, "unsupported_media_type")
         if len(raw) > 2 * 1024 * 1024:
@@ -239,11 +302,13 @@ class FakeCadence:
             return self._error(h, 400, "invalid_json")
         if kind == "status":
             return self._status(h, body)
+        if kind == "suppress":
+            return self._suppress_contacts(h, body)
         if kind == "push":
             key = h.headers.get("Idempotency-Key") or ""
-            if not UUID4.match(key):
+            if not UUID.match(key):
                 return self._error(h, 422, "invalid_request", fields=[
-                    {"path": "Idempotency-Key", "problem": "a UUID v4 is required"}])
+                    {"path": "Idempotency-Key", "problem": "The Idempotency-Key must be a UUID."}])
             sha = hashlib.sha256(raw).hexdigest()
             with self.lock:
                 if key in self.in_progress:
@@ -255,7 +320,7 @@ class FakeCadence:
                     return self._send(h, 200, dict(have[1], replayed=True))
                 self.in_progress.add(key)
             try:
-                status, data = self._contacts(body, write=True)
+                status, data = self._contacts(body, write=True, v11=self._v11(h))
                 if status == 200:
                     with self.lock:
                         self.idem[key] = (sha, data)
@@ -270,7 +335,7 @@ class FakeCadence:
         return self._send(h, status, data) if status == 200 else self._error(h, status, *data)
 
     # ------------------------------------------------------------ push and check
-    def _contacts(self, body: dict, write: bool):
+    def _contacts(self, body: dict, write: bool, v11: bool = False):
         fields = []
         pb = body.get("pushedBy") if isinstance(body, dict) else None
         if not isinstance(pb, dict) or not (3 <= len(str(pb.get("email") or "")) <= 254):
@@ -287,13 +352,17 @@ class FakeCadence:
             return 413, ("payload_too_large", "more than 500 contacts")
         owner_email = str((at or pb).get("email")).lower()
         name, role = self.users.get(owner_email, (None, None))
-        owner = {"email": owner_email, "name": name} if role in OWNING else None
+        owner = {"email": owner_email, "name": name} if role in OWNING and self.pods.get(owner_email) else None
+        if write:
+            self.pushed_pods.append(body.get("pod"))
         results, seen_ids, seen_mail = [], set(), set()
         summary = {"created": 0, "duplicate_in_sandbox": 0, "already_in_crm": 0, "rejected": 0}
         for c in contacts:
             r = self._one(c if isinstance(c, dict) else {}, owner, seen_ids, seen_mail, write)
             summary[r["result"]] += 1
             results.append(r)
+            if write:
+                self._record_refusal(r, v11)
         return 200, {"pushId": str(uuid.uuid4()) if write else None, "replayed": False,
                      "receivedAt": _z(self.clock()), "owner": owner, "summary": summary,
                      "results": results}
@@ -344,10 +413,19 @@ class FakeCadence:
         seen_ids.add(cid)
         if email:
             seen_mail.add(email)
-        # 2. suppression
+        # 2. suppression, as v1.1 widens rule 14.6.2: every phone whatever its
+        # type, the individual CRD and the email; and an opted-out contact
+        # with the same email or CRD counts too (B001, B002).
         direct = {p for p, t in phones if t in ("direct", "mobile")}
-        if ({email, li, cid} | direct) & self.suppressed:
+        crd_key = f"crd:{c.get('individualCrd')}" if c.get("individualCrd") else None
+        if ({email, li, cid, crd_key} | {p for p, _ in phones}) & self.suppressed:
             return self._result(cid, "rejected", reason="suppressed")
+        for sid, st in self.statuses.items():
+            s = self.sandbox.get(sid) or {}
+            if st.get("status") == "opted_out" and sid != cid and (
+                    (email and email == s.get("email")) or
+                    (c.get("individualCrd") and str(c["individualCrd"]) == s.get("individualCrd"))):
+                return self._result(cid, "rejected", reason="suppressed")
         # 3. internal or blocked
         fdom = _domain(firm.get("domain") or firm.get("website"))
         if (email and email.split("@")[1] in self.internal_domains) or fdom in self.internal_domains:
@@ -403,7 +481,85 @@ class FakeCadence:
         return self._result(cid, "created", cadenceContactId=new["cadenceContactId"],
                             ownerEmail=new["ownerEmail"], ownerName=new["ownerName"], warnings=warnings)
 
+    def _record_refusal(self, r: dict, v11: bool) -> None:
+        """Cadence keeps a refusal, so the status endpoint can report it
+        (status.ts recordRefusal): already in the CRM and suppressed always;
+        with v1.1 every other refusal too, as "refused" with its reason."""
+        cid = r["bellwetherContactId"]
+        if r["result"] == "already_in_crm":
+            status = "already_in_crm"
+        elif r["result"] == "rejected" and r.get("reason") == "suppressed":
+            status = "opted_out"
+        elif r["result"] == "rejected" and v11 and r.get("reason") != "internal_error":
+            status = "refused"
+        else:
+            return
+        self.refusals[cid] = {"status": status, "reason": r.get("reason"), "crmPersonId": r.get("crmPersonId"),
+                              "crmUrl": r.get("crmUrl"), "ownerEmail": r.get("ownerEmail"),
+                              "ownerName": r.get("ownerName"), "at": _z(self.clock())}
+
+    # ------------------------------------------------------------ Do not contact from Bellwether (v1.1)
+    def _suppress_contacts(self, h, body: dict):
+        items = body.get("contacts") if isinstance(body, dict) else None
+        actor = body.get("actor") if isinstance(body, dict) else None
+        if not isinstance(items, list) or not items or not isinstance(actor, dict) or not actor.get("email"):
+            return self._error(h, 422, "invalid_request", fields=[{"path": "contacts", "problem": "required"}])
+        self.suppress_calls.append(body)
+        results = []
+        for it in items:
+            it = it if isinstance(it, dict) else {}
+            cid = str(it.get("bellwetherContactId") or "")
+            keys = {e for e in (_email(x) for x in it.get("emails") or []) if e}
+            keys |= {p for p in (_phone(x) for x in it.get("phones") or []) if p}
+            hit = self.sandbox.get(cid)
+            crm = next((p for p in self.crm if keys & (p["emails"] | p["phones"])), None)
+            before = (self.statuses.get(cid) or {}).get("status")
+            self.suppressed |= keys | {cid}
+            if it.get("individualCrd"):
+                self.suppressed.add(f"crd:{it['individualCrd']}")
+            if hit or crm or cid in self.statuses:
+                self.set_status(cid, "opted_out")
+                result = "already_opted_out" if before == "opted_out" else "opted_out"
+            else:
+                result = "not_found"
+            results.append({"bellwetherContactId": cid, "result": result,
+                            "cadenceContactId": (hit or {}).get("cadenceContactId"),
+                            "crmPersonId": (crm or {}).get("id")})
+        return self._send(h, 200, {"results": results})
+
     # ------------------------------------------------------------ status
+    def _shown(self, item: dict, v11: bool) -> dict:
+        """A status row as one version of the contract sees it: v1 gets exactly
+        the v1 fields, and a v1.1-only status as the v1 answer it had; 1.1
+        gets every 1.1 field, null when it does not apply, as Cadence sends it."""
+        out = dict(item)
+        if v11:
+            s = self.sandbox.get(out["bellwetherContactId"]) or {}
+            if s.get("cadenceContactId"):
+                out.setdefault("cadenceUrl", f"https://cadence.example.test/cold-outreach/{s['cadenceContactId']}")
+            for f in V11_FIELDS + ("reason",):
+                out.setdefault(f, None)
+            return out
+        for f in V11_FIELDS + ("reason",):
+            out.pop(f, None)
+        if out["status"] == "refused":
+            out["status"] = "not_found"
+        return out
+
+    def _answer_for(self, cid: str) -> dict | None:
+        """What the status endpoint says for an id: the contact, or a kept
+        refusal when that changed last (status.ts statusByIds)."""
+        item = self.statuses.get(cid)
+        ref = self.refusals.get(cid)
+        if ref and (not item or ref["at"] >= (item.get("statusChangedAt") or "")):
+            base = dict(self._status_item(cid, ref["status"]), statusChangedAt=ref["at"],
+                        crmPersonId=ref["crmPersonId"], crmUrl=ref["crmUrl"], ownerEmail=ref["ownerEmail"],
+                        ownerName=ref["ownerName"], cadenceContactId=None)
+            if ref["status"] == "refused":
+                base["reason"] = ref["reason"]
+            return base
+        return item
+
     def _status_item(self, cid: str, status: str) -> dict:
         s = self.sandbox.get(cid) or {}
         return {"bellwetherContactId": cid, "status": status,
@@ -413,6 +569,7 @@ class FakeCadence:
                 "statusChangedAt": _z(self.clock())}
 
     def _status(self, h, body: dict):
+        v11 = self._v11(h)
         if not isinstance(body, dict):
             return self._error(h, 422, "invalid_request", fields=[{"path": "", "problem": "object"}])
         ids = body.get("bellwetherContactIds")
@@ -422,17 +579,17 @@ class FakeCadence:
                                                                        "problem": "1 to 500"}])
             if len(ids) > 500:
                 return self._error(h, 413, "payload_too_large")
-            res = [self.statuses.get(i) or dict(self._status_item(i, "not_found"), statusChangedAt=None)
-                   for i in ids]
+            res = [self._shown(self._answer_for(i) or self._status_item(i, "not_found"), v11) for i in ids]
             return self._send(h, 200, {"serverTime": _z(self.clock()), "nextCursor": None, "results": res})
         since = body.get("changedSince")
         if not since:
             return self._error(h, 422, "invalid_request", fields=[{"path": "changedSince", "problem": "required"}])
         limit = min(int(body.get("limit") or 500), 500, self.page_size)
         start = int(body.get("cursor") or 0)
-        items = sorted((s for s in self.statuses.values() if (s["statusChangedAt"] or "") >= since),
+        known = sorted(set(self.statuses) | set(self.refusals))
+        items = sorted((s for s in (self._answer_for(i) for i in known) if (s["statusChangedAt"] or "") >= since),
                        key=lambda s: (s["statusChangedAt"], s["bellwetherContactId"]))
-        page = items[start:start + limit]
+        page = [self._shown(s, v11) for s in items[start:start + limit]]
         nxt = str(start + limit) if start + limit < len(items) else None
         return self._send(h, 200, {"serverTime": _z(self.clock()), "nextCursor": nxt, "results": page})
 
