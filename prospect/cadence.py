@@ -1541,7 +1541,7 @@ def _check(conn, env: dict) -> dict:
         out.update(state="refused", message=f"Cadence refused the check ({ans.error()}). An admin checks "
                                             "Settings, Cadence.")
     elif ans.kind == "http" and ans.status == 429:
-        wait = f" in {int(ans.retry_after)} seconds" if ans.retry_after else " in a minute"
+        wait = f" in {_count(int(ans.retry_after), 'second')}" if ans.retry_after else " in a minute"
         out.update(message=f"Too many sends a minute for Cadence's CRM check: try again{wait}. "
                            "Cadence still refuses anyone already in the CRM when the send arrives.")
     else:
@@ -1644,8 +1644,13 @@ def day_start() -> datetime:
     return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
 
+def _count(n: int, one: str, many: str | None = None) -> str:
+    """'1 second', '30 seconds': a count with its noun in the right number."""
+    return f"{n:,} {one if n == 1 else (many or one + 's')}"
+
+
 def cap_words(left: int) -> str:
-    return (f"You can send {max(left, 0):,} more today (at most {daily_per_user():,} people a day; the day "
+    return (f"You can send {max(left, 0):,} more today (at most {_count(daily_per_user(), 'person', 'people')} a day; the day "
             "starts again at midnight, Cadence's time).")
 
 

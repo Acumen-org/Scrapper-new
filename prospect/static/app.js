@@ -689,7 +689,7 @@
           return '<option value="' + esc(p.key) + '"' + (p.key === st.product ? " selected" : "") + '>' + esc(p.name) + '</option>';
         }).join("");
         h += '<div class="cad-fields top"><label>Owner<select data-cad-owner>' + owners + '</select>' +
-          (ov.unclaimed ? '<span class="meta warnc">These ' + plural(k, "person", "people") + ' will arrive unclaimed: ' +
+          (ov.unclaimed ? '<span class="meta warnc">' + (k === 1 ? 'This person' : 'These ' + plural(k, "person", "people")) + ' will arrive unclaimed: ' +
             esc(ov.name || "this person") + ' cannot own contacts in Cadence.</span>' :
            '<span class="meta">Only people who can own contacts in Cadence are listed.</span>') + '</label>' +
           ((d.pods || []).length > 1 ? '<label>Pod<select data-cad-pod>' + '<option value="">Choose a pod</option>' +

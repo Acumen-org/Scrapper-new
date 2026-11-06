@@ -1530,6 +1530,13 @@ class NameKeyChecks(ColdOutreachBase):
         sent = self.pushed()[-1]["contacts"][0]
         self.assertEqual((sent["firstName"], sent["lastName"]), ("伟", "李"))
 
+    def test_counts_read_in_the_right_number(self):
+        self.assertEqual(cadence._count(1, "second"), "1 second")
+        self.assertEqual(cadence._count(30, "second"), "30 seconds")
+        self.assertEqual(cadence._count(1, "person", "people"), "1 person")
+        with patch.object(cadence, "daily_per_user", lambda: 1):
+            self.assertIn("at most 1 person a day", cadence.cap_words(1))
+
     def test_B064_rekey_moves_only_the_never_sent(self):
         crd = "105943"
         for name, old, sent in (("José Müller", "n:jos ller", False), ("Zoë Ångström", "n:zo ngstr m", True)):
