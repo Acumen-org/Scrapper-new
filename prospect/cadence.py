@@ -692,9 +692,10 @@ def split_name(rec: dict) -> tuple[str | None, str | None]:
         from .contacts import unspaced
         from .names import person_name
         parts = person_name(rec.get("name") or "").split()
-        if len(parts) == 1 and unspaced(parts[0]) and not (first or last):
+        if len(parts) == 1 and unspaced(parts[0]) and not last and (not first or first == parts[0]):
             # A Chinese or Korean name written as one word: the family name
-            # is its first character (B064).
+            # is its first character (B064). The people index stores such a
+            # web-only name whole as the first name, with no last name.
             return _cut(parts[0][1:], 100), parts[0][0]
         first = first or (parts[0] if parts else None)
         last = last or (parts[-1] if len(parts) > 1 else None)
@@ -2398,9 +2399,24 @@ def _erase_details(conn, row: dict) -> None:
         keys += [(r["crd"], r["person_key"]) for r in _rows(
             conn, "SELECT DISTINCT crd, person_key FROM contact_point WHERE person_key=?",
             (f"i:{row['indvl_pk']}",))]
+    # People reads its email and phone from the index, which only its next rebuild would clear: blank
+    # them there now too, so the erased details never show meanwhile. The index's columns come from an
+    # empty read inside a savepoint, so a missing index never undoes the rest of this sync's writes.
+    try:
+        conn.execute("SAVEPOINT erase_index")
+        have = {d[0] for d in conn.execute("SELECT * FROM people_index WHERE 1=0").description or []}
+        conn.execute("RELEASE SAVEPOINT erase_index")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT erase_index")
+        have = set()
+    blank = [f"{col}={val}" for col, val in (("email", "NULL"), ("email_status", "NULL"), ("email_source", "NULL"),
+             ("phone", "NULL"), ("phone_label", "NULL"), ("has_email", "0"), ("has_direct", "0"),
+             ("has_phone", "0")) if col in have]
     for crd, key in dict.fromkeys(keys):
         conn.execute("DELETE FROM contact_point WHERE crd=? AND person_key=? AND kind IN ('email', 'phone')",
                      (crd, key))
+        if blank:
+            conn.execute(f"UPDATE people_index SET {', '.join(blank)} WHERE crd=? AND person_key=?", (crd, key))
     conn.execute("UPDATE cadence_push SET email=NULL, phone=NULL, linkedin=NULL WHERE id=?", (row["id"],))
 
 

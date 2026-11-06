@@ -1012,6 +1012,18 @@ class ContractChecks(ColdOutreachBase):
         self.assertFalse(self.info(cid)["can_push"])
         self.assertFalse(self.info(other)["can_push"])
 
+    def test_N039_erased_details_leave_the_people_list_at_once_not_at_its_next_rebuild(self):
+        cid = self.sent("Era Sing", phone="2125550112")
+        crd, key = cadence.parse_id(cid)
+        self.c.execute("UPDATE people_index SET email='era.sing@northstarwealth.com', phone='+12125550112',"
+                       " phone_label='direct' WHERE crd=? AND person_key=?", (crd, key))
+        self.c.commit()
+        self.fake.set_status(cid, "opted_out", erasedAt="2026-11-04T10:00:00Z")
+        self.sync_later()
+        row = self.c.execute("SELECT email, phone, phone_label FROM people_index WHERE crd=? AND person_key=?",
+                             (crd, key)).fetchone()
+        self.assertEqual((row["email"], row["phone"], row["phone_label"]), (None, None, None))
+
     def test_N040_a_bounce_marks_the_address_invalid(self):
         cid = self.sent("Bou Nce")
         self.fake.set_status(cid, "in_sandbox", emailBounced=True, emailBouncedAt="2026-11-04T10:00:00Z")
@@ -1508,6 +1520,15 @@ class NameKeyChecks(ColdOutreachBase):
         self.assertTrue(self.push([cid])["ok"])
         sent = self.pushed()[-1]["contacts"][0]
         self.assertEqual((sent["firstName"], sent["lastName"]), ("伟", "王"))
+
+    def test_B064_web_only_cjk_name_as_the_index_stores_it_is_sent(self):
+        cid = self.person("李伟", key="n:李伟", email="li@northstarwealth.com")
+        # The people index keeps a one-word web name whole as the first name, with no last name.
+        self.c.execute("UPDATE people_index SET first_name='李伟', last_name=NULL WHERE person_key='n:李伟'")
+        self.assertEqual(cadence.split_name({"first": "李伟", "last": None, "name": "李伟"}), ("伟", "李"))
+        self.assertTrue(self.push([cid])["ok"])
+        sent = self.pushed()[-1]["contacts"][0]
+        self.assertEqual((sent["firstName"], sent["lastName"]), ("伟", "李"))
 
     def test_B064_rekey_moves_only_the_never_sent(self):
         crd = "105943"
